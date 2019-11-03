@@ -33,6 +33,7 @@
 #include "openvswitch/dynamic-string.h"
 #include "fatal-signal.h"
 #include "hash.h"
+#include "id-fpool.h"
 #include "openvswitch/list.h"
 #include "netdev-offload-provider.h"
 #include "netdev-provider.h"
@@ -59,6 +60,7 @@ VLOG_DEFINE_THIS_MODULE(netdev_offload);
 
 
 static bool netdev_flow_api_enabled = false;
+static struct id_fpool *flow_mark_pool;
 
 #define DEFAULT_OFFLOAD_THREAD_NB 1
 #define MAX_OFFLOAD_THREAD_NB 10
@@ -296,6 +298,37 @@ netdev_flow_del(struct netdev *netdev, const ovs_u128 *ufid,
     return (flow_api && flow_api->flow_del)
            ? flow_api->flow_del(netdev, ufid, stats)
            : EOPNOTSUPP;
+}
+
+#define MAX_FLOW_MARK (UINT32_MAX - 1)
+
+uint32_t
+netdev_offload_flow_mark_alloc(void)
+{
+    static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
+    unsigned int tid = netdev_offload_thread_id();
+    uint32_t mark;
+
+    if (ovsthread_once_start(&init_once)) {
+        /* Haven't initiated yet, do it here */
+        flow_mark_pool = id_fpool_create(netdev_offload_thread_nb(),
+                                         1, MAX_FLOW_MARK);
+        ovsthread_once_done(&init_once);
+    }
+
+    if (id_fpool_new_id(flow_mark_pool, tid, &mark)) {
+        return mark;
+    }
+
+    return INVALID_FLOW_MARK;
+}
+
+void
+netdev_offload_flow_mark_free(uint32_t mark)
+{
+    unsigned int tid = netdev_offload_thread_id();
+
+    id_fpool_free_id(flow_mark_pool, tid, mark);
 }
 
 int

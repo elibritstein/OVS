@@ -52,7 +52,6 @@
 #include "fat-rwlock.h"
 #include "flow.h"
 #include "hmapx.h"
-#include "id-fpool.h"
 #include "id-pool.h"
 #include "ipf.h"
 #include "mov-avg.h"
@@ -2427,49 +2426,11 @@ dp_netdev_pmd_find_dpcls(struct dp_netdev_pmd_thread *pmd,
     return cls;
 }
 
-#define MAX_FLOW_MARK       (UINT32_MAX - 1)
-#define INVALID_FLOW_MARK   0
-/* Zero flow mark is used to indicate the HW to remove the mark. A packet
- * marked with zero mark is received in SW without a mark at all, so it
- * cannot be used as a valid mark.
- */
-
 struct megaflow_to_mark_data {
     const struct cmap_node node;
     ovs_u128 mega_ufid;
     uint32_t mark;
 };
-
-static struct id_fpool *flow_mark_pool;
-
-static uint32_t
-flow_mark_alloc(void)
-{
-    static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
-    unsigned int tid = netdev_offload_thread_id();
-    uint32_t mark;
-
-    if (ovsthread_once_start(&init_once)) {
-        /* Haven't initiated yet, do it here */
-        flow_mark_pool = id_fpool_create(netdev_offload_thread_nb(),
-                                         1, MAX_FLOW_MARK);
-        ovsthread_once_done(&init_once);
-    }
-
-    if (id_fpool_new_id(flow_mark_pool, tid, &mark)) {
-        return mark;
-    }
-
-    return INVALID_FLOW_MARK;
-}
-
-static void
-flow_mark_free(uint32_t mark)
-{
-    unsigned int tid = netdev_offload_thread_id();
-
-    id_fpool_free_id(flow_mark_pool, tid, mark);
-}
 
 /* associate megaflow with a mark, which is a 1:1 mapping */
 static void
@@ -2598,7 +2559,7 @@ mark_to_flow_disassociate(struct dp_netdev *dp,
             netdev_close(port);
         }
 
-        flow_mark_free(mark);
+        netdev_offload_flow_mark_free(mark);
         VLOG_DBG("Freed flow mark %u mega_ufid "UUID_FMT, mark,
                  UUID_ARGS((struct uuid *) &flow->mega_ufid));
 
@@ -2766,7 +2727,7 @@ dp_netdev_flow_offload_put(struct dp_offload_thread_item *item)
             return 0;
         }
 
-        mark = flow_mark_alloc();
+        mark = netdev_offload_flow_mark_alloc();
         if (mark == INVALID_FLOW_MARK) {
             VLOG_ERR("Failed to allocate flow mark!\n");
             return -1;
@@ -2802,7 +2763,7 @@ dp_netdev_flow_offload_put(struct dp_offload_thread_item *item)
 
 err_free:
     if (!modification) {
-        flow_mark_free(mark);
+        netdev_offload_flow_mark_free(mark);
     } else {
         mark_to_flow_disassociate(item->dp, flow);
     }
