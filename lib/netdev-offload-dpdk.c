@@ -1167,6 +1167,17 @@ dump_flow(struct ds *s, struct ds *s_extra,
     return s;
 }
 
+enum ct_mode {
+    CT_MODE_NONE,
+    CT_MODE_CT,
+    CT_MODE_CT_NAT,
+};
+
+struct act_vars {
+    enum ct_mode ct_mode;
+    bool pre_ct_tuple_rewrite;
+};
+
 static struct rte_flow *
 netdev_offload_dpdk_flow_create(struct netdev *netdev,
                                 const struct rte_flow_attr *attr,
@@ -2121,7 +2132,8 @@ static int
 parse_set_actions(struct flow_actions *actions,
                   const struct nlattr *set_actions,
                   const size_t set_actions_len,
-                  bool masked)
+                  bool masked,
+                  struct act_vars *act_vars)
 {
     const struct nlattr *sa;
     unsigned int sleft;
@@ -2157,6 +2169,7 @@ parse_set_actions(struct flow_actions *actions,
                 VLOG_DBG_RL(&rl, "Unsupported IPv4 set action");
                 return -1;
             }
+            act_vars->pre_ct_tuple_rewrite = act_vars->ct_mode == CT_MODE_NONE;
         } else if (nl_attr_type(sa) == OVS_KEY_ATTR_IPV6) {
             const struct ovs_key_ipv6 *key = nl_attr_get(sa);
             const struct ovs_key_ipv6 *mask = masked ? key + 1 : NULL;
@@ -2169,6 +2182,7 @@ parse_set_actions(struct flow_actions *actions,
                 VLOG_DBG_RL(&rl, "Unsupported IPv6 set action");
                 return -1;
             }
+            act_vars->pre_ct_tuple_rewrite = act_vars->ct_mode == CT_MODE_NONE;
         } else if (nl_attr_type(sa) == OVS_KEY_ATTR_TCP) {
             const struct ovs_key_tcp *key = nl_attr_get(sa);
             const struct ovs_key_tcp *mask = masked ? key + 1 : NULL;
@@ -2180,6 +2194,7 @@ parse_set_actions(struct flow_actions *actions,
                 VLOG_DBG_RL(&rl, "Unsupported TCP set action");
                 return -1;
             }
+            act_vars->pre_ct_tuple_rewrite = act_vars->ct_mode == CT_MODE_NONE;
         } else if (nl_attr_type(sa) == OVS_KEY_ATTR_UDP) {
             const struct ovs_key_udp *key = nl_attr_get(sa);
             const struct ovs_key_udp *mask = masked ? key + 1 : NULL;
@@ -2191,6 +2206,7 @@ parse_set_actions(struct flow_actions *actions,
                 VLOG_DBG_RL(&rl, "Unsupported UDP set action");
                 return -1;
             }
+            act_vars->pre_ct_tuple_rewrite = act_vars->ct_mode == CT_MODE_NONE;
         } else {
             VLOG_DBG_RL(&rl,
                         "Unsupported set action type %d", nl_attr_type(sa));
@@ -2404,7 +2420,8 @@ parse_flow_actions(struct netdev *netdev,
                    struct nlattr *nl_actions,
                    size_t nl_actions_len,
                    struct act_resources *act_resources,
-                   struct netdev *tnldev)
+                   struct netdev *tnldev,
+                   struct act_vars *act_vars)
 {
     struct nlattr *nla;
     size_t left;
@@ -2427,7 +2444,7 @@ parse_flow_actions(struct netdev *netdev,
             bool masked = nl_attr_type(nla) == OVS_ACTION_ATTR_SET_MASKED;
 
             if (parse_set_actions(actions, set_actions, set_actions_len,
-                                  masked)) {
+                                  masked, act_vars)) {
                 return -1;
             }
         } else if (nl_attr_type(nla) == OVS_ACTION_ATTR_PUSH_VLAN) {
@@ -2459,6 +2476,11 @@ parse_flow_actions(struct netdev *netdev,
         }
     }
 
+    if (act_vars->pre_ct_tuple_rewrite && act_vars->ct_mode != CT_MODE_NONE) {
+        VLOG_DBG_RL(&rl, "Unsupported tuple rewrite before ct action");
+        return -1;
+    }
+
     if (nl_actions_len == 0) {
         VLOG_DBG_RL(&rl, "No actions provided");
         return -1;
@@ -2474,7 +2496,8 @@ netdev_offload_dpdk_actions(struct netdev *netdev,
                             struct nlattr *nl_actions,
                             size_t actions_len,
                             struct act_resources *act_resources,
-                            struct netdev *tnldev)
+                            struct netdev *tnldev,
+                            struct act_vars *act_vars)
 {
     struct rte_flow_attr flow_attr = { .ingress = 1, .transfer = 1 };
     struct flow_actions actions = {
@@ -2487,7 +2510,7 @@ netdev_offload_dpdk_actions(struct netdev *netdev,
     int ret;
 
     ret = parse_flow_actions(netdev, &actions, nl_actions, actions_len,
-                             act_resources, tnldev);
+                             act_resources, tnldev, act_vars);
     if (ret) {
         goto out;
     }
@@ -2512,6 +2535,7 @@ netdev_offload_dpdk_add_flow(struct netdev *netdev,
         .cnt = 0,
         .s_tnl = DS_EMPTY_INITIALIZER,
     };
+    struct act_vars act_vars = { .ct_mode = CT_MODE_NONE };
     struct ufid_to_rte_flow_data *flows_data = NULL;
     struct act_resources act_resources;
     bool actions_offloaded = true;
@@ -2529,7 +2553,8 @@ netdev_offload_dpdk_add_flow(struct netdev *netdev,
     }
 
     flow = netdev_offload_dpdk_actions(patterns.physdev, &patterns, nl_actions,
-                                       actions_len, &act_resources, netdev);
+                                       actions_len, &act_resources, netdev,
+                                       &act_vars);
     if (!flow && !netdev_vport_is_vport_class(netdev->netdev_class)) {
         /* If we failed to offload the rule actions fallback to MARK+RSS
          * actions.
