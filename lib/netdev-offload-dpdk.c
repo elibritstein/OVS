@@ -1858,6 +1858,30 @@ add_vport_match(struct flow_patterns *patterns,
 }
 
 static int
+netdev_offload_dpdk_destroy_flow(struct netdev *netdev,
+                                 struct rte_flow *rte_flow,
+                                 const ovs_u128 *ufid)
+{
+    struct uuid ufid0 = UUID_ZERO;
+    struct rte_flow_error error;
+    int ret;
+
+    ret = netdev_dpdk_rte_flow_destroy(netdev, rte_flow, &error);
+    if (!ret) {
+        VLOG_DBG_RL(&rl, "%s: removed rte flow %p associated with ufid "
+                    UUID_FMT, netdev_get_name(netdev), rte_flow,
+                    UUID_ARGS(ufid ? (struct uuid *) ufid : &ufid0));
+    } else {
+        VLOG_ERR("%s: Failed to destroy flow: %s (%u)",
+                 netdev_get_name(netdev), error.message,
+                 error.type);
+        return -1;
+    }
+
+    return ret;
+}
+
+static int
 parse_tnl_ip_match(struct flow_patterns *patterns,
                    struct match *match,
                    uint8_t proto)
@@ -3371,11 +3395,10 @@ out:
 }
 
 static int
-netdev_offload_dpdk_flow_destroy(struct ufid_to_rte_flow_data *rte_flow_data)
+netdev_offload_dpdk_remove_flows(struct ufid_to_rte_flow_data *rte_flow_data)
 {
     unsigned int tid = netdev_offload_thread_id();
     struct netdev_offload_dpdk_data *data;
-    struct rte_flow_error error;
     struct rte_flow *rte_flow;
     struct netdev *physdev;
     struct netdev *netdev;
@@ -3405,7 +3428,7 @@ netdev_offload_dpdk_flow_destroy(struct ufid_to_rte_flow_data *rte_flow_data)
             continue;
         }
 
-        ret = netdev_dpdk_rte_flow_destroy(physdev, rte_flow, &error);
+        ret = netdev_offload_dpdk_destroy_flow(physdev, rte_flow, ufid);
         if (ret == 0) {
             data->rte_flow_counters[tid]--;
         } else {
@@ -3485,7 +3508,7 @@ netdev_offload_dpdk_flow_put(struct netdev *netdev, struct match *match,
         info->orig_in_port = aux.odp_port;
         old_stats = rte_flow_data->stats;
         modification = true;
-        ret = netdev_offload_dpdk_flow_destroy(rte_flow_data);
+        ret = netdev_offload_dpdk_remove_flows(rte_flow_data);
         if (ret < 0) {
             return ret;
         }
@@ -3520,7 +3543,7 @@ netdev_offload_dpdk_flow_del(struct netdev *netdev OVS_UNUSED,
     if (stats) {
         memset(stats, 0, sizeof *stats);
     }
-    return netdev_offload_dpdk_flow_destroy(rte_flow_data);
+    return netdev_offload_dpdk_remove_flows(rte_flow_data);
 }
 
 static int
@@ -3628,7 +3651,7 @@ netdev_offload_dpdk_flow_flush(struct netdev *netdev)
             continue;
         }
         if (data->creation_tid == tid) {
-            netdev_offload_dpdk_flow_destroy(data);
+            netdev_offload_dpdk_remove_flows(data);
         }
     }
 
