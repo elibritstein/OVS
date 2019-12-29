@@ -1185,11 +1185,11 @@ struct act_vars {
 };
 
 static struct rte_flow *
-netdev_offload_dpdk_flow_create(struct netdev *netdev,
-                                const struct rte_flow_attr *attr,
-                                struct flow_patterns *flow_patterns,
-                                struct flow_actions *flow_actions,
-                                struct rte_flow_error *error)
+create_rte_flow(struct netdev *netdev,
+                const struct rte_flow_attr *attr,
+                struct flow_patterns *flow_patterns,
+                struct flow_actions *flow_actions,
+                struct rte_flow_error *error)
 {
     const struct rte_flow_action *actions = flow_actions->actions;
     const struct rte_flow_item *items = flow_patterns->items;
@@ -2021,8 +2021,7 @@ netdev_offload_dpdk_mark_rss(struct flow_patterns *patterns,
 
     add_flow_mark_rss_actions(&actions, flow_mark, netdev);
 
-    flow = netdev_offload_dpdk_flow_create(netdev, &flow_attr, patterns,
-                                           &actions, &error);
+    flow = create_rte_flow(netdev, &flow_attr, patterns, &actions, &error);
 
     free_flow_actions(&actions);
     return flow;
@@ -2421,6 +2420,46 @@ add_vxlan_decap_action(struct flow_actions *actions)
 }
 
 static int
+create_pre_post_ct(struct netdev *netdev OVS_UNUSED,
+                   const struct rte_flow_attr *attr OVS_UNUSED,
+                   struct flow_patterns *flow_patterns OVS_UNUSED,
+                   struct flow_actions *flow_actions OVS_UNUSED,
+                   struct rte_flow_error *error OVS_UNUSED,
+                   struct act_resources *act_resources OVS_UNUSED,
+                   struct act_vars *act_vars OVS_UNUSED,
+                   struct flow_item *fi OVS_UNUSED)
+{
+    VLOG_DBG_RL(&rl, "CT actions not supported");
+    return -1;
+}
+
+static int
+netdev_offload_dpdk_flow_create(struct netdev *netdev,
+                                const struct rte_flow_attr *attr,
+                                struct flow_patterns *flow_patterns,
+                                struct flow_actions *flow_actions,
+                                struct rte_flow_error *error,
+                                struct act_resources *act_resources,
+                                struct act_vars *act_vars,
+                                struct flow_item *fi)
+{
+    switch (act_vars->ct_mode) {
+    case CT_MODE_NONE:
+        fi->rte_flow[0] = create_rte_flow(netdev, attr, flow_patterns,
+                                          flow_actions, error);
+        fi->has_count[0] = true;
+        return fi->rte_flow[0] == NULL ? -1 : 0;
+    case CT_MODE_CT:
+        /* fallthrough */
+    case CT_MODE_CT_NAT:
+        return create_pre_post_ct(netdev, attr, flow_patterns, flow_actions,
+                                  error, act_resources, act_vars, fi);
+    default:
+        OVS_NOT_REACHED();
+    }
+}
+
+static int
 parse_flow_actions(struct netdev *netdev,
                    struct flow_actions *actions,
                    struct nlattr *nl_actions,
@@ -2521,13 +2560,12 @@ netdev_offload_dpdk_actions(struct netdev *netdev,
         goto out;
     }
     flow_attr.group = act_resources->self_table_id;
-    fi->rte_flow[0] = netdev_offload_dpdk_flow_create(netdev, &flow_attr,
-                                                      patterns, &actions,
-                                                      &error);
-    fi->has_count[0] = true;
+    ret = netdev_offload_dpdk_flow_create(netdev, &flow_attr, patterns,
+                                          &actions, &error, act_resources,
+                                          act_vars, fi);
 out:
     free_flow_actions(&actions);
-    return fi->rte_flow[0] == NULL ? -1 : 0;
+    return ret;
 }
 
 static struct ufid_to_rte_flow_data *
