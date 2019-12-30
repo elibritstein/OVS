@@ -1773,12 +1773,12 @@ free_flow_patterns(struct flow_patterns *patterns)
 }
 
 static void
-free_flow_actions(struct flow_actions *actions)
+free_flow_actions(struct flow_actions *actions, bool free_confs)
 {
     struct rte_flow_error error;
     int i;
 
-    for (i = 0; i < actions->cnt; i++) {
+    for (i = 0; free_confs && i < actions->cnt; i++) {
         if (actions->tnl_pmd_actions_cnt &&
             i == actions->tnl_pmd_actions_pos) {
             if (netdev_dpdk_rte_flow_tunnel_action_decap_release(
@@ -2680,7 +2680,7 @@ netdev_offload_dpdk_mark_rss(struct flow_patterns *patterns,
 
     flow = create_rte_flow(netdev, &flow_attr, patterns, &actions, &error);
 
-    free_flow_actions(&actions);
+    free_flow_actions(&actions, true);
     return flow;
 }
 
@@ -3325,7 +3325,7 @@ netdev_offload_dpdk_actions(struct netdev *netdev,
                                           &actions, &error, act_resources,
                                           act_vars, fi);
 out:
-    free_flow_actions(&actions);
+    free_flow_actions(&actions, true);
     return ret;
 }
 
