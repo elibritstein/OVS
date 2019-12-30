@@ -338,6 +338,7 @@ enum rxq_cycles_counter_type {
 enum dp_offload_type {
     DP_OFFLOAD_FLOW,
     DP_OFFLOAD_FLUSH,
+    DP_OFFLOAD_CT,
 };
 
 enum {
@@ -362,6 +363,7 @@ struct dp_offload_flush_item {
 
 union dp_offload_thread_data {
     struct dp_offload_flow_item flow;
+    struct ct_flow_offload_item ct_offload_item;
     struct dp_offload_flush_item flush;
 };
 
@@ -2637,6 +2639,18 @@ dp_netdev_free_flow_offload(struct dp_offload_thread_item *offload)
 }
 
 static void
+dp_netdev_free_ct_offload__(struct dp_offload_thread_item *offload)
+{
+    free(offload);
+}
+
+static void
+dp_netdev_free_ct_offload(struct dp_offload_thread_item *offload)
+{
+    ovsrcu_postpone(dp_netdev_free_ct_offload__, offload);
+}
+
+static void
 dp_netdev_free_offload(struct dp_offload_thread_item *offload)
 {
     switch (offload->type) {
@@ -2645,6 +2659,9 @@ dp_netdev_free_offload(struct dp_offload_thread_item *offload)
         break;
     case DP_OFFLOAD_FLUSH:
         free(offload);
+        break;
+    case DP_OFFLOAD_CT:
+        dp_netdev_free_ct_offload(offload);
         break;
     default:
         OVS_NOT_REACHED();
@@ -2816,6 +2833,44 @@ dp_offload_flush(struct dp_offload_thread_item *item)
     ovs_barrier_block(flush->barrier);
 }
 
+static int
+dp_netdev_ct_offload_add(struct ct_flow_offload_item *ct_offload OVS_UNUSED)
+{
+    return -1;
+}
+
+static int
+dp_netdev_ct_offload_del(struct ct_flow_offload_item *ct_offload OVS_UNUSED)
+{
+    return -1;
+}
+
+static void
+dp_offload_ct(struct dp_offload_thread_item *item)
+{
+    struct ct_flow_offload_item *ct_offload = &item->data->ct_offload_item;
+    char *op;
+    int ret;
+
+    switch (ct_offload->op) {
+    case DP_NETDEV_FLOW_OFFLOAD_OP_ADD:
+        op = "add";
+        ret = dp_netdev_ct_offload_add(ct_offload);
+        break;
+    case DP_NETDEV_FLOW_OFFLOAD_OP_DEL:
+        op = "delete";
+        ret = dp_netdev_ct_offload_del(ct_offload);
+        break;
+    case DP_NETDEV_FLOW_OFFLOAD_OP_MOD:
+    default:
+        OVS_NOT_REACHED();
+    }
+
+    VLOG_DBG("%s to %s ct flow "UUID_FMT,
+             ret == 0 ? "succeed" : "failed", op,
+             UUID_ARGS((struct uuid *) &ct_offload->ufid));
+}
+
 #define DP_NETDEV_OFFLOAD_BACKOFF_MIN 1
 #define DP_NETDEV_OFFLOAD_BACKOFF_MAX 64
 #define DP_NETDEV_OFFLOAD_QUIESCE_INTERVAL_US (10 * 1000) /* 10 ms */
@@ -2855,6 +2910,9 @@ dp_netdev_flow_offload_main(void *arg)
                 break;
             case DP_OFFLOAD_FLUSH:
                 dp_offload_flush(offload);
+                break;
+            case DP_OFFLOAD_CT:
+                dp_offload_ct(offload);
                 break;
             default:
                 OVS_NOT_REACHED();
@@ -2897,6 +2955,32 @@ queue_netdev_flow_del(struct dp_netdev_pmd_thread *pmd,
     offload->timestamp = pmd->ctx.now;
     dp_netdev_offload_flow_enqueue(offload);
 }
+
+static void
+dp_netdev_append_ct_offload(struct ct_flow_offload_item *offload OVS_UNUSED)
+{
+    VLOG_DBG("dp_netdev_append_ct_offload");
+}
+
+static void
+dp_netdev_ct_offload_add_item(struct ct_flow_offload_item *offload)
+{
+    offload->op = DP_NETDEV_FLOW_OFFLOAD_OP_ADD;
+    dp_netdev_append_ct_offload(offload);
+}
+
+static void
+dp_netdev_ct_offload_del_item(struct ct_flow_offload_item *offload)
+{
+    offload->op = DP_NETDEV_FLOW_OFFLOAD_OP_DEL;
+    dp_netdev_append_ct_offload(offload);
+}
+
+OVS_UNUSED
+static struct conntrack_offload_class dpif_ct_offload_class = {
+    .conn_add = dp_netdev_ct_offload_add_item,
+    .conn_del = dp_netdev_ct_offload_del_item,
+};
 
 static void
 log_netdev_flow_change(const struct dp_netdev_flow *flow,
