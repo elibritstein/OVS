@@ -391,6 +391,19 @@ static struct dp_offload_thread *dp_offload_threads;
 static void *dp_netdev_flow_offload_main(void *arg);
 
 static void
+dp_netdev_ct_offload_add_item(struct ct_flow_offload_item *ct_offload);
+static void
+dp_netdev_ct_offload_del_item(struct ct_flow_offload_item *ct_offload);
+static bool
+dp_netdev_ct_offload_active(struct ct_flow_offload_item *offload,
+                            long long now);
+static struct conntrack_offload_class dpif_ct_offload_class = {
+    .conn_add = dp_netdev_ct_offload_add_item,
+    .conn_del = dp_netdev_ct_offload_del_item,
+    .conn_active = dp_netdev_ct_offload_active,
+};
+
+static void
 dp_netdev_offload_init(void)
 {
     static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
@@ -1840,6 +1853,7 @@ create_dp_netdev(const char *name, const struct dpif_class *class,
     dp->upcall_cb = NULL;
 
     dp->conntrack = conntrack_init(dp);
+    conntrack_init_offload_class(dp->conntrack, &dpif_ct_offload_class);
 
     dpif_miniflow_extract_init();
 
@@ -3258,13 +3272,6 @@ dp_netdev_ct_offload_active(struct ct_flow_offload_item *offload,
 
     return stats.used >= now;
 }
-
-OVS_UNUSED
-static struct conntrack_offload_class dpif_ct_offload_class = {
-    .conn_add = dp_netdev_ct_offload_add_item,
-    .conn_del = dp_netdev_ct_offload_del_item,
-    .conn_active = dp_netdev_ct_offload_active,
-};
 
 static void
 log_netdev_flow_change(const struct dp_netdev_flow *flow,
