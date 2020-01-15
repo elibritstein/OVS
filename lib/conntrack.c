@@ -302,14 +302,21 @@ conntrack_offload_fill_item_common(struct ct_flow_offload_item *item,
 }
 
 static void
-conntrack_offload_del_conn(struct conntrack *ct OVS_UNUSED,
+conntrack_offload_del_conn(struct conntrack *ct,
                            struct conn *conn)
 {
     struct ct_flow_offload_item item;
     int dir;
 
+    if (!ct->offload_class || !ct->offload_class->conn_del) {
+        return;
+    }
+
     for (dir = 0; dir < CT_DIR_NUM; dir ++) {
-        conntrack_offload_fill_item_common(&item, conn, dir);
+        if (!conntrack_offload_fill_item_common(&item, conn, dir)) {
+            continue;
+        }
+        ct->offload_class->conn_del(&item);
     }
 }
 
@@ -1534,7 +1541,8 @@ conntrack_offload_add_conn(struct conntrack *ct,
     struct ct_flow_offload_item item;
 
     /* CT doesn't handle alg */
-    if (conn->alg || conn->alg_related) {
+    if (conn->alg || conn->alg_related || !ct->offload_class ||
+        !ct->offload_class->conn_add) {
         conn->offloads.flags |= CT_OFFLOAD_SKIP;
         return;
     }
@@ -1542,6 +1550,7 @@ conntrack_offload_add_conn(struct conntrack *ct,
     if ((packet->md.reply && !(conn->offloads.flags & CT_OFFLOAD_REP)) ||
         (!packet->md.reply && !(conn->offloads.flags & CT_OFFLOAD_INIT))) {
         conntrack_offload_prepare_add(&item, conn, packet, mark, label, ct->dp);
+        ct->offload_class->conn_add(&item);
         conn->offloads.flags |= packet->md.reply ? CT_OFFLOAD_REP
                                                  : CT_OFFLOAD_INIT;
     }
