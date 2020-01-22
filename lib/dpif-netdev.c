@@ -3044,6 +3044,13 @@ dp_netdev_ct_offload_add(struct ct_flow_offload_item *ct_offload)
     }
     ret = netdev_flow_put(port, &match, actions, buf.size, &ct_offload->ufid,
                           &info, NULL);
+    /* A memory barrier that makes sure that the lines will be executed by
+     * order, and offload.dont_free won't be changed before offload.status is
+     * updated.
+     */
+    *(ct_offload->status) = !ret;
+    atomic_thread_fence(memory_order_acquire);
+    *(ct_offload->dont_free) = false;
     ovs_rwlock_unlock(&dp->port_rwlock);
     netdev_close(port);
     ofpbuf_uninit(&buf);
