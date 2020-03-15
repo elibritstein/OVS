@@ -1550,7 +1550,14 @@ dump_flow_action(struct ds *s, struct ds *s_extra,
     } else if (actions->type == RTE_FLOW_ACTION_TYPE_RSS) {
         ds_put_cstr(s, "rss / ");
     } else if (actions->type == RTE_FLOW_ACTION_TYPE_COUNT) {
-        ds_put_cstr(s, "count / ");
+        const struct rte_flow_action_count *count = actions->conf;
+
+        ds_put_cstr(s, "count ");
+        if (count) {
+            ds_put_format(s, "shared %d identifier %d ", count->shared,
+                          count->id);
+        }
+        ds_put_cstr(s, "/ ");
     } else if (actions->type == RTE_FLOW_ACTION_TYPE_PORT_ID) {
         const struct rte_flow_action_port_id *port_id = actions->conf;
 
@@ -3363,7 +3370,8 @@ parse_ct_actions(struct flow_actions *actions,
 static void
 split_ct_conn_actions(const struct rte_flow_action *actions,
                       struct flow_actions *ct_actions,
-                      struct flow_actions *nat_actions)
+                      struct flow_actions *nat_actions,
+                      uint32_t ctid)
 {
     for (; actions && actions->type != RTE_FLOW_ACTION_TYPE_END; actions++) {
         if (actions->type == RTE_FLOW_ACTION_TYPE_VXLAN_DECAP) {
@@ -3378,6 +3386,13 @@ split_ct_conn_actions(const struct rte_flow_action *actions,
             add_flow_action(ct_actions, actions->type, actions->conf);
         }
         add_flow_action(nat_actions, actions->type, actions->conf);
+        if (actions->type == RTE_FLOW_ACTION_TYPE_COUNT) {
+            struct rte_flow_action_count *count;
+
+            count = CONST_CAST(struct rte_flow_action_count *, actions->conf);
+            count->shared = 1;
+            count->id = ctid;
+        }
     }
     add_flow_action(ct_actions, RTE_FLOW_ACTION_TYPE_END, NULL);
     add_flow_action(nat_actions, RTE_FLOW_ACTION_TYPE_END, NULL);
@@ -3389,6 +3404,7 @@ create_ct_conn(struct netdev *netdev,
                struct flow_actions *flow_actions,
                struct rte_flow_error *error,
                struct act_resources *act_resources,
+               struct act_vars *act_vars,
                struct flow_item *fi)
 {
     struct flow_actions nat_actions = { .actions = NULL, .cnt = 0 };
@@ -3396,7 +3412,8 @@ create_ct_conn(struct netdev *netdev,
     struct rte_flow_attr attr = { .ingress = 1, .transfer = 1 };
     int ret = -1;
 
-    split_ct_conn_actions(flow_actions->actions, &ct_actions, &nat_actions);
+    split_ct_conn_actions(flow_actions->actions, &ct_actions, &nat_actions,
+                          act_vars->ctid);
     attr.group = CTNAT_TABLE_ID;
     fi->has_count[0] = true;
     fi->rte_flow[1] = create_rte_flow(netdev, &attr, flow_patterns,
@@ -3550,7 +3567,7 @@ netdev_offload_dpdk_flow_create(struct netdev *netdev,
                                   error, act_resources, act_vars, fi);
     case CT_MODE_CT_CONN:
         return create_ct_conn(netdev, flow_patterns, flow_actions, error,
-                              act_resources, fi);
+                              act_resources, act_vars, fi);
     default:
         OVS_NOT_REACHED();
     }
