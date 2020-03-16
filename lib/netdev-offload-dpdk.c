@@ -985,6 +985,7 @@ put_zone_id(uint32_t zone_id)
 
 #define MIN_TABLE_ID     1
 #define MAX_TABLE_ID     0xf0000000
+#define MISS_TABLE_ID    (UINT32_MAX - 1)
 
 static struct id_fpool *table_id_pool = NULL;
 static uint32_t
@@ -3469,6 +3470,39 @@ add_jump_action(struct flow_actions *actions, uint32_t group)
 
     jump->group = group;
     add_flow_action(actions, RTE_FLOW_ACTION_TYPE_JUMP, jump);
+}
+
+OVS_UNUSED
+static struct rte_flow *
+add_miss_flow(struct netdev *netdev,
+              uint32_t table_id,
+              uint32_t mark_id)
+{
+    struct rte_flow_attr miss_attr = { .ingress = 1, .transfer = 1,
+                                       .priority = 1, };
+    struct flow_patterns miss_patterns = {
+        .items = (struct rte_flow_item []) {
+            { .type = RTE_FLOW_ITEM_TYPE_ETH, },
+            { .type = RTE_FLOW_ITEM_TYPE_END, },
+        },
+        .cnt = 2,
+    };
+    struct rte_flow_action_jump miss_jump = { .group = MISS_TABLE_ID, };
+    struct rte_flow_action_mark miss_mark;
+    struct flow_actions miss_actions = {
+        .actions = (struct rte_flow_action []) {
+            { .type = RTE_FLOW_ACTION_TYPE_MARK, .conf = &miss_mark },
+            { .type = RTE_FLOW_ACTION_TYPE_JUMP, .conf = &miss_jump },
+            { .type = RTE_FLOW_ACTION_TYPE_END, },
+        },
+        .cnt = 3,
+    };
+    struct rte_flow_error error;
+
+    miss_attr.group = table_id;
+    miss_mark.id = mark_id;
+    return create_rte_flow(netdev, &miss_attr, &miss_patterns, &miss_actions,
+                           &error);
 }
 
 static int OVS_UNUSED
