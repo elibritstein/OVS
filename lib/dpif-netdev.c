@@ -365,7 +365,7 @@ struct dp_offload_flush_item {
 
 union dp_offload_thread_data {
     struct dp_offload_flow_item flow;
-    struct ct_flow_offload_item ct_offload_item;
+    struct ct_flow_offload_item ct_offload_item[CT_DIR_NUM];
     struct dp_offload_flush_item flush;
 };
 
@@ -3097,27 +3097,30 @@ dp_netdev_ct_offload_del(struct ct_flow_offload_item *ct_offload)
 static void
 dp_offload_ct(struct dp_offload_thread_item *item)
 {
-    struct ct_flow_offload_item *ct_offload = &item->data->ct_offload_item;
+    struct ct_flow_offload_item *ct_offload = &item->data->ct_offload_item[0];
     char *op;
     int ret;
+    int dir;
 
-    switch (ct_offload->op) {
-    case DP_NETDEV_FLOW_OFFLOAD_OP_ADD:
-        op = "add";
-        ret = dp_netdev_ct_offload_add(ct_offload);
-        break;
-    case DP_NETDEV_FLOW_OFFLOAD_OP_DEL:
-        op = "delete";
-        ret = dp_netdev_ct_offload_del(ct_offload);
-        break;
-    case DP_NETDEV_FLOW_OFFLOAD_OP_MOD:
-    default:
-        OVS_NOT_REACHED();
+    for (dir = 0; dir < CT_DIR_NUM; dir++) {
+        switch (ct_offload[dir].op) {
+        case DP_NETDEV_FLOW_OFFLOAD_OP_ADD:
+            op = "add";
+            ret = dp_netdev_ct_offload_add(&ct_offload[dir]);
+            break;
+        case DP_NETDEV_FLOW_OFFLOAD_OP_DEL:
+            op = "delete";
+            ret = dp_netdev_ct_offload_del(&ct_offload[dir]);
+            break;
+        case DP_NETDEV_FLOW_OFFLOAD_OP_MOD:
+        default:
+            OVS_NOT_REACHED();
+        }
+
+        VLOG_DBG("%s to %s ct flow "UUID_FMT,
+                 ret == 0 ? "succeed" : "failed", op,
+                 UUID_ARGS((struct uuid *) &ct_offload[dir].ufid));
     }
-
-    VLOG_DBG("%s to %s ct flow "UUID_FMT,
-             ret == 0 ? "succeed" : "failed", op,
-             UUID_ARGS((struct uuid *) &ct_offload->ufid));
 }
 
 #define DP_NETDEV_OFFLOAD_BACKOFF_MIN 1
@@ -3208,7 +3211,7 @@ queue_netdev_flow_del(struct dp_netdev_pmd_thread *pmd,
 static void
 dp_netdev_offload_ct_enqueue(struct dp_offload_thread_item *item)
 {
-    struct ct_flow_offload_item *ct_offload = &item->data->ct_offload_item;
+    struct ct_flow_offload_item *ct_offload = &item->data->ct_offload_item[0];
     unsigned int tid;
 
     ovs_assert(item->type == DP_OFFLOAD_CT);
@@ -3226,11 +3229,13 @@ dp_netdev_ct_offload_add_item(struct ct_flow_offload_item *ct_offload)
         return;
     }
 
-    item = xzalloc(sizeof *item + sizeof *ct_offload);
+    item = xzalloc(sizeof *item + CT_DIR_NUM * sizeof *ct_offload);
     item->type = DP_OFFLOAD_CT;
     item->dp = NULL;
-    item->data->ct_offload_item = *ct_offload;
-    item->data->ct_offload_item.op = DP_NETDEV_FLOW_OFFLOAD_OP_ADD;
+    item->data->ct_offload_item[0] = ct_offload[0];
+    item->data->ct_offload_item[0].op = DP_NETDEV_FLOW_OFFLOAD_OP_ADD;
+    item->data->ct_offload_item[1] = ct_offload[1];
+    item->data->ct_offload_item[1].op = DP_NETDEV_FLOW_OFFLOAD_OP_ADD;
 
     dp_netdev_offload_ct_enqueue(item);
 }
@@ -3240,11 +3245,13 @@ dp_netdev_ct_offload_del_item(struct ct_flow_offload_item *ct_offload)
 {
     struct dp_offload_thread_item *item;
 
-    item = xzalloc(sizeof *item + sizeof *ct_offload);
+    item = xzalloc(sizeof *item + CT_DIR_NUM * sizeof *ct_offload);
     item->type = DP_OFFLOAD_CT;
     item->dp = NULL;
-    item->data->ct_offload_item = *ct_offload;
-    item->data->ct_offload_item.op = DP_NETDEV_FLOW_OFFLOAD_OP_DEL;
+    item->data->ct_offload_item[0] = ct_offload[0];
+    item->data->ct_offload_item[0].op = DP_NETDEV_FLOW_OFFLOAD_OP_DEL;
+    item->data->ct_offload_item[1] = ct_offload[1];
+    item->data->ct_offload_item[1].op = DP_NETDEV_FLOW_OFFLOAD_OP_DEL;
 
     dp_netdev_offload_ct_enqueue(item);
 }
