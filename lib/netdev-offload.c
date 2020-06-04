@@ -302,6 +302,57 @@ netdev_flow_del(struct netdev *netdev, const ovs_u128 *ufid,
 
 #define MAX_FLOW_MARK (UINT32_MAX - 1)
 
+static struct ovs_list *mark_release_lists;
+
+struct mark_release_item {
+    struct ovs_list node;
+    long long int timestamp;
+    uint32_t mark;
+};
+
+static void
+mark_delayed_release(uint32_t mark)
+{
+    struct mark_release_item *item = xzalloc(sizeof *item);
+    unsigned int tid = netdev_offload_thread_id();
+
+    item->mark = mark;
+    item->timestamp = time_msec();
+    ovs_list_push_back(&mark_release_lists[tid], &item->node);
+    VLOG_DBG("%s: mark=%d, timestamp=%llu", __func__, item->mark,
+             item->timestamp);
+}
+
+#define DELAYED_RELEASE_TIMEOUT_MS 1000
+/* This timeout is to reserve the flow mark ID for a while after the flow is
+ * deleted, so that ID will not be allocated to another flow while packets
+ * matching the deleted flow are still in HW queues. We assume this timeout
+ * is enough for such packets to already be processed.
+ */
+
+static void
+do_mark_delayed_release(unsigned int tid)
+{
+    struct ovs_list *mark_release_list = &mark_release_lists[tid];
+    struct mark_release_item *item;
+    struct ovs_list *list;
+    long long int now;
+
+    now = time_msec();
+    while (!ovs_list_is_empty(mark_release_list)) {
+        list = ovs_list_front(mark_release_list);
+        item = CONTAINER_OF(list, struct mark_release_item, node);
+        if (now < item->timestamp + DELAYED_RELEASE_TIMEOUT_MS) {
+            break;
+        }
+        VLOG_DBG("%s: mark=%d, timestamp=%llu, now=%llu", __func__, item->mark,
+                 item->timestamp, now);
+        id_fpool_free_id(flow_mark_pool, tid, item->mark);
+        ovs_list_remove(list);
+        free(item);
+    }
+}
+
 uint32_t
 netdev_offload_flow_mark_alloc(void)
 {
@@ -310,12 +361,20 @@ netdev_offload_flow_mark_alloc(void)
     uint32_t mark;
 
     if (ovsthread_once_start(&init_once)) {
+        unsigned int nb_thread = netdev_offload_thread_nb();
+        size_t i;
+
         /* Haven't initiated yet, do it here */
-        flow_mark_pool = id_fpool_create(netdev_offload_thread_nb(),
-                                         1, MAX_FLOW_MARK);
+        flow_mark_pool = id_fpool_create(nb_thread, 1, MAX_FLOW_MARK);
+        mark_release_lists = xcalloc(nb_thread, sizeof *mark_release_lists);
+        for (i = 0; i < nb_thread; i++) {
+            ovs_list_init(&mark_release_lists[i]);
+        }
+
         ovsthread_once_done(&init_once);
     }
 
+    do_mark_delayed_release(tid);
     if (id_fpool_new_id(flow_mark_pool, tid, &mark)) {
         return mark;
     }
@@ -326,9 +385,7 @@ netdev_offload_flow_mark_alloc(void)
 void
 netdev_offload_flow_mark_free(uint32_t mark)
 {
-    unsigned int tid = netdev_offload_thread_id();
-
-    id_fpool_free_id(flow_mark_pool, tid, mark);
+    mark_delayed_release(mark);
 }
 
 int
