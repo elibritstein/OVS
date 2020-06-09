@@ -66,6 +66,8 @@ struct act_resources {
     uint32_t ct_miss_ctx_id;
     uint32_t ct_match_zone_id;
     uint32_t ct_action_zone_id;
+    uint32_t ct_match_label_id;
+    uint32_t ct_action_label_id;
 };
 
 #define NUM_RTE_FLOWS_PER_PORT 2
@@ -528,10 +530,7 @@ enum {
     REG_FIELD_CT_STATE,
     REG_FIELD_CT_ZONE,
     REG_FIELD_CT_MARK,
-    REG_FIELD_CT_LABEL0,
-    REG_FIELD_CT_LABEL1,
-    REG_FIELD_CT_LABEL2,
-    REG_FIELD_CT_LABEL3,
+    REG_FIELD_CT_LABEL_ID,
     REG_FIELD_TUN_INFO,
     REG_FIELD_CT_CTX,
     REG_FIELD_NUM,
@@ -574,26 +573,9 @@ static struct reg_field reg_fields[] = {
         .offset = 0,
         .mask = 0xFFFFFFFF,
     },
-    [REG_FIELD_CT_LABEL0] = {
+    [REG_FIELD_CT_LABEL_ID] = {
         .type = REG_TYPE_TAG,
         .index = 2,
-        .offset = 0,
-        .mask = 0xFFFFFFFF,
-    },
-    [REG_FIELD_CT_LABEL1] = {
-        .type = REG_TYPE_TAG,
-        .index = 3,
-        .mask = 0xFFFFFFFF,
-    },
-    [REG_FIELD_CT_LABEL2] = {
-        .type = REG_TYPE_TAG,
-        .index = 4,
-        .offset = 0,
-        .mask = 0xFFFFFFFF,
-    },
-    [REG_FIELD_CT_LABEL3] = {
-        .type = REG_TYPE_TAG,
-        .index = 5,
         .offset = 0,
         .mask = 0xFFFFFFFF,
     },
@@ -618,6 +600,75 @@ dump_table_id(struct ds *s, void *data)
     ds_put_format(s, "vport=%"PRIu32", recirc_id=%"PRIu32,
                   table_id_data->vport, table_id_data->recirc_id);
     return s;
+}
+
+static struct ds *
+dump_label_id(struct ds *s, void *data)
+{
+    ovs_u128 not_mapped_ct_label = *(ovs_u128 *) data;
+
+    ds_put_format(s, "label = %x%x%x%x", not_mapped_ct_label.u32[3],
+                                         not_mapped_ct_label.u32[2],
+                                         not_mapped_ct_label.u32[1],
+                                         not_mapped_ct_label.u32[0]);
+    return s;
+}
+
+#define MIN_LABEL_ID     1
+#define MAX_LABEL_ID     (reg_fields[REG_FIELD_CT_LABEL_ID].mask - 1)
+
+static struct id_pool *label_id_pool = NULL;
+
+static uint32_t
+label_id_alloc(void)
+{
+    uint32_t label_id;
+
+    if (!label_id_pool) {
+        /* if not yet initialized, do it here */
+        label_id_pool = id_pool_create(MIN_LABEL_ID, MAX_LABEL_ID);
+    }
+    if (id_pool_alloc_id(label_id_pool, &label_id)) {
+        return label_id;
+    }
+    return 0;
+}
+
+static void
+label_id_free(uint32_t label_id)
+{
+    id_pool_free_id(label_id_pool, label_id);
+}
+
+static struct context_metadata label_id_md = {
+    .name = "label_id",
+    .dump_context_data = dump_label_id,
+    .d2i_hmap = HMAP_INITIALIZER(&label_id_md.d2i_hmap),
+    .i2d_hmap = HMAP_INITIALIZER(&label_id_md.i2d_hmap),
+    .id_alloc = label_id_alloc,
+    .id_free = label_id_free,
+    .data_size = sizeof(ovs_u128),
+};
+
+static int
+get_label_id(ovs_u128 *ct_label, uint32_t *ct_label_id)
+{
+    struct context_data label_id_context = {
+        .data = ct_label,
+    };
+
+    if (is_all_zeros(ct_label, sizeof *ct_label)) {
+        *ct_label_id = 0;
+        return 0;
+    }
+    return get_context_data_id_by_data(&label_id_md, &label_id_context,
+                                       ct_label_id);
+}
+
+static void
+put_label_id(uint32_t label_id)
+{
+    put_context_data_by_id(&label_id_md, label_id);
 }
 
 static struct ds *
@@ -1002,6 +1053,8 @@ put_action_resources(struct act_resources *act_resources)
     put_ct_ctx_id(act_resources->ct_miss_ctx_id);
     put_zone_id(act_resources->ct_match_zone_id);
     put_zone_id(act_resources->ct_action_zone_id);
+    put_label_id(act_resources->ct_match_label_id);
+    put_label_id(act_resources->ct_action_label_id);
 }
 
 static int
@@ -2679,40 +2732,24 @@ parse_flow_match(struct netdev *netdev,
         }
     }
     /* ct-label */
-    if (match->wc.masks.ct_label.u32[0]) {
-        if ((!match->flow.recirc_id &&
-             !(match->flow.ct_label.u32[0] & match->wc.masks.ct_label.u32[0])) ||
-            !add_pattern_match_reg_field(patterns, REG_FIELD_CT_LABEL0,
-                                         match->flow.ct_label.u32[0],
-                                         match->wc.masks.ct_label.u32[0])) {
-            consumed_masks->ct_label.u32[0] = 0;
+    if (!is_all_zeros(&match->wc.masks.ct_label,
+                      sizeof match->wc.masks.ct_label)) {
+        ovs_u128 tmp_u128;
+        uint32_t mask;
+
+        tmp_u128.u64.lo = match->flow.ct_label.u64.lo &
+                          match->wc.masks.ct_label.u64.lo;
+        tmp_u128.u64.hi = match->flow.ct_label.u64.hi &
+                          match->wc.masks.ct_label.u64.hi;
+        if (get_label_id(&tmp_u128, &act_resources->ct_match_label_id)) {
+            return -1;
         }
-    }
-    if (match->wc.masks.ct_label.u32[1]) {
-        if ((!match->flow.recirc_id &&
-             !(match->flow.ct_label.u32[1] & match->wc.masks.ct_label.u32[1])) ||
-            !add_pattern_match_reg_field(patterns, REG_FIELD_CT_LABEL1,
-                                         match->flow.ct_label.u32[1],
-                                         match->wc.masks.ct_label.u32[1])) {
-            consumed_masks->ct_label.u32[1] = 0;
-        }
-    }
-    if (match->wc.masks.ct_label.u32[2]) {
-        if ((!match->flow.recirc_id &&
-             !(match->flow.ct_label.u32[2] & match->wc.masks.ct_label.u32[2])) ||
-            !add_pattern_match_reg_field(patterns, REG_FIELD_CT_LABEL2,
-                                         match->flow.ct_label.u32[2],
-                                         match->wc.masks.ct_label.u32[2])) {
-            consumed_masks->ct_label.u32[2] = 0;
-        }
-    }
-    if (match->wc.masks.ct_label.u32[3]) {
-        if ((!match->flow.recirc_id &&
-             !(match->flow.ct_label.u32[3] & match->wc.masks.ct_label.u32[3])) ||
-            !add_pattern_match_reg_field(patterns, REG_FIELD_CT_LABEL3,
-                                         match->flow.ct_label.u32[3],
-                                         match->wc.masks.ct_label.u32[3])) {
-            consumed_masks->ct_label.u32[3] = 0;
+        mask = reg_fields[REG_FIELD_CT_LABEL_ID].mask;
+        if (!add_pattern_match_reg_field(patterns, REG_FIELD_CT_LABEL_ID,
+                                         act_resources->ct_match_label_id,
+                                         mask)) {
+            memset(&consumed_masks->ct_label,
+                   0, sizeof consumed_masks->ct_label);
         }
     }
 
@@ -3258,22 +3295,30 @@ parse_ct_actions(struct flow_actions *actions,
         } else if (nl_attr_type(cta) == OVS_CT_ATTR_LABELS) {
             const ovs_32aligned_u128 *key = nl_attr_get(cta);
             const ovs_32aligned_u128 *mask = key + 1;
+            ovs_u128 tmp_key, tmp_mask;
+            uint32_t set_mask;
 
-            if (mask->u32[0]) {
-                add_action_set_reg_field(actions, REG_FIELD_CT_LABEL0,
-                                         key->u32[0], mask->u32[0]);
+            tmp_key.u32[0] = key->u32[0];
+            tmp_key.u32[1] = key->u32[1];
+            tmp_key.u32[2] = key->u32[2];
+            tmp_key.u32[3] = key->u32[3];
+
+            tmp_mask.u32[0] = mask->u32[0];
+            tmp_mask.u32[1] = mask->u32[1];
+            tmp_mask.u32[2] = mask->u32[2];
+            tmp_mask.u32[3] = mask->u32[3];
+
+            tmp_key.u64.lo &= tmp_mask.u64.lo;
+            tmp_key.u64.hi &= tmp_mask.u64.hi;
+            if (get_label_id(&tmp_key, &act_resources->ct_action_label_id)) {
+                return -1;
             }
-            if (mask->u32[1]) {
-                add_action_set_reg_field(actions, REG_FIELD_CT_LABEL1,
-                                         key->u32[1], mask->u32[1]);
-            }
-            if (mask->u32[2]) {
-                add_action_set_reg_field(actions, REG_FIELD_CT_LABEL2,
-                                         key->u32[2], mask->u32[2]);
-            }
-            if (mask->u32[3]) {
-                add_action_set_reg_field(actions, REG_FIELD_CT_LABEL3,
-                                         key->u32[3], mask->u32[3]);
+            set_mask = reg_fields[REG_FIELD_CT_LABEL_ID].mask;
+            if (add_action_set_reg_field(actions, REG_FIELD_CT_LABEL_ID,
+                                         act_resources->ct_action_label_id,
+                                         set_mask)) {
+                VLOG_DBG_RL(&rl, "Could not create label id");
+                return -1;
             }
             ct_miss_ctx.label.u32[0] = key->u32[0];
             ct_miss_ctx.label.u32[1] = key->u32[1];
