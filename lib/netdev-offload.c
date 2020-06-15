@@ -265,13 +265,14 @@ netdev_flow_put(struct netdev *netdev, struct match *match,
 
 int
 netdev_hw_miss_packet_recover(struct netdev *netdev,
-                              struct dp_packet *packet)
+                              struct dp_packet *packet,
+                              uint8_t *skip_actions)
 {
     const struct netdev_flow_api *flow_api =
         ovsrcu_get(const struct netdev_flow_api *, &netdev->flow_api);
 
     return (flow_api && flow_api->hw_miss_packet_recover)
-            ? flow_api->hw_miss_packet_recover(netdev, packet)
+            ? flow_api->hw_miss_packet_recover(netdev, packet, skip_actions)
             : EOPNOTSUPP;
 }
 

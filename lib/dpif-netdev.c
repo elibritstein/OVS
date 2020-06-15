@@ -10671,7 +10671,7 @@ dp_netdev_hw_flow(const struct dp_netdev_pmd_thread *pmd,
     struct dp_netdev_rxq *rxq = pmd->ctx.last_rxq;
 
     if (rxq->hw_miss_api_supported) {
-        int err = netdev_hw_miss_packet_recover(rxq->port->netdev, packet);
+        int err = netdev_hw_miss_packet_recover(rxq->port->netdev, packet, NULL);
         if (err) {
             if (err != EOPNOTSUPP) {
                 COVERAGE_INC(datapath_drop_hw_miss_recover);
