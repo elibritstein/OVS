@@ -385,6 +385,7 @@ struct dp_offload_thread {
         struct cmap mark_to_flow;
         struct mov_avg_cma cma;
         struct mov_avg_ema ema;
+        atomic_uint64_t ct_conns;
     );
 };
 static struct dp_offload_thread *dp_offload_threads;
@@ -427,6 +428,7 @@ dp_netdev_offload_init(void)
         atomic_init(&thread->enqueued_item, 0);
         mov_avg_cma_init(&thread->cma);
         mov_avg_ema_init(&thread->ema, 100);
+        atomic_init(&thread->ct_conns, 0);
         ovs_thread_create("hw_offload", dp_netdev_flow_offload_main, thread);
     }
 
@@ -3098,6 +3100,7 @@ static void
 dp_offload_ct(struct dp_offload_thread_item *item)
 {
     struct ct_flow_offload_item *ct_offload = &item->data->ct_offload_item[0];
+    struct dp_offload_thread *ofl_thread;
     char *op;
     int ret;
     int dir;
@@ -3120,6 +3123,16 @@ dp_offload_ct(struct dp_offload_thread_item *item)
         VLOG_DBG("%s to %s ct flow "UUID_FMT,
                  ret == 0 ? "succeed" : "failed", op,
                  UUID_ARGS((struct uuid *) &ct_offload[dir].ufid));
+        if (ret) {
+            return;
+        }
+    }
+
+    ofl_thread = &dp_offload_threads[netdev_offload_thread_id()];
+    if (item->data->ct_offload_item[0].op == DP_NETDEV_FLOW_OFFLOAD_OP_ADD) {
+        atomic_count_inc64(&ofl_thread->ct_conns);
+    } else {
+        atomic_count_dec64(&ofl_thread->ct_conns);
     }
 }
 
@@ -4977,6 +4990,7 @@ dpif_netdev_offload_stats_get(struct dpif *dpif,
     enum {
         DP_NETDEV_HW_OFFLOADS_STATS_ENQUEUED,
         DP_NETDEV_HW_OFFLOADS_STATS_INSERTED,
+        DP_NETDEV_HW_OFFLOADS_STATS_CT_CONNS,
         DP_NETDEV_HW_OFFLOADS_STATS_LAT_CMA_MEAN,
         DP_NETDEV_HW_OFFLOADS_STATS_LAT_CMA_STDDEV,
         DP_NETDEV_HW_OFFLOADS_STATS_LAT_EMA_MEAN,
@@ -4990,6 +5004,8 @@ dpif_netdev_offload_stats_get(struct dpif *dpif,
             { "                Enqueued offloads", 0 },
         [DP_NETDEV_HW_OFFLOADS_STATS_INSERTED] =
             { "                Inserted offloads", 0 },
+        [DP_NETDEV_HW_OFFLOADS_STATS_CT_CONNS] =
+            { "                   CT connections", 0 },
         [DP_NETDEV_HW_OFFLOADS_STATS_LAT_CMA_MEAN] =
             { "  Cumulative Average latency (us)", 0 },
         [DP_NETDEV_HW_OFFLOADS_STATS_LAT_CMA_STDDEV] =
@@ -5042,6 +5058,8 @@ dpif_netdev_offload_stats_get(struct dpif *dpif,
         if (dp_offload_threads != NULL) {
             atomic_read_relaxed(&dp_offload_threads[tid].enqueued_item,
                                 &counts[DP_NETDEV_HW_OFFLOADS_STATS_ENQUEUED]);
+            atomic_read_relaxed(&dp_offload_threads[tid].ct_conns,
+                                &counts[DP_NETDEV_HW_OFFLOADS_STATS_CT_CONNS]);
 
             counts[DP_NETDEV_HW_OFFLOADS_STATS_LAT_CMA_MEAN] =
                 mov_avg_cma(&dp_offload_threads[tid].cma);
