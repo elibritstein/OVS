@@ -106,6 +106,20 @@ enum dp_packet_offload_mask {
 #define DP_PACKET_OL_RX_L4_CKSUM_MASK (DP_PACKET_OL_RX_L4_CKSUM_GOOD | \
                                        DP_PACKET_OL_RX_L4_CKSUM_BAD)
 
+#ifdef E2E_CACHE_ENABLED
+
+/* Types and macro definitions for e2e-cache. */
+
+#define E2E_CACHE_MAX_TRACE   (10u)
+
+enum e2e_cache_trace_flags {
+    E2E_CACHE_TRACE_FLAG_NONE        = 0x0u,
+    E2E_CACHE_TRACE_FLAG_CT          = 0x1u,
+    E2E_CACHE_TRACE_FLAG_OVERFLOW    = 0x2u,
+};
+
+#endif
+
 /* Buffer for holding packet data.  A dp_packet is automatically reallocated
  * as necessary if it grows too large for the available memory.
  * By default the packet type is set to Ethernet (PT_ETH).
@@ -139,6 +153,11 @@ struct dp_packet {
         struct pkt_metadata md;
         uint64_t data[DP_PACKET_CONTEXT_SIZE / 8];
     };
+#ifdef E2E_CACHE_ENABLED
+    uint32_t   e2e_trace_size;
+    uint32_t   e2e_trace_flags;
+    ovs_u128   e2e_trace[E2E_CACHE_MAX_TRACE];
+#endif
 };
 
 #if HAVE_AF_XDP
