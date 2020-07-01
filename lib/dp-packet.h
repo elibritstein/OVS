@@ -118,6 +118,20 @@ enum e2e_cache_trace_flags {
     E2E_CACHE_TRACE_FLAG_OVERFLOW    = 0x2u,
 };
 
+OVS_PACKED(
+struct e2e_cache_trace_info {
+    uint32_t num_elements;
+    uint32_t pad;
+    OVS_ALIGNED_VAR(sizeof(void *)) ovs_u128 ufids[E2E_CACHE_MAX_TRACE];
+});
+
+OVS_PACKED(
+struct e2e_cache_trace_message {
+    uint32_t num_elements;
+    uint32_t pad;
+    OVS_ALIGNED_VAR((sizeof(void *))) struct e2e_cache_trace_info data[0];
+});
+
 #endif
 
 /* Buffer for holding packet data.  A dp_packet is automatically reallocated
