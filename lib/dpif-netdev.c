@@ -8368,6 +8368,28 @@ packet_enqueue_to_flow_map(struct dp_packet *packet,
 }
 
 #ifdef E2E_CACHE_ENABLED
+
+struct e2e_cache_trace_message;
+
+struct e2e_cache_trace_msg_item {
+    struct ovs_list node;
+    struct e2e_cache_trace_message *msg;
+};
+
+struct e2e_cache_thread_msg_queues {
+    struct ovs_mutex mutex;
+    struct ovs_list trace_msg_list;
+    /* TODO: add other message queues here */
+    pthread_cond_t cond;
+};
+
+static struct e2e_cache_thread_msg_queues e2e_cache_thread_msg_queues = {
+    .mutex = OVS_MUTEX_INITIALIZER,
+    .trace_msg_list =
+            OVS_LIST_INITIALIZER(&e2e_cache_thread_msg_queues.trace_msg_list)
+};
+
+
 static inline void
 e2e_cache_trace_init(struct dp_packet *p)
 {
@@ -8388,10 +8410,72 @@ e2e_cache_trace_add_flow(struct dp_packet *p,
     p->e2e_trace[e2e_trace_size] = *ufid;
     p->e2e_trace_size = e2e_trace_size + 1;
 }
+
+OVS_UNUSED
+static inline int
+e2e_cache_trace_msg_enqueue(struct e2e_cache_trace_message *msg)
+{
+    struct e2e_cache_trace_msg_item *item;
+
+    item = (struct e2e_cache_trace_msg_item *) xmalloc(sizeof *item);
+    if (OVS_UNLIKELY(!item)) {
+        return -1;
+    }
+
+    item->msg = msg;
+
+    ovs_mutex_lock(&e2e_cache_thread_msg_queues.mutex);
+    ovs_list_push_back(&e2e_cache_thread_msg_queues.trace_msg_list,
+                       &item->node);
+    xpthread_cond_signal(&e2e_cache_thread_msg_queues.cond);
+    ovs_mutex_unlock(&e2e_cache_thread_msg_queues.mutex);
+
+    return 0;
+}
+
+OVS_UNUSED
+static inline struct e2e_cache_trace_message *
+e2e_cache_trace_msg_dequeue(void)
+{
+    struct ovs_list *list;
+    struct e2e_cache_trace_msg_item *trace_msg_item;
+    struct e2e_cache_trace_message *msg;
+
+    if (ovs_list_is_empty(&e2e_cache_thread_msg_queues.trace_msg_list)) {
+        return NULL;
+    }
+    ovs_mutex_lock(&e2e_cache_thread_msg_queues.mutex);
+    list = ovs_list_pop_front(&e2e_cache_thread_msg_queues.trace_msg_list);
+    ovs_mutex_unlock(&e2e_cache_thread_msg_queues.mutex);
+
+    trace_msg_item = CONTAINER_OF(list, struct e2e_cache_trace_msg_item, node);
+    msg = trace_msg_item->msg;
+    free(trace_msg_item);
+
+    return msg;
+}
+
+OVS_UNUSED
+static inline void
+e2e_cache_thread_wait_on_queues(void)
+{
+    ovs_mutex_lock(&e2e_cache_thread_msg_queues.mutex);
+    if (ovs_list_is_empty(&e2e_cache_thread_msg_queues.trace_msg_list)) {
+        ovsrcu_quiesce_start();
+        ovs_mutex_cond_wait(&e2e_cache_thread_msg_queues.cond,
+                            &e2e_cache_thread_msg_queues.mutex);
+        ovsrcu_quiesce_end();
+    }
+    ovs_mutex_unlock(&e2e_cache_thread_msg_queues.mutex);
+}
+
 #else
 #define e2e_cache_trace_init(p) do { } while (0)
 #define e2e_cache_trace_add_flow(p, ufid) do { } while (0)
-#endif
+#define e2e_cache_trace_msg_enqueue(m) do { } while (0)
+#define e2e_cache_trace_msg_dequeue() do { } while (0)
+#define e2e_cache_thread_wait_on_queues() do { } while (0)
+#endif /* E2E_CACHE_ENABLED */
 
 /* SMC lookup function for a batch of packets.
  * By doing batching SMC lookup, we can use prefetch
