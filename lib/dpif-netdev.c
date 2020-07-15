@@ -8387,6 +8387,10 @@ static struct e2e_cache_thread_msg_queues e2e_cache_thread_msg_queues = {
             OVS_LIST_INITIALIZER(&e2e_cache_thread_msg_queues.trace_msg_list)
 };
 
+static struct ovsthread_once e2e_cache_thread_once
+    = OVSTHREAD_ONCE_INITIALIZER;
+
+static void *dp_netdev_e2e_cache_main(void *arg);
 
 static inline void
 e2e_cache_trace_init(struct dp_packet *p)
@@ -8430,7 +8434,6 @@ e2e_cache_trace_msg_enqueue(struct e2e_cache_trace_message *msg)
     return 0;
 }
 
-OVS_UNUSED
 static inline struct e2e_cache_trace_message *
 e2e_cache_trace_msg_dequeue(void)
 {
@@ -8452,7 +8455,6 @@ e2e_cache_trace_msg_dequeue(void)
     return msg;
 }
 
-OVS_UNUSED
 static inline void
 e2e_cache_thread_wait_on_queues(void)
 {
@@ -8474,6 +8476,12 @@ e2e_cache_dispatch_trace_message(struct dp_packet_batch *batch)
     struct dp_packet *packet;
     uint32_t num_elements;
     size_t buffer_size;
+
+    if (ovsthread_once_start(&e2e_cache_thread_once)) {
+        xpthread_cond_init(&e2e_cache_thread_msg_queues.cond, NULL);
+        ovs_thread_create("e2e_cache", dp_netdev_e2e_cache_main, NULL);
+        ovsthread_once_done(&e2e_cache_thread_once);
+    }
 
     buffer_size = sizeof(struct e2e_cache_trace_message) +
                          batch->count * sizeof(struct e2e_cache_trace_info);
@@ -8527,6 +8535,24 @@ out:
     free_cacheline(buffer);
 }
 
+static void *
+dp_netdev_e2e_cache_main(void *arg OVS_UNUSED)
+{
+    struct e2e_cache_trace_message *trace_msg;
+
+    for (;;) {
+        e2e_cache_thread_wait_on_queues();
+
+        trace_msg = e2e_cache_trace_msg_dequeue();
+        if (OVS_LIKELY(trace_msg)) {
+            /* TODO: process traces message */
+
+            free_cacheline((void *) trace_msg);
+        }
+    }
+
+    return NULL;
+}
 #else
 #define e2e_cache_trace_init(p) do { } while (0)
 #define e2e_cache_trace_add_flow(p, ufid) do { } while (0)
