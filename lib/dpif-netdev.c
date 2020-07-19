@@ -3338,6 +3338,9 @@ dp_netdev_flow_offload_main(void *arg)
     return NULL;
 }
 
+static int
+e2e_cache_flow_del(const ovs_u128 *ufid);
+
 static void
 queue_netdev_flow_del(struct dp_netdev_pmd_thread *pmd,
                       struct dp_netdev_flow *flow)
@@ -3348,12 +3351,16 @@ queue_netdev_flow_del(struct dp_netdev_pmd_thread *pmd,
         return;
     }
 
+    e2e_cache_flow_del(&flow->mega_ufid);
     offload = dp_netdev_alloc_flow_offload(pmd->dp, flow,
                                            DP_NETDEV_FLOW_OFFLOAD_OP_DEL);
     offload->timestamp = pmd->ctx.now;
     dp_netdev_offload_flow_enqueue(offload);
 }
 
+static int
+e2e_cache_flow_put(const ovs_u128 *ufid, struct match *match,
+                   const struct nlattr *actions, size_t actions_len);
 static void
 dp_netdev_offload_ct_enqueue(struct dp_offload_thread_item *item)
 {
@@ -3376,10 +3383,6 @@ dp_netdev_ct_offload_get_ufid(struct ct_flow_offload_item *offload,
     match.flow.in_port.odp_port = ODPP_NONE;
     dp_netdev_get_mega_ufid(&match, ufid);
 }
-
-static int
-e2e_cache_flow_put(const ovs_u128 *ufid, struct match *match,
-                   const struct nlattr *actions, size_t actions_len);
 
 static int
 dp_netdev_ct_e2e_add_cb(struct ct_flow_offload_item *offload,
@@ -3410,9 +3413,6 @@ dp_netdev_ct_offload_add_item(struct ct_flow_offload_item *ct_offload)
 
     dp_netdev_offload_ct_enqueue(item);
 }
-
-static int
-e2e_cache_flow_del(const ovs_u128 *ufid);
 
 static void
 dp_netdev_ct_offload_del_item(struct ct_flow_offload_item *ct_offload)
@@ -3534,6 +3534,7 @@ queue_netdev_flow_put(struct dp_netdev_pmd_thread *pmd,
         return;
     }
 
+    e2e_cache_flow_put(&flow->mega_ufid, match, actions, actions_len);
     item = dp_netdev_alloc_flow_offload(pmd->dp, flow, op);
     flow_offload = &item->data->flow;
     flow_offload->match = *match;
