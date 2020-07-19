@@ -3072,15 +3072,14 @@ dp_netdev_create_ct_actions(struct ofpbuf *buf,
 }
 
 static int
-dp_netdev_ct_offload_add(struct ct_flow_offload_item *ct_offload)
+dp_netdev_ct_offload_add_cb(struct ct_flow_offload_item *ct_offload,
+                            struct match *match, struct nlattr *actions,
+                            int actions_len)
 {
     struct dp_netdev *dp = ct_offload->dp;
     const char *dpif_type_str = dpif_normalize_type(dp->class->type);
     struct offload_info info = { .flow_mark = INVALID_FLOW_MARK, };
-    struct nlattr *actions;
     struct netdev *port;
-    struct match match;
-    struct ofpbuf buf;
     int ret;
 
     port = netdev_ports_get(ct_offload->odp_port, dpif_type_str);
@@ -3088,18 +3087,13 @@ dp_netdev_ct_offload_add(struct ct_flow_offload_item *ct_offload)
         return -1;
     }
 
-    dp_netdev_fill_ct_match(&match, ct_offload);
-    ofpbuf_init(&buf, 0);
-    dp_netdev_create_ct_actions(&buf, ct_offload);
-    actions = ofpbuf_at_assert(&buf, 0, sizeof(struct nlattr));
-
     ovs_rwlock_rdlock(&dp->port_rwlock);
     if (OVS_UNLIKELY(!VLOG_DROP_DBG((&upcall_rl)))) {
         struct ds ds = DS_EMPTY_INITIALIZER;
         struct ofpbuf key_buf, mask_buf;
         struct odp_flow_key_parms odp_parms = {
-            .flow = &match.flow,
-            .mask = &match.wc.masks,
+            .flow = &match->flow,
+            .mask = &match->wc.masks,
             .support = dp_netdev_support,
         };
 
@@ -3117,7 +3111,7 @@ dp_netdev_ct_offload_add(struct ct_flow_offload_item *ct_offload)
                         mask_buf.data, mask_buf.size,
                         NULL, &ds, false);
         ds_put_cstr(&ds, ", actions:");
-        format_odp_actions(&ds, actions, buf.size, NULL);
+        format_odp_actions(&ds, actions, actions_len, NULL);
 
         VLOG_DBG("%s", ds_cstr(&ds));
 
@@ -3126,15 +3120,34 @@ dp_netdev_ct_offload_add(struct ct_flow_offload_item *ct_offload)
 
         ds_destroy(&ds);
     }
-    ret = netdev_flow_put(port, &match, actions, buf.size, &ct_offload->ufid,
+    ret = netdev_flow_put(port, match, actions, actions_len, &ct_offload->ufid,
                           &info, NULL);
-    /* A memory barrier that makes sure that the lines will be executed by
-     * order, and offload.dont_free won't be changed before offload.status is
-     * updated.
-     */
     *(ct_offload->status) = !ret;
     ovs_rwlock_unlock(&dp->port_rwlock);
     netdev_close(port);
+
+    return ret;
+}
+
+typedef int
+(*dp_netdev_ct_add_cb)(struct ct_flow_offload_item *ct_offload,
+                       struct match *match, struct nlattr *actions,
+                       int actions_len);
+
+static int
+dp_netdev_ct_add(struct ct_flow_offload_item *ct_offload,
+                 dp_netdev_ct_add_cb cb)
+{
+    struct nlattr *actions;
+    struct match match;
+    struct ofpbuf buf;
+    int ret;
+
+    dp_netdev_fill_ct_match(&match, ct_offload);
+    ofpbuf_init(&buf, 0);
+    dp_netdev_create_ct_actions(&buf, ct_offload);
+    actions = ofpbuf_at_assert(&buf, 0, sizeof(struct nlattr));
+    ret = cb(ct_offload, &match, actions, buf.size);
     ofpbuf_uninit(&buf);
 
     return ret;
@@ -3221,7 +3234,9 @@ dp_offload_ct(struct dp_offload_thread_item *item)
         switch (ct_offload[dir].op) {
         case DP_NETDEV_FLOW_OFFLOAD_OP_ADD:
             op = "add";
-            ret = dp_netdev_ct_offload_add(&ct_offload[dir]);
+            ret = dp_netdev_ct_add(&ct_offload[dir],
+                                   dp_netdev_ct_offload_add_cb);
+
             break;
         case DP_NETDEV_FLOW_OFFLOAD_OP_DEL:
             op = "delete";
