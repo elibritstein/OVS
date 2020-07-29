@@ -127,6 +127,7 @@ struct e2e_cache_trace_info {
 
 OVS_PACKED(
 struct e2e_cache_trace_message {
+    void *dp;
     uint32_t num_elements;
     uint32_t pad;
     OVS_ALIGNED_VAR((sizeof(void *))) struct e2e_cache_trace_info data[0];
