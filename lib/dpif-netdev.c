@@ -3377,6 +3377,18 @@ dp_netdev_ct_offload_get_ufid(struct ct_flow_offload_item *offload,
     dp_netdev_get_mega_ufid(&match, ufid);
 }
 
+static int
+e2e_cache_flow_put(const ovs_u128 *ufid, struct match *match,
+                   const struct nlattr *actions, size_t actions_len);
+
+static int
+dp_netdev_ct_e2e_add_cb(struct ct_flow_offload_item *offload,
+                        struct match *match, struct nlattr *actions,
+                        int actions_len)
+{
+    return e2e_cache_flow_put(&offload->ufid, match, actions, actions_len);
+}
+
 static void
 dp_netdev_ct_offload_add_item(struct ct_flow_offload_item *ct_offload)
 {
@@ -3393,9 +3405,14 @@ dp_netdev_ct_offload_add_item(struct ct_flow_offload_item *ct_offload)
     item->data->ct_offload_item[0].op = DP_NETDEV_FLOW_OFFLOAD_OP_ADD;
     item->data->ct_offload_item[1] = ct_offload[1];
     item->data->ct_offload_item[1].op = DP_NETDEV_FLOW_OFFLOAD_OP_ADD;
+    dp_netdev_ct_add(&ct_offload[CT_DIR_INIT], dp_netdev_ct_e2e_add_cb);
+    dp_netdev_ct_add(&ct_offload[CT_DIR_REP], dp_netdev_ct_e2e_add_cb);
 
     dp_netdev_offload_ct_enqueue(item);
 }
+
+static int
+e2e_cache_flow_del(const ovs_u128 *ufid);
 
 static void
 dp_netdev_ct_offload_del_item(struct ct_flow_offload_item *ct_offload)
@@ -3409,6 +3426,8 @@ dp_netdev_ct_offload_del_item(struct ct_flow_offload_item *ct_offload)
     item->data->ct_offload_item[0].op = DP_NETDEV_FLOW_OFFLOAD_OP_DEL;
     item->data->ct_offload_item[1] = ct_offload[1];
     item->data->ct_offload_item[1].op = DP_NETDEV_FLOW_OFFLOAD_OP_DEL;
+    e2e_cache_flow_del(&ct_offload[CT_DIR_INIT].ufid);
+    e2e_cache_flow_del(&ct_offload[CT_DIR_REP].ufid);
 
     dp_netdev_offload_ct_enqueue(item);
 }
@@ -8695,7 +8714,6 @@ e2e_cache_flow_db_put(struct e2e_cache_ufid_to_flow_item *dp_flow_data)
     ovs_mutex_unlock(&ufid_to_flow_map_mutex);
 }
 
-OVS_UNUSED
 static int
 e2e_cache_flow_del(const ovs_u128 *ufid)
 {
@@ -8719,7 +8737,6 @@ e2e_cache_flow_del(const ovs_u128 *ufid)
     return 0;
 }
 
-OVS_UNUSED
 static int
 e2e_cache_flow_put(const ovs_u128 *ufid, struct match *match,
                    const struct nlattr *actions, size_t actions_len)
@@ -8941,7 +8958,6 @@ dp_netdev_e2e_cache_main(void *arg OVS_UNUSED)
 #define e2e_cache_trace_msg_dequeue() do { } while (0)
 #define e2e_cache_thread_wait_on_queues() do { } while (0)
 #define e2e_cache_dispatch_trace_message(b) do { } while (0)
-OVS_UNUSED
 static int
 e2e_cache_flow_put(const ovs_u128 *ufid OVS_UNUSED,
                    struct match *match OVS_UNUSED,
@@ -8950,7 +8966,6 @@ e2e_cache_flow_put(const ovs_u128 *ufid OVS_UNUSED,
 {
     return 0;
 }
-OVS_UNUSED
 static int
 e2e_cache_flow_del(const ovs_u128 *ufid OVS_UNUSED)
 {
