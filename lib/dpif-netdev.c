@@ -8614,7 +8614,7 @@ dpif_netdev_e2e_stats_format(struct e2e_cache_stats *stats, struct ds *s)
                   atomic_count_get64(&stats->del_flow_msgs));
     ds_put_format(s, "\n%-45s : %"PRIu64"", "successfully merged flows",
                   atomic_count_get64(&stats->succ_merged_flows));
-    ds_put_format(s, "\n%-45s : %"PRIu64"", "rejected flows",
+    ds_put_format(s, "\n%-45s : %"PRIu64"", "flows rejected by the merge engine",
                   atomic_count_get64(&stats->merge_rej_flows));
     ds_put_format(s, "\n%-45s : %"PRIu64"", "add merged flows messages to HW",
                   atomic_count_get64(&stats->add_merged_flow_hw));
@@ -8624,10 +8624,38 @@ dpif_netdev_e2e_stats_format(struct e2e_cache_stats *stats, struct ds *s)
                   atomic_count_get64(&stats->merged_flows_in_cache));
 }
 
+static void
+dpif_netdev_e2e_flows_format(struct hmap *portno_names,
+                             struct ofputil_port_map *port_map, struct ds *s)
+{
+    struct e2e_cache_ufid_to_flow_item *data;
+    struct dpif_flow_stats merged_stats;
+
+    HMAP_FOR_EACH (data, node.in_hmap, &merged_flows_map) {
+        odp_format_ufid(&data->ufid, s);
+        ds_put_cstr(s, ", ");
+        match_format(&data->match, port_map, s, OFP_DEFAULT_PRIORITY);
+        get_dpif_flow_status(data->dp, data->offloaded_flow, &merged_stats, NULL);
+        ds_put_format(s, ", packets:%"PRIu64", bytes:%"PRIu64"",
+                      merged_stats.n_packets, merged_stats.n_bytes);
+        ds_put_cstr(s, ", actions:");
+        format_odp_actions(s, data->actions, data->actions_size, portno_names);
+        ds_put_cstr(s, "\n");
+    }
+}
+
 static int
 dpif_netdev_dump_e2e_stats(struct ds *s)
 {
     dpif_netdev_e2e_stats_format(&e2e_stats, s);
+    return 0;
+}
+
+static int
+dpif_netdev_dump_e2e_flows(struct hmap *portno_names,
+                           struct ofputil_port_map *port_map, struct ds *s)
+{
+    dpif_netdev_e2e_flows_format(portno_names, port_map, s);
     return 0;
 }
 
@@ -9193,10 +9221,16 @@ e2e_cache_merged_flow_offload_put(struct dp_netdev *dp,
 
     flow_offload = &offload_item->data->flow;
     memcpy(&flow_offload->match, &mflow->match, sizeof mflow->match);
-    flow_offload->actions = mflow->actions;
+    flow_offload->actions = xmalloc(mflow->actions_size);
+    if (OVS_UNLIKELY(!flow_offload->actions)) {
+        return -1;
+    }
+
+    memcpy(flow_offload->actions, mflow->actions, mflow->actions_size);
     flow_offload->actions_len = mflow->actions_size;
 
     err = dp_netdev_flow_offload_put(offload_item);
+    free(flow_offload->actions);
     free(offload_item);
     if (OVS_UNLIKELY(err != 0)) {
         dp_netdev_flow_free(flow);
@@ -11043,7 +11077,7 @@ const struct dpif_class dpif_netdev_class = {
     dpif_netdev_flow_dump_thread_destroy,
     dpif_netdev_flow_dump_next,
     dpif_netdev_dump_e2e_stats,
-    NULL,                       /* dump e2e flows */
+    dpif_netdev_dump_e2e_flows,
     dpif_netdev_operate,
     dpif_netdev_offload_stats_get,
     NULL,                       /* recv_set */
