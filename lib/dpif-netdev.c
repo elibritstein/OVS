@@ -8719,6 +8719,9 @@ e2e_cache_merged_flow_db_del(struct e2e_cache_ufid_to_flow_item *dp_flow_data)
     e2e_cache_flow_free(dp_flow_data);
 }
 
+static int
+e2e_cache_merged_flow_offload_del(struct e2e_cache_ufid_to_flow_item *mflow);
+
 static inline int
 e2e_cache_merged_flow_db_put(struct e2e_cache_ufid_to_flow_item *merged_flow)
 {
@@ -8738,6 +8741,7 @@ e2e_cache_merged_flow_db_put(struct e2e_cache_ufid_to_flow_item *merged_flow)
      * before inserting the updated one.
      */
     if (node) {
+        e2e_cache_merged_flow_offload_del(node);
         e2e_cache_merged_flow_db_del(node);
     }
 
@@ -8807,6 +8811,7 @@ e2e_cache_del_merged_flows(struct ovs_list *merged_flows_to_delete)
         merged_flow =
             CONTAINER_OF(l, struct e2e_cache_ufid_to_flow_item, node.in_list);
 
+        e2e_cache_merged_flow_offload_del(merged_flow);
         e2e_cache_flow_free(merged_flow);
     }
 }
@@ -9067,7 +9072,6 @@ e2e_cache_populate_offload_item(struct dp_offload_thread_item *offload_item,
     flow_offload->is_e2e_cache_flow = true;
 }
 
-OVS_UNUSED
 static int
 e2e_cache_merged_flow_offload_del(struct e2e_cache_ufid_to_flow_item *mflow)
 {
