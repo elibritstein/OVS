@@ -5444,19 +5444,7 @@ dpif_netdev_set_config(struct dpif *dpif, const struct smap *other_config)
         pmd_rxq_assign = "cycles";
     }
 
-#ifdef E2E_CACHE_ENABLED
-    bool e2e_enable = smap_get_bool(other_config, "e2e-enable", true);
-    if (e2e_enable != e2e_cache_enabled) {
-        e2e_cache_enabled = e2e_enable;
-        if (e2e_enable) {
-            VLOG_INFO("E2E cache is enabled");
-        } else {
-            VLOG_INFO("E2E cache is disabled");
-        }
-    }
-#else
-    e2e_cache_enabled = false;
-#endif
+    e2e_cache_enabled = netdev_is_e2e_cache_enabled();
 
     if (dp->pmd_rxq_assign_type != pmd_rxq_assign_type) {
         dp->pmd_rxq_assign_type = pmd_rxq_assign_type;
