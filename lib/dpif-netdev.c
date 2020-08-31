@@ -9081,7 +9081,7 @@ e2e_cache_dispatch_trace_message(struct dp_netdev *dp,
     }
 
     buffer_size = sizeof(struct e2e_cache_trace_message) +
-                         batch->count * sizeof(struct e2e_cache_trace_info);
+                         2 * batch->count * sizeof(struct e2e_cache_trace_info);
 
     buffer = (struct e2e_cache_trace_message *) xmalloc_cacheline(buffer_size);
     if (OVS_UNLIKELY(!buffer)) {
@@ -9093,12 +9093,32 @@ e2e_cache_dispatch_trace_message(struct dp_netdev *dp,
 
     DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
         uint32_t e2e_trace_size = packet->e2e_trace_size;
+        ovs_u128 *e2e_trace = &packet->e2e_trace[0];
 
         /* Don't send "partial" traces due to overflow of the trace storage */
         if (OVS_UNLIKELY(packet->e2e_trace_flags &
                          E2E_CACHE_TRACE_FLAG_OVERFLOW)) {
             atomic_count_inc64(&e2e_stats.discarded_msgs);
             continue;
+        }
+        /* In case the packet had tnl_pop, we split the trace to the tnl_pop
+         * ufid (the 1st one in the trace), and the rest of the trace,
+         * representing the path of the packet with the virtual port. Once the
+         * tnl_pop flow is offloaded, we will get only the virtual port path.
+         */
+        if (packet->e2e_trace_flags & E2E_CACHE_TRACE_FLAG_TNL_POP) {
+            cur_trace_info->num_elements = 1;
+
+            memcpy(&cur_trace_info->ufids[0], e2e_trace, sizeof *e2e_trace);
+
+            e2e_trace_size--;
+            e2e_trace++;
+            num_elements++;
+            cur_trace_info++;
+            packet->e2e_trace_flags &= ~E2E_CACHE_TRACE_FLAG_TNL_POP;
+            if (!(packet->e2e_trace_flags & E2E_CACHE_TRACE_FLAG_CT)) {
+                continue;
+            }
         }
         /* Send only traces for packet that passed conntrack */
         if (!(packet->e2e_trace_flags & E2E_CACHE_TRACE_FLAG_CT)) {
@@ -9108,8 +9128,8 @@ e2e_cache_dispatch_trace_message(struct dp_netdev *dp,
 
         cur_trace_info->num_elements = e2e_trace_size;
 
-        memcpy(&cur_trace_info->ufids[0], &packet->e2e_trace[0],
-               e2e_trace_size * sizeof packet->e2e_trace[0]);
+        memcpy(&cur_trace_info->ufids[0], e2e_trace,
+               e2e_trace_size * sizeof *e2e_trace);
 
         num_elements++;
         cur_trace_info++;
@@ -9132,6 +9152,12 @@ e2e_cache_dispatch_trace_message(struct dp_netdev *dp,
 
 out:
     free_cacheline(buffer);
+}
+
+static void
+e2e_cache_trace_tnl_pop(struct dp_packet *packet)
+{
+    packet->e2e_trace_flags |= E2E_CACHE_TRACE_FLAG_TNL_POP;
 }
 
 static int
@@ -9411,6 +9437,7 @@ dp_netdev_e2e_cache_main(void *arg OVS_UNUSED)
 #define e2e_cache_trace_msg_dequeue() do { } while (0)
 #define e2e_cache_thread_wait_on_queues() do { } while (0)
 #define e2e_cache_dispatch_trace_message(d, b) do { } while (0)
+#define e2e_cache_trace_tnl_pop(p) do { } while (0)
 OVS_UNUSED
 static int
 e2e_cache_flow_put(const ovs_u128 *ufid OVS_UNUSED,
@@ -10377,6 +10404,9 @@ dp_execute_cb(void *aux_, struct dp_packet_batch *packets_,
 
                 struct dp_packet *packet;
                 DP_PACKET_BATCH_FOR_EACH (i, packet, packets_) {
+                    if (e2e_cache_enabled) {
+                        e2e_cache_trace_tnl_pop(packet);
+                    }
                     packet->md.in_port.odp_port = portno;
                 }
 

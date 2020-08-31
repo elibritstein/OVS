@@ -116,6 +116,7 @@ enum e2e_cache_trace_flags {
     E2E_CACHE_TRACE_FLAG_NONE        = 0x0u,
     E2E_CACHE_TRACE_FLAG_CT          = 0x1u,
     E2E_CACHE_TRACE_FLAG_OVERFLOW    = 0x2u,
+    E2E_CACHE_TRACE_FLAG_TNL_POP     = 0x4u,
 };
 
 OVS_PACKED(
