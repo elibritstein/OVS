@@ -822,6 +822,7 @@ static struct reg_field reg_fields[] = {
 };
 
 struct table_id_data {
+    struct netdev *netdev;
     odp_port_t vport;
     uint32_t recirc_id;
 };
@@ -831,8 +832,9 @@ dump_table_id(struct ds *s, void *data)
 {
     struct table_id_data *table_id_data = data;
 
-    ds_put_format(s, "vport=%"PRIu32", recirc_id=%"PRIu32,
-                  table_id_data->vport, table_id_data->recirc_id);
+    ds_put_format(s, "%s, vport=%"PRIu32", recirc_id=%"PRIu32,
+                  netdev_get_name(table_id_data->netdev), table_id_data->vport,
+                  table_id_data->recirc_id);
     return s;
 }
 
@@ -988,6 +990,7 @@ put_zone_id(uint32_t zone_id)
 #define CT_TABLE_ID      0xfc000000
 #define CTNAT_TABLE_ID   0xfc100000
 #define POSTCT_TABLE_ID  0xfd000000
+#define E2E_BASE_TABLE_ID  0xfe000000
 
 #define MIN_TABLE_ID     1
 #define MAX_TABLE_ID     0xf0000000
@@ -1034,6 +1037,59 @@ table_id_free(uint32_t id)
     id_fpool_free_id(table_id_pool, tid, id);
 }
 
+struct table_id_ctx_priv {
+    struct netdev *netdev;
+    struct rte_flow *miss_flow;
+};
+
+static int
+get_table_id(odp_port_t vport,
+             uint32_t recirc_id,
+             struct netdev *physdev,
+             bool is_e2e_cache,
+             uint32_t *table_id);
+
+static int
+table_id_ctx_ref(void *priv_, void *priv_arg_, uint32_t table_id)
+{
+    struct table_id_data *priv_arg = priv_arg_;
+    struct table_id_ctx_priv *priv = priv_;
+    uint32_t e2e_table_id;
+
+    priv->netdev = NULL;
+
+    if (!netdev_is_e2e_cache_enabled() || priv_arg->recirc_id != 0) {
+       return 0;
+    }
+
+    if (get_table_id(priv_arg->vport, 0, priv_arg->netdev, true,
+                     &e2e_table_id)) {
+        return -1;
+    }
+    priv->netdev = netdev_ref(priv_arg->netdev);
+    priv->miss_flow = add_miss_flow(priv->netdev, e2e_table_id, table_id, 0);
+
+    if (priv->miss_flow == NULL) {
+        priv->netdev = NULL;
+        netdev_close(priv->netdev);
+        return -1;
+    }
+    return 0;
+}
+
+static void
+table_id_ctx_unref(void *priv_)
+{
+    struct table_id_ctx_priv *priv = priv_;
+
+    if (!netdev_is_e2e_cache_enabled() || !priv->netdev) {
+       return;
+    }
+
+    netdev_offload_dpdk_destroy_flow(priv->netdev, priv->miss_flow, NULL);
+    netdev_close(priv->netdev);
+}
+
 static struct context_metadata table_id_md = {
     .name = "table_id",
     .dump_context_data = dump_table_id,
@@ -1043,12 +1099,20 @@ static struct context_metadata table_id_md = {
     .id_alloc = table_id_alloc,
     .id_free = table_id_free,
     .data_size = sizeof(struct table_id_data),
+    .priv_size = sizeof(struct table_id_ctx_priv),
+    .priv_ref = table_id_ctx_ref,
+    .priv_unref = table_id_ctx_unref,
 };
 
 static int
-get_table_id(odp_port_t vport, uint32_t recirc_id, uint32_t *table_id)
+get_table_id(odp_port_t vport,
+             uint32_t recirc_id,
+             struct netdev *physdev,
+             bool is_e2e_cache,
+             uint32_t *table_id)
 {
     struct table_id_data table_id_data = {
+        .netdev = physdev,
         .vport = vport,
         .recirc_id = recirc_id,
     };
@@ -1056,18 +1120,27 @@ get_table_id(odp_port_t vport, uint32_t recirc_id, uint32_t *table_id)
         .data = &table_id_data,
     };
 
-    if (vport == ODPP_NONE && recirc_id == 0) {
+    if (vport == ODPP_NONE && recirc_id == 0 &&
+        !(netdev_is_e2e_cache_enabled() && !is_e2e_cache)) {
         *table_id = 0;
         return 0;
     }
 
-    return get_context_data_id_by_data(&table_id_md, &table_id_context, NULL,
-                                       table_id);
+    if (is_e2e_cache) {
+        *table_id = E2E_BASE_TABLE_ID | vport;
+        return 0;
+    }
+
+    return get_context_data_id_by_data(&table_id_md, &table_id_context,
+                                       &table_id_data, table_id);
 }
 
 static void
 put_table_id(uint32_t table_id)
 {
+    if (table_id > MAX_TABLE_ID) {
+        return;
+    }
     put_context_data_by_id(&table_id_md, table_id);
 }
 
@@ -2088,6 +2161,7 @@ struct act_vars {
     struct flow_tnl *tnl_key;
     struct flow_tnl tnl_mask;
     uint32_t ctid;
+    bool is_e2e_cache;
 };
 
 static struct rte_flow *
@@ -2765,6 +2839,7 @@ parse_flow_match(struct netdev *netdev,
 #endif
 
     if (get_table_id(act_vars->vport, match->flow.recirc_id,
+                     patterns->physdev, act_vars->is_e2e_cache,
                      &act_resources->self_table_id)) {
         return -1;
     }
@@ -3572,7 +3647,8 @@ static int OVS_UNUSED
 add_tnl_pop_action(struct netdev *netdev,
                    struct flow_actions *actions,
                    const struct nlattr *nla,
-                   struct act_resources *act_resources)
+                   struct act_resources *act_resources,
+                   struct act_vars *act_vars)
 {
     struct flow_miss_ctx miss_ctx;
     odp_port_t port;
@@ -3581,10 +3657,12 @@ add_tnl_pop_action(struct netdev *netdev,
     miss_ctx.vport = port;
     miss_ctx.recirc_id = 0;
     memset(&miss_ctx.tnl, 0, sizeof miss_ctx.tnl);
-    if (get_table_id(port, 0, &act_resources->next_table_id)) {
+    if (get_table_id(port, 0, netdev, act_vars->is_e2e_cache,
+                     &act_resources->next_table_id)) {
         return -1;
     }
-    if (get_flow_miss_ctx_id(&miss_ctx, netdev, act_resources->next_table_id,
+    if (!act_vars->is_e2e_cache &&
+        get_flow_miss_ctx_id(&miss_ctx, netdev, act_resources->next_table_id,
                              &act_resources->flow_miss_ctx_id)) {
         return -1;
     }
@@ -3610,10 +3688,12 @@ add_recirc_action(struct netdev *netdev,
         memset(&miss_ctx.tnl, 0, sizeof miss_ctx.tnl);
     }
     if (get_table_id(act_vars->vport, miss_ctx.recirc_id,
-        &act_resources->next_table_id)) {
+                     netdev, act_vars->is_e2e_cache,
+                     &act_resources->next_table_id)) {
         return -1;
     }
-    if (get_flow_miss_ctx_id(&miss_ctx, netdev, act_resources->next_table_id,
+    if (!act_vars->is_e2e_cache &&
+        get_flow_miss_ctx_id(&miss_ctx, netdev, act_resources->next_table_id,
                              &act_resources->flow_miss_ctx_id)) {
         return -1;
     }
@@ -3994,7 +4074,8 @@ parse_flow_actions(struct netdev *netdev,
             }
 #ifdef ALLOW_EXPERIMENTAL_API /* Packet restoration API required. */
         } else if (nl_attr_type(nla) == OVS_ACTION_ATTR_TUNNEL_POP) {
-            if (add_tnl_pop_action(netdev, actions, nla, act_resources)) {
+            if (add_tnl_pop_action(netdev, actions, nla, act_resources,
+                                   act_vars)) {
                 return -1;
             }
 #endif
@@ -4084,6 +4165,7 @@ netdev_offload_dpdk_add_flow(struct netdev *netdev,
     struct flow_item flow_item;
     int ret;
 
+    act_vars.is_e2e_cache = info->is_e2e_cache_flow;
     ret = parse_flow_match(netdev, info->orig_in_port, &patterns, match,
                            &act_resources, &act_vars);
     if (ret) {
