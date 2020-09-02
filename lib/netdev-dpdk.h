@@ -147,6 +147,20 @@ netdev_dpdk_rte_flow_tunnel_item_release(
 
 #endif /* ALLOW_EXPERIMENTAL_API */
 
+struct rte_flow_action_handle *
+netdev_dpdk_indirect_action_create(struct netdev *,
+                                   const struct rte_flow_action *,
+                                   struct rte_flow_error *);
+int
+netdev_dpdk_indirect_action_destroy(struct netdev *,
+                                    struct rte_flow_action_handle *,
+                                    struct rte_flow_error *);
+int
+netdev_dpdk_indirect_action_query(struct netdev *,
+                                  struct rte_flow_action_handle *,
+                                  void *,
+                                  struct rte_flow_error *);
+
 #else
 
 static inline void
