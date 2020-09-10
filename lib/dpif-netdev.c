@@ -407,11 +407,14 @@ dp_netdev_ct_offload_del_item(struct ct_flow_offload_item *ct_offload);
 static bool
 dp_netdev_ct_offload_active(struct ct_flow_offload_item *offload,
                             long long now);
+static void
+dp_netdev_ct_offload_e2e_add(struct ct_flow_offload_item *offload);
 static struct conntrack_offload_class dpif_ct_offload_class = {
     .conn_get_ufid = dp_netdev_ct_offload_get_ufid,
     .conn_add = dp_netdev_ct_offload_add_item,
     .conn_del = dp_netdev_ct_offload_del_item,
     .conn_active = dp_netdev_ct_offload_active,
+    .conn_e2e_add = dp_netdev_ct_offload_e2e_add,
 };
 
 static void
@@ -3466,8 +3469,6 @@ dp_netdev_ct_offload_add_item(struct ct_flow_offload_item *ct_offload)
     item->data->ct_offload_item[0].op = DP_NETDEV_FLOW_OFFLOAD_OP_ADD;
     item->data->ct_offload_item[1] = ct_offload[1];
     item->data->ct_offload_item[1].op = DP_NETDEV_FLOW_OFFLOAD_OP_ADD;
-    dp_netdev_ct_add(&ct_offload[CT_DIR_INIT], dp_netdev_ct_e2e_add_cb);
-    dp_netdev_ct_add(&ct_offload[CT_DIR_REP], dp_netdev_ct_e2e_add_cb);
 
     dp_netdev_offload_ct_enqueue(item);
 }
@@ -3512,6 +3513,12 @@ dp_netdev_ct_offload_active(struct ct_flow_offload_item *offload,
     }
 
     return stats.used >= now;
+}
+
+static void
+dp_netdev_ct_offload_e2e_add(struct ct_flow_offload_item *offload)
+{
+    dp_netdev_ct_add(offload, dp_netdev_ct_e2e_add_cb);
 }
 
 static void
