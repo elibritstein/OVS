@@ -130,6 +130,8 @@ int netdev_flow_get(struct netdev *, struct match *, struct nlattr **actions,
 int netdev_flow_del(struct netdev *, const ovs_u128 *,
                     struct dpif_flow_stats *);
 int netdev_init_flow_api(struct netdev *);
+int netdev_counter_query(struct netdev *, uintptr_t, long long, long long,
+                         struct dpif_flow_stats *);
 void netdev_uninit_flow_api(struct netdev *);
 uint32_t netdev_get_block_id(struct netdev *);
 int netdev_get_hw_info(struct netdev *, int);

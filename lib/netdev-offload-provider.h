@@ -100,6 +100,11 @@ struct netdev_flow_api {
 
     /* Uninitializes the netdev flow api. */
     void (*uninit_flow_api)(struct netdev *);
+
+    /* Queries a counter object. */
+    int (*counter_query)(struct netdev *, uintptr_t, long long, long long,
+                         struct dpif_flow_stats *);
+
 };
 
 int netdev_register_flow_api_provider(const struct netdev_flow_api *);
