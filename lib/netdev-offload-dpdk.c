@@ -1464,7 +1464,6 @@ static struct context_metadata shared_age_md = {
     .priv_size = sizeof(struct shared_age_ctx),
 };
 
-OVS_UNUSED
 static struct shared_age_ctx **
 get_shared_age_ctx(struct netdev *netdev,
                    uintptr_t app_counter_id,
@@ -1542,7 +1541,6 @@ context_data_unref(struct context_data *data)
     free(data);
 }
 
-OVS_UNUSED
 static void
 put_shared_age_ctx(struct shared_age_ctx **pctx)
 {
@@ -4740,6 +4738,38 @@ netdev_offload_dpdk_get_n_flows(struct netdev *netdev,
     return 0;
 }
 
+static int
+netdev_offload_dpdk_counter_query(struct netdev *netdev,
+                                  uintptr_t app_counter_id,
+                                  long long now,
+                                  long long prev_now,
+                                  struct dpif_flow_stats *stats)
+{
+    struct rte_flow_query_age query_age;
+    struct shared_age_ctx **pctx, *ctx;
+    struct rte_flow_error error;
+    int ret;
+
+    memset(stats, 0, sizeof *stats);
+
+    pctx = get_shared_age_ctx(netdev, app_counter_id, false);
+    if (pctx == NULL) {
+        VLOG_ERR_RL(&rl, "Could not get shared age ctx for "
+                    "app_counter_id=0x%"PRIxPTR, app_counter_id);
+        return -1;
+    }
+    ctx = *pctx;
+
+    ret = netdev_dpdk_indirect_action_query(ctx->netdev, ctx->act_hdl,
+                                            &query_age, &error);
+    if (!ret && query_age.sec_since_last_hit_valid &&
+        (query_age.sec_since_last_hit * 1000) <= (now - prev_now)) {
+        stats->used = now;
+    }
+    put_shared_age_ctx(pctx);
+    return ret;
+}
+
 const struct netdev_flow_api netdev_offload_dpdk = {
     .type = "dpdk_flow_api",
     .flow_put = netdev_offload_dpdk_flow_put,
@@ -4750,4 +4780,5 @@ const struct netdev_flow_api netdev_offload_dpdk = {
     .flow_flush = netdev_offload_dpdk_flow_flush,
     .hw_miss_packet_recover = netdev_offload_dpdk_hw_miss_packet_recover,
     .flow_get_n_flows = netdev_offload_dpdk_get_n_flows,
+    .counter_query = netdev_offload_dpdk_counter_query,
 };
