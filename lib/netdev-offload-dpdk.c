@@ -74,6 +74,7 @@ struct act_resources {
     uint32_t ct_action_zone_id;
     uint32_t ct_match_label_id;
     uint32_t ct_action_label_id;
+    struct shared_age_ctx **pshared_age_ctx;
 };
 
 #define NUM_RTE_FLOWS_PER_PORT 2
@@ -1593,6 +1594,7 @@ put_action_resources(struct act_resources *act_resources)
     put_zone_id(act_resources->ct_action_zone_id);
     put_label_id(act_resources->ct_match_label_id);
     put_label_id(act_resources->ct_action_label_id);
+    put_shared_age_ctx(act_resources->pshared_age_ctx);
 }
 
 static int
@@ -2246,6 +2248,11 @@ dump_flow_action(struct ds *s, struct ds *s_extra,
                           meta->mask);
         }
         ds_put_cstr(s, "/ ");
+    } else if (actions->type == RTE_FLOW_ACTION_TYPE_INDIRECT) {
+        ds_put_format(s, "indirect %p / ", actions->conf);
+        ds_put_format(s_extra, "flow indirect_action 0 create ingress transfer"
+                      " action_id %p action age timeout 0xffffff / end;",
+                      actions->conf);
     } else {
         ds_put_format(s, "unknown rte flow action (%d)\n", actions->type);
     }
@@ -2289,6 +2296,8 @@ struct act_vars {
     struct flow_tnl tnl_mask;
     uint32_t ctid;
     bool is_e2e_cache;
+    uint32_t app_flows_counter;
+    uint32_t app_ct_counter;
 };
 
 static struct rte_flow *
@@ -2478,6 +2487,9 @@ free_flow_actions(struct flow_actions *actions, bool free_confs)
                             error.type, error.message);
             }
             i += actions->tnl_pmd_actions_cnt - 1;
+            continue;
+        }
+        if (actions->actions[i].type == RTE_FLOW_ACTION_TYPE_INDIRECT) {
             continue;
         }
         if (actions->actions[i].conf) {
@@ -3377,12 +3389,32 @@ netdev_offload_dpdk_mark_rss(struct flow_patterns *patterns,
     return flow;
 }
 
-static void
-add_count_action(struct flow_actions *actions)
+static int
+add_count_action(struct netdev *netdev,
+                 struct flow_actions *actions,
+                 struct act_resources *act_resources,
+                 struct act_vars *act_vars)
 {
     struct rte_flow_action_count *count = xzalloc(sizeof *count);
 
+    if (act_vars->is_e2e_cache && act_vars->app_flows_counter) {
+        count->shared = 1;
+        count->id = act_vars->app_flows_counter;
+    }
     add_flow_action(actions, RTE_FLOW_ACTION_TYPE_COUNT, count);
+
+    if (act_vars->is_e2e_cache && act_vars->app_ct_counter) {
+        struct shared_age_ctx **pctx;
+
+        pctx = get_shared_age_ctx(netdev, act_vars->app_ct_counter, true);
+        if (!pctx) {
+            return -1;
+        }
+        act_resources->pshared_age_ctx = pctx;
+        add_flow_action(actions, RTE_FLOW_ACTION_TYPE_INDIRECT, (*pctx)->act_hdl);
+    }
+
+    return 0;
 }
 
 static int
@@ -4164,7 +4196,9 @@ parse_flow_actions(struct netdev *netdev,
         act_vars->recirc_id == 0) {
         add_vxlan_decap_action(actions);
     }
-    add_count_action(actions);
+    if (add_count_action(netdev, actions, act_resources, act_vars)) {
+        return -1;
+    }
     NL_ATTR_FOR_EACH_UNSAFE (nla, left, nl_actions, nl_actions_len) {
         if (nl_attr_type(nla) == OVS_ACTION_ATTR_OUTPUT) {
             if (add_output_action(netdev, actions, nla)) {
@@ -4293,6 +4327,8 @@ netdev_offload_dpdk_add_flow(struct netdev *netdev,
     int ret;
 
     act_vars.is_e2e_cache = info->is_e2e_cache_flow;
+    act_vars.app_flows_counter = info->flows_counter;
+    act_vars.app_ct_counter = info->ct_counter;
     ret = parse_flow_match(netdev, info->orig_in_port, &patterns, match,
                            &act_resources, &act_vars);
     if (ret) {

@@ -90,6 +90,9 @@ struct offload_info {
     odp_port_t orig_in_port; /* Originating in_port for tnl flows. */
     /* Indicates if flow is for e2e cache*/
     bool is_e2e_cache_flow;
+
+    uint32_t flows_counter;
+    uint32_t ct_counter;
 };
 
 DECLARE_EXTERN_PER_THREAD_DATA(unsigned int, netdev_offload_thread_id);
