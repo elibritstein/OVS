@@ -23,6 +23,7 @@
 
 #include "cmap.h"
 #include "dpif-netdev.h"
+#include "id-fpool.h"
 #include "netdev-offload-provider.h"
 #include "netdev-provider.h"
 #include "netdev-vport.h"
@@ -32,7 +33,6 @@
 #include "ovs-rcu.h"
 #include "packets.h"
 #include "uuid.h"
-#include "id-pool.h"
 #include "odp-util.h"
 
 VLOG_DEFINE_THIS_MODULE(netdev_offload_dpdk);
@@ -719,18 +719,24 @@ dump_label_id(struct ds *s, void *data)
 #define MIN_LABEL_ID     1
 #define MAX_LABEL_ID     (reg_fields[REG_FIELD_CT_LABEL_ID].mask - 1)
 
-static struct id_pool *label_id_pool = NULL;
+static struct id_fpool *label_id_pool = NULL;
 
 static uint32_t
 label_id_alloc(void)
 {
+    static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
+    unsigned int tid = netdev_offload_thread_id();
     uint32_t label_id;
 
-    if (!label_id_pool) {
-        /* if not yet initialized, do it here */
-        label_id_pool = id_pool_create(MIN_LABEL_ID, MAX_LABEL_ID);
+    if (ovsthread_once_start(&init_once)) {
+        unsigned int nb_thread = netdev_offload_thread_nb();
+
+        /* Haven't initiated yet, do it here */
+        label_id_pool = id_fpool_create(nb_thread, MIN_LABEL_ID, MAX_LABEL_ID);
+
+        ovsthread_once_done(&init_once);
     }
-    if (id_pool_alloc_id(label_id_pool, &label_id)) {
+    if (id_fpool_new_id(label_id_pool, tid, &label_id)) {
         return label_id;
     }
     return 0;
@@ -739,7 +745,9 @@ label_id_alloc(void)
 static void
 label_id_free(uint32_t label_id)
 {
-    id_pool_free_id(label_id_pool, label_id);
+    unsigned int tid = netdev_offload_thread_id();
+
+    id_fpool_free_id(label_id_pool, tid, label_id);
 }
 
 static struct context_metadata label_id_md = {
@@ -785,19 +793,24 @@ dump_zone_id(struct ds *s, void *data)
 #define MIN_ZONE_ID     1
 #define MAX_ZONE_ID     reg_fields[REG_FIELD_CT_ZONE].mask
 
-static struct id_pool *zone_id_pool = NULL;
+static struct id_fpool *zone_id_pool = NULL;
 
 static uint32_t
 zone_id_alloc(void)
 {
+    static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
+    unsigned int tid = netdev_offload_thread_id();
     uint32_t zone_id;
 
-    if (!zone_id_pool) {
-        /* if not yet initialized, do it here */
-        zone_id_pool = id_pool_create(MIN_ZONE_ID, MAX_ZONE_ID);
-    }
+    if (ovsthread_once_start(&init_once)) {
+        unsigned int nb_thread = netdev_offload_thread_nb();
 
-    if (id_pool_alloc_id(zone_id_pool, &zone_id)) {
+        /* Haven't initiated yet, do it here */
+        zone_id_pool = id_fpool_create(nb_thread, MIN_ZONE_ID, MAX_ZONE_ID);
+
+        ovsthread_once_done(&init_once);
+    }
+    if (id_fpool_new_id(zone_id_pool, tid, &zone_id)) {
         return zone_id;
     }
     return 0;
@@ -806,7 +819,9 @@ zone_id_alloc(void)
 static void
 zone_id_free(uint32_t zone_id)
 {
-    id_pool_free_id(zone_id_pool, zone_id);
+    unsigned int tid = netdev_offload_thread_id();
+
+    id_fpool_free_id(zone_id_pool, tid, zone_id);
 }
 
 static struct context_metadata zone_id_md = {
@@ -843,28 +858,34 @@ put_zone_id(uint32_t zone_id)
 #define MIN_TABLE_ID     1
 #define MAX_TABLE_ID     0xf0000000
 
-static struct id_pool *table_id_pool = NULL;
+static struct id_fpool *table_id_pool = NULL;
 static uint32_t
 table_id_alloc(void)
 {
+    static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
+    unsigned int tid = netdev_offload_thread_id();
     uint32_t id;
 
-    if (!table_id_pool) {
-        /* Haven't initiated yet, do it here */
-        table_id_pool = id_pool_create(MIN_TABLE_ID, MAX_TABLE_ID);
-    }
+    if (ovsthread_once_start(&init_once)) {
+        unsigned int nb_thread = netdev_offload_thread_nb();
 
-    if (id_pool_alloc_id(table_id_pool, &id)) {
+        /* Haven't initiated yet, do it here */
+        table_id_pool = id_fpool_create(nb_thread, MIN_TABLE_ID, MAX_TABLE_ID);
+
+        ovsthread_once_done(&init_once);
+    }
+    if (id_fpool_new_id(table_id_pool, tid, &id)) {
         return id;
     }
-
     return 0;
 }
 
 static void
 table_id_free(uint32_t id)
 {
-    id_pool_free_id(table_id_pool, id);
+    unsigned int tid = netdev_offload_thread_id();
+
+    id_fpool_free_id(table_id_pool, tid, id);
 }
 
 static struct context_metadata table_id_md = {
@@ -906,29 +927,35 @@ put_table_id(uint32_t table_id)
 #define MIN_CT_CTX_ID 1
 #define MAX_CT_CTX_ID (reg_fields[REG_FIELD_CT_CTX].mask - 1)
 
-static struct id_pool *ct_ctx_pool = NULL;
+static struct id_fpool *ct_ctx_pool = NULL;
 
 static uint32_t
 ct_ctx_id_alloc(void)
 {
+    static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
+    unsigned int tid = netdev_offload_thread_id();
     uint32_t id;
 
-    if (!ct_ctx_pool) {
-        /* Haven't initiated yet, do it here */
-        ct_ctx_pool = id_pool_create(MIN_CT_CTX_ID, MAX_CT_CTX_ID);
-    }
+    if (ovsthread_once_start(&init_once)) {
+        unsigned int nb_thread = netdev_offload_thread_nb();
 
-    if (id_pool_alloc_id(ct_ctx_pool, &id)) {
+        /* Haven't initiated yet, do it here */
+        ct_ctx_pool = id_fpool_create(nb_thread, MIN_CT_CTX_ID, MAX_CT_CTX_ID);
+
+        ovsthread_once_done(&init_once);
+    }
+    if (id_fpool_new_id(ct_ctx_pool, tid, &id)) {
         return id;
     }
-
     return 0;
 }
 
 static void
 ct_ctx_id_free(uint32_t id)
 {
-    id_pool_free_id(ct_ctx_pool, id);
+    unsigned int tid = netdev_offload_thread_id();
+
+    id_fpool_free_id(ct_ctx_pool, tid, id);
 }
 
 struct ct_miss_ctx {
@@ -984,29 +1011,35 @@ find_ct_miss_ctx(int ct_ctx_id, struct ct_miss_ctx *ctx)
 #define MIN_TUNNEL_ID 1
 #define MAX_TUNNEL_ID (reg_fields[REG_FIELD_TUN_INFO].mask - 1)
 
-static struct id_pool *tnl_id_pool = NULL;
+static struct id_fpool *tnl_id_pool = NULL;
 
 static uint32_t
 tnl_id_alloc(void)
 {
+    static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
+    unsigned int tid = netdev_offload_thread_id();
     uint32_t id;
 
-    if (!tnl_id_pool) {
-        /* Haven't initiated yet, do it here */
-        tnl_id_pool = id_pool_create(MIN_TUNNEL_ID, MAX_TUNNEL_ID);
-    }
+    if (ovsthread_once_start(&init_once)) {
+        unsigned int nb_thread = netdev_offload_thread_nb();
 
-    if (id_pool_alloc_id(tnl_id_pool, &id)) {
+        /* Haven't initiated yet, do it here */
+        tnl_id_pool = id_fpool_create(nb_thread, MIN_TUNNEL_ID, MAX_TUNNEL_ID);
+
+        ovsthread_once_done(&init_once);
+    }
+    if (id_fpool_new_id(tnl_id_pool, tid, &id)) {
         return id;
     }
-
     return 0;
 }
 
 static void
 tnl_id_free(uint32_t id)
 {
-    id_pool_free_id(tnl_id_pool, id);
+    unsigned int tid = netdev_offload_thread_id();
+
+    id_fpool_free_id(tnl_id_pool, tid, id);
 }
 
 static struct ds *
