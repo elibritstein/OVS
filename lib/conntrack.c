@@ -50,6 +50,8 @@ COVERAGE_DEFINE(conntrack_l3csum_err);
 COVERAGE_DEFINE(conntrack_l4csum_err);
 COVERAGE_DEFINE(conntrack_lookup_natted_miss);
 
+static bool ct_e2e_cache_enabled = false;
+
 struct conn_lookup_ctx {
     struct conn_key key;
     struct conn *conn;
@@ -1708,7 +1710,7 @@ conntrack_offload_add_conn(struct conntrack *ct,
 int
 conntrack_execute(struct conntrack *ct, struct dp_packet_batch *pkt_batch,
                   ovs_be16 dl_type, bool force, bool commit, uint16_t zone,
-                  bool e2e_cache_enabled, const uint32_t *setmark,
+                  const uint32_t *setmark,
                   const struct ovs_key_ct_labels *setlabel,
                   ovs_be16 tp_src, ovs_be16 tp_dst, const char *helper,
                   const struct nat_action_info_t *nat_action_info,
@@ -1752,7 +1754,7 @@ conntrack_execute(struct conntrack *ct, struct dp_packet_batch *pkt_batch,
                 conntrack_offload_add_conn(ct, packet, conn, mark, label,
                                            reply);
             }
-            if (e2e_cache_enabled) {
+            if (ct_e2e_cache_enabled) {
                 e2e_cache_trace_add_ct(ct, packet, conn, reply, mark, label);
             }
         }
@@ -3826,4 +3828,6 @@ conntrack_init_offload_class(struct conntrack *ct,
                              struct conntrack_offload_class *cls)
 {
     ct->offload_class = cls;
+    ct_e2e_cache_enabled = netdev_is_e2e_cache_enabled();
+
 }
