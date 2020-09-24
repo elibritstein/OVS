@@ -150,7 +150,7 @@ static struct odp_support dp_netdev_support = {
     .ct_orig_tuple6 = true,
 };
 
-static bool e2e_cache_enabled = false;
+static bool dp_netdev_e2e_cache_enabled = false;
 
 
 /* Simple non-wildcarding single-priority classifier. */
@@ -4253,7 +4253,7 @@ dpif_netdev_get_flow_offload_status(const struct dp_netdev *dp,
          * later use on mutex contention. */
         dp_netdev_flow_set_last_stats_attrs(netdev_flow, stats, attrs, ret);
         /* get merged flow stats and update it to mt flow stats */
-        if (e2e_cache_enabled && !ret) {
+        if (dp_netdev_e2e_cache_enabled && !ret) {
             e2e_cache_get_merged_flows_stats(netdev, &match, &actions,
                                              &netdev_flow->mega_ufid, stats,
                                              &buf, now, prev_now);
@@ -5479,7 +5479,7 @@ dpif_netdev_set_config(struct dpif *dpif, const struct smap *other_config)
         pmd_rxq_assign = "cycles";
     }
 
-    e2e_cache_enabled = netdev_is_e2e_cache_enabled();
+    dp_netdev_e2e_cache_enabled = netdev_is_e2e_cache_enabled();
 
     if (dp->pmd_rxq_assign_type != pmd_rxq_assign_type) {
         dp->pmd_rxq_assign_type = pmd_rxq_assign_type;
@@ -9753,7 +9753,7 @@ smc_lookup_batch(struct dp_netdev_pmd_thread *pmd,
                     n_smc_hit++;
                     hit = true;
 
-                    if (e2e_cache_enabled) {
+                    if (dp_netdev_e2e_cache_enabled) {
                         e2e_cache_trace_add_flow(packet, &flow->mega_ufid);
                     }
                     break;
@@ -9931,7 +9931,7 @@ dfc_processing(struct dp_netdev_pmd_thread *pmd,
 
         if (!md_is_valid) {
             pkt_metadata_init(&packet->md, port_no);
-            if (e2e_cache_enabled) {
+            if (dp_netdev_e2e_cache_enabled) {
                 e2e_cache_trace_init(packet);
             }
         }
@@ -9965,7 +9965,7 @@ dfc_processing(struct dp_netdev_pmd_thread *pmd,
                 dfc_processing_enqueue_classified_packet(
                         packet, flow, tcp_flags, batch_enable,
                         batches, n_batches, flow_map, &map_cnt);
-                if (e2e_cache_enabled) {
+                if (dp_netdev_e2e_cache_enabled) {
                     e2e_cache_trace_add_flow(packet, &flow->mega_ufid);
                 }
                 continue;
@@ -9987,7 +9987,7 @@ dfc_processing(struct dp_netdev_pmd_thread *pmd,
             dfc_processing_enqueue_classified_packet(
                     packet, flow, tcp_flags, batch_enable,
                     batches, n_batches, flow_map, &map_cnt);
-            if (e2e_cache_enabled) {
+            if (dp_netdev_e2e_cache_enabled) {
                 e2e_cache_trace_add_flow(packet, &flow->mega_ufid);
             }
         } else {
@@ -10093,7 +10093,7 @@ handle_packet_upcall(struct dp_netdev_pmd_thread *pmd,
         uint32_t hash = dp_netdev_flow_hash(&netdev_flow->ufid);
         smc_insert(pmd, key, hash);
         emc_probabilistic_insert(pmd, key, netdev_flow);
-        if (e2e_cache_enabled) {
+        if (dp_netdev_e2e_cache_enabled) {
             e2e_cache_trace_add_flow(packet, &netdev_flow->mega_ufid);
         }
     }
@@ -10216,7 +10216,7 @@ fast_path_processing(struct dp_netdev_pmd_thread *pmd,
 
         emc_probabilistic_insert(pmd, keys[i], flow);
 
-        if (e2e_cache_enabled) {
+        if (dp_netdev_e2e_cache_enabled) {
             e2e_cache_trace_add_flow(packet, &flow->mega_ufid);
         }
 
@@ -10482,7 +10482,7 @@ dp_execute_output_action(struct dp_netdev_pmd_thread *pmd,
     struct tx_port *p = pmd_send_port_cache_lookup(pmd, port_no);
     struct dp_packet_batch out;
 
-    if (e2e_cache_enabled) {
+    if (dp_netdev_e2e_cache_enabled) {
         e2e_cache_dispatch_trace_message(pmd->dp, packets_);
     }
 
@@ -10640,7 +10640,7 @@ dp_execute_cb(void *aux_, struct dp_packet_batch *packets_,
 
                 struct dp_packet *packet;
                 DP_PACKET_BATCH_FOR_EACH (i, packet, packets_) {
-                    if (e2e_cache_enabled) {
+                    if (dp_netdev_e2e_cache_enabled) {
                         e2e_cache_trace_tnl_pop(packet);
                     }
                     packet->md.in_port.odp_port = portno;
@@ -10860,9 +10860,10 @@ dp_execute_cb(void *aux_, struct dp_packet_batch *packets_,
         }
 
         conntrack_execute(dp->conntrack, packets_, aux->flow->dl_type, force,
-                          commit, zone, e2e_cache_enabled, setmark, setlabel,
-                          aux->flow->tp_src, aux->flow->tp_dst, helper,
-                          nat_action_info_ref, pmd->ctx.now / 1000, tp_id);
+                          commit, zone, dp_netdev_e2e_cache_enabled, setmark,
+                          setlabel, aux->flow->tp_src, aux->flow->tp_dst,
+                          helper, nat_action_info_ref, pmd->ctx.now / 1000,
+                          tp_id);
         break;
     }
 
@@ -10877,7 +10878,7 @@ dp_execute_cb(void *aux_, struct dp_packet_batch *packets_,
         odp_update_drop_action_counter((int)*drop_reason,
                                        dp_packet_batch_size(packets_));
 
-        if (e2e_cache_enabled) {
+        if (dp_netdev_e2e_cache_enabled) {
             e2e_cache_dispatch_trace_message(pmd->dp, packets_);
         }
 
