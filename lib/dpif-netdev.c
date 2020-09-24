@@ -361,6 +361,7 @@ struct dp_offload_flow_item {
     struct nlattr *actions;
     size_t actions_len;
     odp_port_t orig_in_port; /* Originating in_port for tnl flows. */
+    bool is_e2e_cache_flow;
 };
 
 struct dp_offload_flush_item {
@@ -2604,31 +2605,37 @@ flow_mark_has_no_ref(uint32_t mark)
 }
 
 static int
-mark_to_flow_disassociate(struct dp_netdev *dp,
-                          struct dp_netdev_flow *flow)
+mark_to_flow_disassociate(struct dp_offload_thread_item *item)
 {
+    struct dp_netdev *dp = item->dp;
+    struct dp_netdev_flow *flow = item->data->flow.flow;
+    bool is_e2e_cache_flow = item->data->flow.is_e2e_cache_flow;
     const char *dpif_type_str = dpif_normalize_type(dp->class->type);
-    struct cmap_node *mark_node = CONST_CAST(struct cmap_node *,
-                                             &flow->mark_node);
     unsigned int tid = netdev_offload_thread_id();
     uint32_t mark = flow->mark;
     int ret = 0;
 
-    /* INVALID_FLOW_MARK may mean that the flow has been disassociated or
-     * never associated. */
-    if (OVS_UNLIKELY(mark == INVALID_FLOW_MARK)) {
-        return EINVAL;
-    }
+    if (!is_e2e_cache_flow) {
+        struct cmap_node *mark_node;
 
-    cmap_remove(&dp_offload_threads[tid].mark_to_flow,
-                mark_node, hash_int(mark, 0));
+        /* INVALID_FLOW_MARK may mean that the flow has been disassociated
+         * or never associated. */
+        if (OVS_UNLIKELY(mark == INVALID_FLOW_MARK)) {
+            return EINVAL;
+        }
+
+        mark_node = CONST_CAST(struct cmap_node *, &flow->mark_node);
+        cmap_remove(&dp_offload_threads[tid].mark_to_flow, mark_node,
+                    hash_int(mark, 0));
+    }
     flow->mark = INVALID_FLOW_MARK;
 
     /*
      * no flow is referencing the mark any more? If so, let's
-     * remove the flow from hardware and free the mark.
+     * remove the flow from hardware and free the mark. Always remove from
+     * hardware in case of E2E cache flow.
      */
-    if (flow_mark_has_no_ref(mark)) {
+    if (is_e2e_cache_flow || flow_mark_has_no_ref(mark)) {
         struct netdev *port;
         odp_port_t in_port = flow->flow.in_port.odp_port;
 
@@ -2642,11 +2649,13 @@ mark_to_flow_disassociate(struct dp_netdev *dp,
             netdev_close(port);
         }
 
-        netdev_offload_flow_mark_free(mark);
-        VLOG_DBG("Freed flow mark %u mega_ufid "UUID_FMT, mark,
-                 UUID_ARGS((struct uuid *) &flow->mega_ufid));
+        if (!is_e2e_cache_flow) {
+            netdev_offload_flow_mark_free(mark);
+            VLOG_DBG("Freed flow mark %u mega_ufid "UUID_FMT, mark,
+                     UUID_ARGS((struct uuid *) &flow->mega_ufid));
 
-        megaflow_to_mark_disassociate(&flow->mega_ufid);
+            megaflow_to_mark_disassociate(&flow->mega_ufid);
+        }
     }
     dp_netdev_flow_unref(flow);
 
@@ -2695,6 +2704,7 @@ dp_netdev_alloc_flow_offload(struct dp_netdev *dp,
 
     flow_offload->flow = flow;
     flow_offload->op = op;
+    flow_offload->is_e2e_cache_flow = false;
 
     dp_netdev_flow_ref(flow);
 
@@ -2774,7 +2784,7 @@ dp_netdev_offload_flow_enqueue(struct dp_offload_thread_item *item)
 static int
 dp_netdev_flow_offload_del(struct dp_offload_thread_item *item)
 {
-    return mark_to_flow_disassociate(item->dp, item->data->flow.flow);
+    return mark_to_flow_disassociate(item);
 }
 
 /*
@@ -2798,6 +2808,7 @@ dp_netdev_flow_offload_put(struct dp_offload_thread_item *item)
     const char *dpif_type_str = dpif_normalize_type(dp->class->type);
     bool modification = offload->op == DP_NETDEV_FLOW_OFFLOAD_OP_MOD
                         && flow->mark != INVALID_FLOW_MARK;
+    bool is_e2e_cache_flow = offload->is_e2e_cache_flow;
     struct offload_info info;
     struct netdev *port;
     uint32_t mark;
@@ -2807,30 +2818,36 @@ dp_netdev_flow_offload_put(struct dp_offload_thread_item *item)
         return -1;
     }
 
-    if (modification) {
-        mark = flow->mark;
+    if (is_e2e_cache_flow) {
+        mark = INVALID_FLOW_MARK;
     } else {
-        /*
-         * If a mega flow has already been offloaded (from other PMD
-         * instances), do not offload it again.
-         */
-        mark = megaflow_to_mark_find(&flow->mega_ufid);
-        if (mark != INVALID_FLOW_MARK) {
-            VLOG_DBG("Flow has already been offloaded with mark %u\n", mark);
-            if (flow->mark != INVALID_FLOW_MARK) {
-                ovs_assert(flow->mark == mark);
-            } else {
-                mark_to_flow_associate(mark, flow);
+        if (modification) {
+            mark = flow->mark;
+        } else {
+            /*
+             * If a mega flow has already been offloaded (from other PMD
+             * instances), do not offload it again.
+             */
+            mark = megaflow_to_mark_find(&flow->mega_ufid);
+            if (mark != INVALID_FLOW_MARK) {
+                VLOG_DBG("Flow has already been offloaded with mark %u\n",
+                         mark);
+                if (flow->mark != INVALID_FLOW_MARK) {
+                    ovs_assert(flow->mark == mark);
+                } else {
+                    mark_to_flow_associate(mark, flow);
+                }
+                return 0;
             }
-            return 0;
-        }
 
-        mark = netdev_offload_flow_mark_alloc();
-        if (mark == INVALID_FLOW_MARK) {
-            VLOG_ERR("Failed to allocate flow mark!\n");
-            return -1;
+            mark = netdev_offload_flow_mark_alloc();
+            if (mark == INVALID_FLOW_MARK) {
+                VLOG_ERR("Failed to allocate flow mark!\n");
+                return -1;
+            }
         }
     }
+
     info.flow_mark = mark;
     info.orig_in_port = offload->orig_in_port;
 
@@ -2854,16 +2871,22 @@ dp_netdev_flow_offload_put(struct dp_offload_thread_item *item)
     }
 
     if (!modification) {
-        megaflow_to_mark_associate(&flow->mega_ufid, mark);
-        mark_to_flow_associate(mark, flow);
+        if (!is_e2e_cache_flow) {
+            megaflow_to_mark_associate(&flow->mega_ufid, mark);
+            mark_to_flow_associate(mark, flow);
+        } else {
+            flow->mark = INVALID_FLOW_MARK;
+        }
     }
     return 0;
 
 err_free:
-    if (!modification) {
-        netdev_offload_flow_mark_free(mark);
-    } else {
-        mark_to_flow_disassociate(item->dp, flow);
+    if (!is_e2e_cache_flow) {
+        if (!modification) {
+            netdev_offload_flow_mark_free(mark);
+        } else {
+            mark_to_flow_disassociate(item);
+        }
     }
     return -1;
 }
