@@ -411,12 +411,21 @@ dp_netdev_ct_offload_active(struct ct_flow_offload_item *offload,
                             long long now, long long prev_now);
 static void
 dp_netdev_ct_offload_e2e_add(struct ct_flow_offload_item *offload);
+static int
+e2e_cache_flow_del(const ovs_u128 *ufid);
+static void
+dp_netdev_ct_offload_e2e_del(ovs_u128 *ufid)
+{
+    e2e_cache_flow_del(ufid);
+}
+
 static struct conntrack_offload_class dpif_ct_offload_class = {
     .conn_get_ufid = dp_netdev_ct_offload_get_ufid,
     .conn_add = dp_netdev_ct_offload_add_item,
     .conn_del = dp_netdev_ct_offload_del_item,
     .conn_active = dp_netdev_ct_offload_active,
     .conn_e2e_add = dp_netdev_ct_offload_e2e_add,
+    .conn_e2e_del = dp_netdev_ct_offload_e2e_del,
 };
 
 static void
@@ -3422,9 +3431,6 @@ dp_netdev_flow_offload_main(void *arg)
     return NULL;
 }
 
-static int
-e2e_cache_flow_del(const ovs_u128 *ufid);
-
 static void
 queue_netdev_flow_del(struct dp_netdev_pmd_thread *pmd,
                       struct dp_netdev_flow *flow)
@@ -3508,8 +3514,6 @@ dp_netdev_ct_offload_del_item(struct ct_flow_offload_item *ct_offload)
     item->data->ct_offload_item[0].op = DP_NETDEV_FLOW_OFFLOAD_OP_DEL;
     item->data->ct_offload_item[1] = ct_offload[1];
     item->data->ct_offload_item[1].op = DP_NETDEV_FLOW_OFFLOAD_OP_DEL;
-    e2e_cache_flow_del(&ct_offload[CT_DIR_INIT].ufid);
-    e2e_cache_flow_del(&ct_offload[CT_DIR_REP].ufid);
 
     dp_netdev_offload_ct_enqueue(item);
 }
