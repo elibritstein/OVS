@@ -1835,7 +1835,7 @@ create_dp_netdev(const char *name, const struct dpif_class *class,
     dp->upcall_aux = NULL;
     dp->upcall_cb = NULL;
 
-    dp->conntrack = conntrack_init();
+    dp->conntrack = conntrack_init(dp);
 
     dpif_miniflow_extract_init();
 
