@@ -598,8 +598,8 @@ struct dpif_netdev {
 struct e2e_cache_ovs_flow;
 struct flow2flow_item {
     struct ovs_list list;
-    int index;
     struct e2e_cache_ovs_flow *mt_flow;
+    uint16_t index;
 };
 
 /*
@@ -616,13 +616,13 @@ struct e2e_cache_merged_flow {
     struct match match;
     struct nlattr *actions;
     uint16_t actions_size;
+    uint16_t associated_flows_len;
     uint32_t flows_counter;
     uint32_t ct_counter;
     struct ovs_list flow_counter_list; /* Anchor for list of merged flows
                                           using the same flow counter. */
     struct ovs_list ct_counter_list; /* Anchor for list of merged flows
                                         using the same CT counter. */
-    size_t associated_flows_len;
     struct flow2flow_item associated_flows[0];
 };
 
@@ -8809,9 +8809,9 @@ e2e_cache_thread_wait_on_queues(void)
 static void
 e2e_cache_associate_merged_flow(struct e2e_cache_merged_flow *merged_flow,
                                 struct e2e_cache_ovs_flow *flows[],
-                                uint32_t num_flows)
+                                uint16_t num_flows)
 {
-    int i;
+    uint16_t i;
 
     for (i = 0; i < num_flows; i++) {
         merged_flow->associated_flows[i].index = i;
@@ -8825,7 +8825,7 @@ e2e_cache_associate_merged_flow(struct e2e_cache_merged_flow *merged_flow,
 static void
 e2e_cache_disassociate_merged_flow(struct e2e_cache_merged_flow *merged_flow)
 {
-    size_t i, num_flows = merged_flow->associated_flows_len;
+    uint16_t i, num_flows = merged_flow->associated_flows_len;
 
     for (i = 0; i < num_flows; i++) {
         ovs_list_remove(&merged_flow->associated_flows[i].list);
@@ -9314,7 +9314,7 @@ e2e_cache_disassociate_counters(struct e2e_cache_merged_flow *merged_flow)
     struct e2e_cache_counter_item *counter_next, *counter_item;
     struct e2e_cache_ovs_flow *mt_flow;
     struct ovs_list *next_counter;
-    size_t i;
+    uint16_t i;
 
     /* If flow_counter_list is empty this means e2e_cache_associate_counters
      * was not executed for this e2e_cache_merged_flow.
