@@ -8665,8 +8665,10 @@ static struct hmap merged_flows_map = HMAP_INITIALIZER(&merged_flows_map);
 static void *dp_netdev_e2e_cache_main(void *arg);
 
 static void
-dpif_netdev_e2e_stats_format(struct e2e_cache_stats *stats, struct ds *s)
+dpif_netdev_dump_e2e_stats(struct ds *s)
 {
+    struct e2e_cache_stats *stats = &e2e_stats;
+
     ds_put_format(s, "%-45s : %"PRIu64"", "generated messages",
                   atomic_count_get64(&stats->generated_msgs));
     ds_put_format(s, "\n%-45s : %"PRIu64"", "processed messages",
@@ -8698,8 +8700,8 @@ dpif_netdev_e2e_stats_format(struct e2e_cache_stats *stats, struct ds *s)
 }
 
 static void
-dpif_netdev_e2e_flows_format(struct hmap *portno_names,
-                             struct ofputil_port_map *port_map, struct ds *s)
+dpif_netdev_dump_e2e_flows(struct hmap *portno_names,
+                           struct ofputil_port_map *port_map, struct ds *s)
 {
     struct e2e_cache_merged_flow *merged_flow;
     struct dpif_flow_stats merged_stats;
@@ -8717,21 +8719,6 @@ dpif_netdev_e2e_flows_format(struct hmap *portno_names,
                            portno_names);
         ds_put_cstr(s, "\n");
     }
-}
-
-static int
-dpif_netdev_dump_e2e_stats(struct ds *s)
-{
-    dpif_netdev_e2e_stats_format(&e2e_stats, s);
-    return 0;
-}
-
-static int
-dpif_netdev_dump_e2e_flows(struct hmap *portno_names,
-                           struct ofputil_port_map *port_map, struct ds *s)
-{
-    dpif_netdev_e2e_flows_format(portno_names, port_map, s);
-    return 0;
 }
 
 static inline void
@@ -9787,9 +9774,19 @@ e2e_cache_get_merged_flows_stats(struct netdev *netdev OVS_UNUSED,
                                  struct nlattr **actions OVS_UNUSED,
                                  const ovs_u128 *mt_ufid OVS_UNUSED,
                                  struct dpif_flow_stats *stats OVS_UNUSED,
-                                 sturct ofpbuf *buf OVS_UNUSED,
+                                 struct ofpbuf *buf OVS_UNUSED,
                                  long long now OVS_UNUSED,
                                  long long prev_now OVS_UNUSED)
+{
+}
+static void
+dpif_netdev_dump_e2e_stats(struct ds *s OVS_UNUSED)
+{
+}
+static void
+dpif_netdev_dump_e2e_flows(struct hmap *portno_names OVS_UNUSED,
+                           struct ofputil_port_map *port_map OVS_UNUSED,
+                           struct ds *s OVS_UNUSED)
 {
 }
 #endif /* E2E_CACHE_ENABLED */
