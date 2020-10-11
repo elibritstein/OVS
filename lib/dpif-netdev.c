@@ -8706,6 +8706,8 @@ dpif_netdev_dump_e2e_stats(struct ds *s)
                   atomic_count_get64(&stats->del_merged_flow_hw));
     ds_put_format(s, "\n%-45s : %"PRIu64"", "merged flows in e2e cache",
                   atomic_count_get64(&stats->merged_flows_in_cache));
+    ds_put_format(s, "\n%-45s : %"PRIu64"", "flows in e2e DB",
+                  (uint64_t)hmap_count(&flows_map));
 }
 
 static void
