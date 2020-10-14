@@ -3170,7 +3170,7 @@ dp_netdev_create_ct_actions(struct ofpbuf *buf,
     ovs_strcat(helper, sizeof helper, &end, "offl,st(0x");
     ovs_strcat(helper, sizeof helper, &end, u32_to_hex(s, offload->ct_state));
     ovs_strcat(helper, sizeof helper, &end, "),id(0x");
-    ovs_strcat(helper, sizeof helper, &end, u32_to_hex(s, *offload->ctid_ptr));
+    ovs_strcat(helper, sizeof helper, &end, u32_to_hex(s, offload->ctid));
     ovs_strcat(helper, sizeof helper, &end, ")");
 
     nl_msg_put_string(buf, OVS_CT_ATTR_HELPER, helper);
@@ -3282,40 +3282,6 @@ dp_netdev_ct_offload_del(struct ct_flow_offload_item *ct_offload)
     return ret;
 }
 
-#define MIN_CTID 1
-#define MAX_CTID (UINT32_MAX - 1)
-static struct id_fpool *ctid_pool = NULL;
-
-static int
-dp_alloc_ctid(uint32_t *ctid)
-{
-    static struct ovsthread_once ctid_init = OVSTHREAD_ONCE_INITIALIZER;
-    unsigned int tid = netdev_offload_thread_id();
-
-    if (ovsthread_once_start(&ctid_init)) {
-        unsigned int nb_threads = netdev_offload_thread_nb();
-
-        /* Haven't initiated yet, do it here */
-        ctid_pool = id_fpool_create(nb_threads, MIN_CTID, MAX_CTID);
-        ovsthread_once_done(&ctid_init);
-    }
-    if (!ctid_pool) {
-        return -1;
-    }
-    if (!id_fpool_new_id(ctid_pool, tid, ctid)) {
-        return -1;
-    }
-    return 0;
-}
-
-static void
-dp_release_ctid(uint32_t ctid)
-{
-    unsigned int tid = netdev_offload_thread_id();
-
-    id_fpool_free_id(ctid_pool, tid, ctid);
-}
-
 static void
 dp_offload_ct(struct dp_offload_thread_item *item)
 {
@@ -3332,10 +3298,6 @@ dp_offload_ct(struct dp_offload_thread_item *item)
     }
     if (ct_offload[CT_DIR_INIT].op == DP_NETDEV_FLOW_OFFLOAD_OP_DEL) {
         free(ct_offload[CT_DIR_INIT].refcnt);
-    }
-
-    if (ct_offload->op == DP_NETDEV_FLOW_OFFLOAD_OP_ADD) {
-       dp_alloc_ctid(ct_offload->ctid_ptr);
     }
 
     for (dir = 0; dir < CT_DIR_NUM; dir++) {
@@ -3359,10 +3321,6 @@ dp_offload_ct(struct dp_offload_thread_item *item)
                  ret == 0 ? "succeed" : "failed", op,
                  UUID_ARGS((struct uuid *) &ct_offload[dir].ufid));
         if (ret) {
-            if (ct_offload->op == DP_NETDEV_FLOW_OFFLOAD_OP_ADD) {
-                dp_release_ctid(*ct_offload->ctid_ptr);
-                *ct_offload->ctid_ptr = 0;
-            }
             return;
         }
     }
@@ -3372,8 +3330,6 @@ dp_offload_ct(struct dp_offload_thread_item *item)
         atomic_count_inc64(&ofl_thread->ct_conns);
     } else {
         atomic_count_dec64(&ofl_thread->ct_conns);
-        dp_release_ctid(*ct_offload->ctid_ptr);
-        *ct_offload->ctid_ptr = 0;
     }
 }
 
