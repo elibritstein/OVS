@@ -190,6 +190,8 @@ static void dpcls_insert(struct dpcls *, struct dpcls_rule *,
 static void dpcls_remove(struct dpcls *, struct dpcls_rule *);
 static void dp_netdev_get_mega_ufid(const struct match *match,
                                     ovs_u128 *mega_ufid);
+static void dp_netdev_fill_ct_match(struct match *match,
+                                    struct ct_flow_offload_item *offload);
 
 /* Set of supported meter flags */
 #define DP_SUPPORTED_METER_FLAGS_MASK \
@@ -392,6 +394,9 @@ static struct dp_offload_thread *dp_offload_threads;
 static void *dp_netdev_flow_offload_main(void *arg);
 
 static void
+dp_netdev_ct_offload_get_ufid(struct ct_flow_offload_item *offload,
+                              ovs_u128 *ufid);
+static void
 dp_netdev_ct_offload_add_item(struct ct_flow_offload_item *ct_offload);
 static void
 dp_netdev_ct_offload_del_item(struct ct_flow_offload_item *ct_offload);
@@ -399,6 +404,7 @@ static bool
 dp_netdev_ct_offload_active(struct ct_flow_offload_item *offload,
                             long long now);
 static struct conntrack_offload_class dpif_ct_offload_class = {
+    .conn_get_ufid = dp_netdev_ct_offload_get_ufid,
     .conn_add = dp_netdev_ct_offload_add_item,
     .conn_del = dp_netdev_ct_offload_del_item,
     .conn_active = dp_netdev_ct_offload_active,
@@ -3024,8 +3030,6 @@ dp_netdev_ct_offload_add(struct ct_flow_offload_item *ct_offload)
     dp_netdev_create_ct_actions(&buf, ct_offload);
     actions = ofpbuf_at_assert(&buf, 0, sizeof(struct nlattr));
 
-    dp_netdev_get_mega_ufid((const struct match *)&match, &ct_offload->ufid);
-
     ovs_rwlock_rdlock(&dp->port_rwlock);
     if (OVS_UNLIKELY(!VLOG_DROP_DBG((&upcall_rl)))) {
         struct ds ds = DS_EMPTY_INITIALIZER;
@@ -3268,6 +3272,17 @@ dp_netdev_offload_ct_enqueue(struct dp_offload_thread_item *item)
 
     tid = netdev_offload_ufid_to_thread_id(ct_offload->ufid);
     dp_netdev_append_offload(item, tid);
+}
+
+static void
+dp_netdev_ct_offload_get_ufid(struct ct_flow_offload_item *offload,
+                              ovs_u128 *ufid)
+{
+    struct match match;
+
+    dp_netdev_fill_ct_match(&match, offload);
+    match.flow.in_port.odp_port = ODPP_NONE;
+    dp_netdev_get_mega_ufid(&match, ufid);
 }
 
 static void
