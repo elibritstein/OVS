@@ -2396,6 +2396,12 @@ enum ct_mode {
     CT_MODE_CT_CONN,
 };
 
+enum tnl_type {
+    TNL_TYPE_NONE,
+    TNL_TYPE_VXLAN,
+    TNL_TYPE_GRE,
+};
+
 struct act_vars {
     enum ct_mode ct_mode;
     bool pre_ct_tuple_rewrite;
@@ -2406,6 +2412,7 @@ struct act_vars {
     bool is_e2e_cache;
     uintptr_t ct_counter_key;
     struct flows_counter_key flows_counter_key;
+    enum tnl_type tnl_type;
 };
 
 static struct rte_flow *
@@ -2797,10 +2804,6 @@ parse_vxlan_match(struct flow_patterns *patterns,
     struct flow *consumed_masks;
     int ret;
 
-    if (is_all_zeros(&match->wc.masks.tunnel, sizeof match->wc.masks.tunnel)) {
-        return 0;
-    }
-
     ret = parse_tnl_ip_match(patterns, match, IPPROTO_UDP);
     if (ret) {
         return -1;
@@ -2882,7 +2885,8 @@ static int OVS_UNUSED
 parse_flow_tnl_match(struct netdev *tnldev,
                      struct flow_patterns *patterns,
                      odp_port_t orig_in_port,
-                     struct match *match)
+                     struct match *match,
+                     struct act_vars *act_vars)
 {
     int ret;
 
@@ -2891,10 +2895,16 @@ parse_flow_tnl_match(struct netdev *tnldev,
         return ret;
     }
 
+    if (is_all_zeros(&match->wc.masks.tunnel, sizeof match->wc.masks.tunnel)) {
+        return 0;
+    }
+
     if (!strcmp(netdev_get_type(tnldev), "vxlan")) {
+        act_vars->tnl_type = TNL_TYPE_VXLAN;
         ret = parse_vxlan_match(patterns, match);
     }
     else if (!strcmp(netdev_get_type(tnldev), "gre")) {
+        act_vars->tnl_type = TNL_TYPE_GRE;
         ret = parse_gre_match(patterns, match);
     }
 
@@ -3079,9 +3089,12 @@ parse_flow_match(struct netdev *netdev,
             parse_tnl_match_recirc(patterns, match, act_resources)) {
             return -1;
         }
-        if (parse_flow_tnl_match(netdev, patterns, orig_in_port, match)) {
+        if (parse_flow_tnl_match(netdev, patterns, orig_in_port, match,
+                                 act_vars)) {
             return -1;
         }
+    } else {
+        act_vars->tnl_type = TNL_TYPE_NONE;
     }
 #endif
 
@@ -3983,10 +3996,21 @@ add_recirc_action(struct netdev *netdev,
     return 0;
 }
 
-static void
+static int
 add_vxlan_decap_action(struct flow_actions *actions)
 {
     add_flow_action(actions, RTE_FLOW_ACTION_TYPE_VXLAN_DECAP, NULL);
+    return 0;
+}
+
+static int
+add_tnl_decap_action(struct flow_actions *actions,
+                     struct act_vars *act_vars)
+{
+    if (act_vars->tnl_type == TNL_TYPE_VXLAN) {
+        return add_vxlan_decap_action(actions);
+    }
+    return -1;
 }
 
 static int
@@ -4304,15 +4328,16 @@ parse_flow_actions(struct netdev *netdev,
                    struct nlattr *nl_actions,
                    size_t nl_actions_len,
                    struct act_resources *act_resources,
-                   struct netdev *tnldev,
                    struct act_vars *act_vars)
 {
     struct nlattr *nla;
     size_t left;
 
-    if (nl_actions_len != 0 && !strcmp(netdev_get_type(tnldev), "vxlan") &&
-        act_vars->recirc_id == 0) {
-        add_vxlan_decap_action(actions);
+    if (nl_actions_len != 0 &&
+        act_vars->tnl_type != TNL_TYPE_NONE &&
+        act_vars->recirc_id == 0 &&
+        add_tnl_decap_action(actions, act_vars)) {
+        return -1;
     }
     if (add_count_action(netdev, actions, act_resources, act_vars)) {
         return -1;
@@ -4397,7 +4422,6 @@ netdev_offload_dpdk_actions(struct netdev *netdev,
                             struct nlattr *nl_actions,
                             size_t actions_len,
                             struct act_resources *act_resources,
-                            struct netdev *tnldev,
                             struct act_vars *act_vars,
                             struct flow_item *fi)
 {
@@ -4411,7 +4435,7 @@ netdev_offload_dpdk_actions(struct netdev *netdev,
     int ret;
 
     ret = parse_flow_actions(netdev, &actions, nl_actions, actions_len,
-                             act_resources, tnldev, act_vars);
+                             act_resources, act_vars);
     if (ret) {
         goto out;
     }
@@ -4458,8 +4482,8 @@ netdev_offload_dpdk_add_flow(struct netdev *netdev,
 
     memset(&flow_item, 0, sizeof flow_item);
     ret = netdev_offload_dpdk_actions(patterns.physdev, &patterns, nl_actions,
-                                      actions_len, &act_resources, netdev,
-                                      &act_vars, &flow_item);
+                                      actions_len, &act_resources, &act_vars,
+                                      &flow_item);
 
     if (!flow_item.rte_flow[0] &&
         !netdev_vport_is_vport_class(netdev->netdev_class)) {
