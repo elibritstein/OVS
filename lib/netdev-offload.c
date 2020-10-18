@@ -60,6 +60,7 @@ VLOG_DEFINE_THIS_MODULE(netdev_offload);
 
 
 static bool netdev_flow_api_enabled = false;
+static bool e2e_cache_enabled = false;
 static struct id_fpool *flow_mark_pool;
 
 #define DEFAULT_OFFLOAD_THREAD_NB 1
@@ -550,6 +551,12 @@ netdev_offload_thread_nb(void)
     return offload_thread_nb;
 }
 
+bool
+netdev_is_e2e_cache_enabled(void)
+{
+    return e2e_cache_enabled;
+}
+
 unsigned int
 netdev_offload_ufid_to_thread_id(const ovs_u128 ufid)
 {
@@ -905,6 +912,15 @@ netdev_set_flow_api_enabled(const struct smap *ovs_other_config)
             netdev_ports_flow_init();
 
             ovsthread_once_done(&once);
+        }
+    }
+
+    if (smap_get_bool(ovs_other_config, "e2e-enable", false)) {
+        static struct ovsthread_once once_e2e = OVSTHREAD_ONCE_INITIALIZER;
+
+        if (ovsthread_once_start(&once_e2e)) {
+            e2e_cache_enabled = true;
+            ovsthread_once_done(&once_e2e);
         }
     }
 }
