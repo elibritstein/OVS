@@ -417,11 +417,11 @@ dp_netdev_ct_offload_active(struct ct_flow_offload_item *offload,
 static void
 dp_netdev_ct_offload_e2e_add(struct ct_flow_offload_item *offload);
 static int
-e2e_cache_flow_del(const ovs_u128 *ufid);
+e2e_cache_flow_del(const ovs_u128 *ufid, struct dp_netdev *dp);
 static void
-dp_netdev_ct_offload_e2e_del(ovs_u128 *ufid)
+dp_netdev_ct_offload_e2e_del(ovs_u128 *ufid, void *dp)
 {
-    e2e_cache_flow_del(ufid);
+    e2e_cache_flow_del(ufid, dp);
 }
 
 static struct conntrack_offload_class dpif_ct_offload_class = {
@@ -3432,7 +3432,7 @@ queue_netdev_flow_del(struct dp_netdev_pmd_thread *pmd,
         return;
     }
 
-    e2e_cache_flow_del(&flow->mega_ufid);
+    e2e_cache_flow_del(&flow->mega_ufid, pmd->dp);
     offload = dp_netdev_alloc_flow_offload(pmd->dp, flow,
                                            DP_NETDEV_FLOW_OFFLOAD_OP_DEL);
     offload->timestamp = pmd->ctx.now;
@@ -8591,6 +8591,7 @@ struct e2e_cache_ufid_msg {
     int op;
     bool is_ct;
     struct nlattr *actions;
+    struct dp_netdev *dp;
     size_t actions_len;
     union {
         struct match match[0];
@@ -8643,7 +8644,9 @@ struct e2e_cache_stats {
     atomic_uint64_t del_merged_flow_hw;
     atomic_uint64_t merged_flows_in_cache;
     uint32_t add_ct_mt_flow_hw;
+    uint32_t del_ct_mt_flow_hw;
     uint32_t add_ct_mt_flow_err;
+    uint32_t del_ct_mt_flow_err;
 };
 
 static struct e2e_cache_thread_msg_queues e2e_cache_thread_msg_queues = {
@@ -8721,8 +8724,12 @@ dpif_netdev_dump_e2e_stats(struct ds *s)
                   (uint64_t)hmap_count(&flows_map));
     ds_put_format(s, "\n%-45s : %"PRIu32"", "successful CT MT flows to HW",
                   stats->add_ct_mt_flow_hw);
+    ds_put_format(s, "\n%-45s : %"PRIu32"", "successful deleted CT MT flows "
+                  "from HW", stats->del_ct_mt_flow_hw);
     ds_put_format(s, "\n%-45s : %"PRIu32"", "failed CT MT flows to HW",
                   stats->add_ct_mt_flow_err);
+    ds_put_format(s, "\n%-45s : %"PRIu32"", "failed CT MT flow removals from "
+                  "HW", stats->del_ct_mt_flow_err);
 }
 
 static void
@@ -9068,7 +9075,7 @@ e2e_cache_del_merged_flows(struct ovs_list *merged_flows_to_delete)
     }
 }
 
-static void
+static struct e2e_cache_ovs_flow *
 e2e_cache_flow_db_del_protected(const ovs_u128 *ufid, uint32_t hash,
                                 struct ovs_list *merged_flows_to_delete)
 {
@@ -9076,24 +9083,70 @@ e2e_cache_flow_db_del_protected(const ovs_u128 *ufid, uint32_t hash,
 
     flow = e2e_cache_flow_find(ufid, hash);
     if (OVS_UNLIKELY(!flow)) {
-        return;
+        return NULL;
     }
     e2e_cache_del_associated_merged_flows(flow, merged_flows_to_delete);
     hmap_remove(&flows_map, &flow->node);
-    ovsrcu_postpone(e2e_cache_flow_free, flow);
+    if (flow->offload_state == E2E_OL_STATE_FLOW) {
+        ovsrcu_postpone(e2e_cache_flow_free, flow);
+        flow = NULL;
+    }
+    return flow;
+}
+
+static inline void
+e2e_cache_populate_offload_item(struct dp_offload_thread_item *offload_item,
+                                int op,
+                                struct dp_netdev *dp,
+                                struct dp_netdev_flow *flow);
+
+static int
+e2e_cache_ct_flow_offload_del(struct dp_netdev *dp,
+                              struct e2e_cache_ovs_flow *ovs_flow)
+{
+    struct dp_offload_thread_item *offload_item;
+    struct dp_netdev_flow flow;
+    int ret;
+
+    memset(&flow, 0, sizeof flow);
+    *CONST_CAST(ovs_u128 *, &flow.mega_ufid) = ovs_flow->ufid;
+    CONST_CAST(struct flow *, &flow.flow)->in_port.odp_port =
+        ovs_flow->ct_match[0].odp_port;
+
+    offload_item = xmalloc(sizeof *offload_item +
+                           sizeof offload_item->data->flow);
+    e2e_cache_populate_offload_item(offload_item,
+                                    DP_NETDEV_FLOW_OFFLOAD_OP_DEL, dp, &flow);
+
+    ret = dp_netdev_flow_offload_del(offload_item);
+    free(offload_item);
+    if (!ret) {
+        e2e_stats.del_ct_mt_flow_hw++;
+    } else {
+        e2e_stats.del_ct_mt_flow_err++;
+    }
+    return ret;
 }
 
 static void
-e2e_cache_flow_db_del(const ovs_u128 *ufid)
+e2e_cache_flow_db_del(const ovs_u128 *ufid, struct dp_netdev *dp)
 {
     struct ovs_list merged_flows_to_delete =
         OVS_LIST_INITIALIZER(&merged_flows_to_delete);
     size_t hash = hash_bytes(ufid, sizeof *ufid, 0);
+    struct e2e_cache_ovs_flow *ct_flow;
 
     ovs_mutex_lock(&flows_map_mutex);
-    e2e_cache_flow_db_del_protected(ufid, hash, &merged_flows_to_delete);
+    ct_flow = e2e_cache_flow_db_del_protected(ufid, hash,
+                                              &merged_flows_to_delete);
     ovs_mutex_unlock(&flows_map_mutex);
 
+    if (ct_flow) {
+        if (ct_flow->offload_state == E2E_OL_STATE_CT_HW) {
+            e2e_cache_ct_flow_offload_del(dp, ct_flow);
+        }
+        ovsrcu_postpone(e2e_cache_flow_free, ct_flow);
+    }
     e2e_cache_del_merged_flows(&merged_flows_to_delete);
 }
 
@@ -9144,7 +9197,7 @@ e2e_cache_flow_db_put(struct e2e_cache_ufid_msg *ufid_msg)
 }
 
 static int
-e2e_cache_flow_del(const ovs_u128 *ufid)
+e2e_cache_flow_del(const ovs_u128 *ufid, struct dp_netdev *dp)
 {
     static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(10, 10);
     struct e2e_cache_ufid_msg *del_msg;
@@ -9157,6 +9210,7 @@ e2e_cache_flow_del(const ovs_u128 *ufid)
         return -1;
     }
     del_msg->ufid = *ufid;
+    del_msg->dp = dp;
 
     /* Insert message into queue, e2e_cache_ufid_msg_dequeue()
      * is used to dequeue it from there.
@@ -9820,7 +9874,7 @@ dp_netdev_e2e_cache_main(void *arg OVS_UNUSED)
             if (ufid_msg->op == E2E_UFID_MSG_PUT) {
                 e2e_cache_flow_db_put(ufid_msg);
             } else {
-                e2e_cache_flow_db_del(&ufid_msg->ufid);
+                e2e_cache_flow_db_del(&ufid_msg->ufid, ufid_msg->dp);
             }
             e2e_cache_ufid_msg_free(ufid_msg);
         }
@@ -9862,7 +9916,8 @@ e2e_cache_flow_put(bool is_ct OVS_UNUSED,
     return 0;
 }
 static int
-e2e_cache_flow_del(const ovs_u128 *ufid OVS_UNUSED)
+e2e_cache_flow_del(const ovs_u128 *ufid OVS_UNUSED,
+                   struct dp_netdev *dp OVS_UNUSED)
 {
     return 0;
 }
