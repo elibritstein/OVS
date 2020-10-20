@@ -100,7 +100,7 @@ netdev_offload_thread_id(void)
     return id;
 }
 
-#define INVALID_FLOW_MARK (UINT32_MAX)
+#define INVALID_FLOW_MARK 0
 
 int netdev_flow_flush(struct netdev *);
 int netdev_flow_dump_create(struct netdev *, struct netdev_flow_dump **dump,
