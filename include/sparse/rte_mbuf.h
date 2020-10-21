@@ -18,10 +18,18 @@
 #endif
 
 /* sparse doesn't know about gcc atomic builtins. */
+#ifndef __ATOMIC_ACQ_REL
 #define __ATOMIC_ACQ_REL 0
+#endif
+#ifndef __ATOMIC_RELAXED
 #define __ATOMIC_RELAXED 1
+#endif
+#ifndef __atomic_add_fetch
 #define __atomic_add_fetch(p, val, memorder) (*(p) = *(p) + (val))
+#endif
+#ifndef __atomic_store_n
 #define __atomic_store_n(p, val, memorder) (*(p) = (val))
+#endif
 
 /* Get actual <rte_mbuf.h> definitions for us to annotate and build on. */
 #include_next <rte_mbuf.h>
