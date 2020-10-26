@@ -75,6 +75,7 @@ struct act_resources {
     uint32_t ct_match_label_id;
     uint32_t ct_action_label_id;
     struct shared_age_ctx **pshared_age_ctx;
+    uint32_t ctid;
 };
 
 #define NUM_RTE_FLOWS_PER_PORT 2
@@ -1579,6 +1580,78 @@ out:
     ovs_mutex_unlock(&md->maps_lock);
 }
 
+static struct ds *
+dump_counter_id(struct ds *s, void *data)
+{
+    uintptr_t ct_id_key = *(uintptr_t *) data;
+
+    ds_put_format(s, "CT id key = 0x%"PRIxPTR, ct_id_key);
+    return s;
+}
+
+#define MIN_COUNTER_ID       1U
+#define MAX_COUNTER_ID       (UINT32_MAX - 1U)
+
+static struct id_fpool *counter_id_pool = NULL;
+
+static uint32_t
+counter_id_alloc(void)
+{
+    static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
+    unsigned int tid = netdev_offload_thread_id();
+    uint32_t counter_id;
+
+    if (ovsthread_once_start(&init_once)) {
+        unsigned int nb_thread = netdev_offload_dpdk_thread_nb();
+
+        /* Haven't initiated yet, do it here */
+        counter_id_pool = id_fpool_create(nb_thread, MIN_COUNTER_ID,
+                                          MAX_COUNTER_ID);
+
+        ovsthread_once_done(&init_once);
+    }
+    if (id_fpool_new_id(counter_id_pool, tid, &counter_id)) {
+        return counter_id;
+    }
+    return 0;
+}
+
+static void
+counter_id_free(uint32_t counter_id)
+{
+    unsigned int tid = netdev_offload_thread_id();
+
+    id_fpool_free_id(counter_id_pool, tid, counter_id);
+}
+
+static struct context_metadata counter_id_md = {
+    .name = "counter_id",
+    .dump_context_data = dump_counter_id,
+    .maps_lock = OVS_MUTEX_INITIALIZER,
+    .d2i_map = CMAP_INITIALIZER,
+    .i2d_map = CMAP_INITIALIZER,
+    .id_alloc = counter_id_alloc,
+    .id_free = counter_id_free,
+    .data_size = sizeof(uintptr_t),
+};
+
+static int
+get_ct_counter_id(uintptr_t ctid_key, uint32_t *ct_id)
+{
+    struct context_data ct_id_ctx = {
+        .data = &ctid_key,
+    };
+
+    return get_context_data_id_by_data(&counter_id_md, &ct_id_ctx, NULL,
+                                       ct_id);
+}
+
+static void
+put_ct_counter_id(uint32_t ct_id)
+{
+    put_context_data_by_id(&counter_id_md, ct_id);
+}
+
 static void
 put_action_resources(struct act_resources *act_resources)
 {
@@ -1595,6 +1668,7 @@ put_action_resources(struct act_resources *act_resources)
     put_label_id(act_resources->ct_match_label_id);
     put_label_id(act_resources->ct_action_label_id);
     put_shared_age_ctx(act_resources->pshared_age_ctx);
+    put_ct_counter_id(act_resources->ctid);
 }
 
 static int
@@ -2294,7 +2368,6 @@ struct act_vars {
     uint32_t recirc_id;
     struct flow_tnl *tnl_key;
     struct flow_tnl tnl_mask;
-    uint32_t ctid;
     bool is_e2e_cache;
     uint32_t app_flows_counter;
     uint32_t app_ct_counter;
@@ -3943,14 +4016,20 @@ parse_ct_actions(struct flow_actions *actions,
             act_vars->ct_mode = CT_MODE_CT_NAT;
         } else if (nl_attr_type(cta) == OVS_CT_ATTR_HELPER) {
             const char *helper = nl_attr_get(cta);
+            uintptr_t ctid_key;
 
             if (strncmp(helper, "offl", strlen("offl"))) {
                 continue;
             }
 
-            if (!ovs_scan(helper, "offl,st(0x%"SCNx8"),id(0x%"SCNx32")",
-                          &ct_miss_ctx.state, &act_vars->ctid)) {
+            if (!ovs_scan(helper, "offl,st(0x%"SCNx8"),id_key(0x%"SCNxPTR")",
+                          &ct_miss_ctx.state, &ctid_key)) {
                 VLOG_ERR("Invalid offload helper: '%s'", helper);
+                return -1;
+            }
+
+            if (get_ct_counter_id(ctid_key, &act_resources->ctid)) {
+                VLOG_ERR("Could not create CT id");
                 return -1;
             }
 
@@ -4011,7 +4090,6 @@ create_ct_conn(struct netdev *netdev,
                struct flow_actions *flow_actions,
                struct rte_flow_error *error,
                struct act_resources *act_resources,
-               struct act_vars *act_vars,
                struct flow_item *fi)
 {
     struct flow_actions nat_actions = { .actions = NULL, .cnt = 0 };
@@ -4020,7 +4098,7 @@ create_ct_conn(struct netdev *netdev,
     int ret = -1;
 
     split_ct_conn_actions(flow_actions->actions, &ct_actions, &nat_actions,
-                          act_vars->ctid);
+                          act_resources->ctid);
     attr.group = CTNAT_TABLE_ID;
     fi->has_count[0] = true;
     fi->rte_flow[1] = create_rte_flow(netdev, &attr, flow_patterns,
@@ -4174,7 +4252,7 @@ netdev_offload_dpdk_flow_create(struct netdev *netdev,
                                   error, act_resources, act_vars, fi);
     case CT_MODE_CT_CONN:
         return create_ct_conn(netdev, flow_patterns, flow_actions, error,
-                              act_resources, act_vars, fi);
+                              act_resources, fi);
     default:
         OVS_NOT_REACHED();
     }
