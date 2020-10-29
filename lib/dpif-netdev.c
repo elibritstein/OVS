@@ -3021,8 +3021,7 @@ dp_netdev_ct_offload_add(struct ct_flow_offload_item *ct_offload)
 
     port = netdev_ports_get(ct_offload->odp_port, dpif_type_str);
     if (!port) {
-        ret = -1;
-        goto out;
+        return -1;
     }
 
     dp_netdev_fill_ct_match(&match, ct_offload);
@@ -3070,13 +3069,10 @@ dp_netdev_ct_offload_add(struct ct_flow_offload_item *ct_offload)
      * updated.
      */
     *(ct_offload->status) = !ret;
-    atomic_thread_fence(memory_order_acquire);
-    *(ct_offload->dont_free) = false;
     ovs_rwlock_unlock(&dp->port_rwlock);
     netdev_close(port);
     ofpbuf_uninit(&buf);
 
-out:
     return ret;
 }
 
@@ -3086,7 +3082,7 @@ dp_netdev_ct_offload_del(struct ct_flow_offload_item *ct_offload)
     struct dp_netdev *dp = ct_offload->dp;
     const char *dpif_type_str = dpif_normalize_type(dp->class->type);
     struct netdev *port;
-    int ret = 0;
+    int ret;
 
     port = netdev_ports_get(ct_offload->odp_port, dpif_type_str);
     if (!port) {
@@ -3135,6 +3131,15 @@ dp_offload_ct(struct dp_offload_thread_item *item)
     char *op;
     int ret;
     int dir;
+
+    if (ct_offload[CT_DIR_INIT].op == DP_NETDEV_FLOW_OFFLOAD_OP_ADD &&
+        ovs_refcount_unref(ct_offload[CT_DIR_INIT].refcnt) == 1) {
+        free(ct_offload[CT_DIR_INIT].refcnt);
+        return;
+    }
+    if (ct_offload[CT_DIR_INIT].op == DP_NETDEV_FLOW_OFFLOAD_OP_DEL) {
+        free(ct_offload[CT_DIR_INIT].refcnt);
+    }
 
     if (ct_offload->op == DP_NETDEV_FLOW_OFFLOAD_OP_ADD) {
        dp_alloc_ctid(ct_offload->ctid_ptr);
