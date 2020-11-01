@@ -4853,11 +4853,11 @@ netdev_offload_dpdk_get_n_flows(struct netdev *netdev,
 }
 
 static int
-netdev_offload_dpdk_counter_query(struct netdev *netdev,
-                                  uintptr_t app_counter_id,
-                                  long long now,
-                                  long long prev_now,
-                                  struct dpif_flow_stats *stats)
+netdev_offload_dpdk_ct_counter_query(struct netdev *netdev,
+                                     uintptr_t app_counter_id,
+                                     long long now,
+                                     long long prev_now,
+                                     struct dpif_flow_stats *stats)
 {
     struct rte_flow_query_age query_age;
     struct shared_age_ctx **pctx, *ctx;
@@ -4894,5 +4894,5 @@ const struct netdev_flow_api netdev_offload_dpdk = {
     .flow_flush = netdev_offload_dpdk_flow_flush,
     .hw_miss_packet_recover = netdev_offload_dpdk_hw_miss_packet_recover,
     .flow_get_n_flows = netdev_offload_dpdk_get_n_flows,
-    .counter_query = netdev_offload_dpdk_counter_query,
+    .ct_counter_query = netdev_offload_dpdk_ct_counter_query,
 };
