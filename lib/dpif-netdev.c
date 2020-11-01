@@ -8938,8 +8938,12 @@ e2e_cache_ufid_msg_free(struct e2e_cache_ufid_msg *msg)
 }
 
 static void
+e2e_cache_disassociate_counters(struct e2e_cache_merged_flow *merged_flow);
+
+static void
 e2e_cache_merged_flow_free(struct e2e_cache_merged_flow *merged_flow)
 {
+    e2e_cache_disassociate_counters(merged_flow);
     if (merged_flow->actions) {
         free(merged_flow->actions);
     }
@@ -9504,7 +9508,6 @@ e2e_cache_merged_flow_offload_del(struct e2e_cache_merged_flow *merged_flow)
     e2e_cache_populate_offload_item(offload_item,
                                     DP_NETDEV_FLOW_OFFLOAD_OP_DEL, dp, &flow);
 
-    e2e_cache_disassociate_counters(merged_flow);
     merged_flow->dp = NULL;
     atomic_count_inc64(&e2e_stats.del_merged_flow_hw);
     rv = dp_netdev_flow_offload_del(offload_item);
