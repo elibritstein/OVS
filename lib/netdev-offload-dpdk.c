@@ -76,6 +76,7 @@ struct act_resources {
     uint32_t ct_action_label_id;
     struct shared_age_ctx **pshared_age_ctx;
     uint32_t ctid;
+    uint32_t counter_id;
 };
 
 #define NUM_RTE_FLOWS_PER_PORT 2
@@ -1468,7 +1469,7 @@ static struct context_metadata shared_age_md = {
 
 static struct shared_age_ctx **
 get_shared_age_ctx(struct netdev *netdev,
-                   uintptr_t app_counter_id,
+                   uintptr_t app_counter_key,
                    bool create)
 {
     struct context_metadata *md = &shared_age_md;
@@ -1485,9 +1486,9 @@ get_shared_age_ctx(struct netdev *netdev,
     size_t data_size;
     size_t dhash;
 
-    dhash = hash_bytes(&app_counter_id, sizeof app_counter_id, 0);
+    dhash = hash_bytes(&app_counter_key, sizeof app_counter_key, 0);
     CMAP_FOR_EACH_WITH_HASH (data_cur, d2i_node, dhash, &md->d2i_map) {
-        if (app_counter_id == *((uintptr_t *) data_cur->data)) {
+        if (app_counter_key == *((uintptr_t *) data_cur->data)) {
             if (!context_data_ref(md, data_cur, dhash)) {
                 /* If a reference could not be taken, it means that
                  * while the data has been found within the map, it has
@@ -1520,7 +1521,7 @@ get_shared_age_ctx(struct netdev *netdev,
     }
     ctx->netdev = netdev;
 
-    *((uintptr_t *) data_cur->data) = app_counter_id;
+    *((uintptr_t *) data_cur->data) = app_counter_key;
     ovs_refcount_init(&data_cur->refcount);
     ovs_mutex_lock(&md->maps_lock);
     data_cur->d2i_hash = dhash;
@@ -1583,9 +1584,11 @@ out:
 static struct ds *
 dump_counter_id(struct ds *s, void *data)
 {
-    uintptr_t ct_id_key = *(uintptr_t *) data;
+    struct flows_counter_key *key = (struct flows_counter_key *) data;
+    char buffer[OFFLOAD_FLOWS_COUNTER_KEY_STRING_SIZE];
 
-    ds_put_format(s, "CT id key = 0x%"PRIxPTR, ct_id_key);
+    netdev_flow_counter_key_to_string(key, buffer, sizeof buffer);
+    ds_put_format(s, "counter_id_key=%s", buffer);
     return s;
 }
 
@@ -1632,14 +1635,15 @@ static struct context_metadata counter_id_md = {
     .i2d_map = CMAP_INITIALIZER,
     .id_alloc = counter_id_alloc,
     .id_free = counter_id_free,
-    .data_size = sizeof(uintptr_t),
+    .data_size = sizeof(struct flows_counter_key),
 };
 
 static int
 get_ct_counter_id(uintptr_t ctid_key, uint32_t *ct_id)
 {
+    struct flows_counter_key counter_id_key = { .ptr_key = ctid_key, };
     struct context_data ct_id_ctx = {
-        .data = &ctid_key,
+        .data = &counter_id_key,
     };
 
     return get_context_data_id_by_data(&counter_id_md, &ct_id_ctx, NULL,
@@ -1650,6 +1654,24 @@ static void
 put_ct_counter_id(uint32_t ct_id)
 {
     put_context_data_by_id(&counter_id_md, ct_id);
+}
+
+static int
+get_flows_counter_id(struct flows_counter_key *counter_key,
+                     uint32_t *counter_id)
+{
+    struct context_data ct_id_ctx = {
+        .data = counter_key,
+    };
+
+    return get_context_data_id_by_data(&counter_id_md, &ct_id_ctx, NULL,
+                                       counter_id);
+}
+
+static void
+put_flows_counter_id(uint32_t counter_id)
+{
+    put_context_data_by_id(&counter_id_md, counter_id);
 }
 
 static void
@@ -1669,6 +1691,7 @@ put_action_resources(struct act_resources *act_resources)
     put_label_id(act_resources->ct_action_label_id);
     put_shared_age_ctx(act_resources->pshared_age_ctx);
     put_ct_counter_id(act_resources->ctid);
+    put_flows_counter_id(act_resources->counter_id);
 }
 
 static int
@@ -2369,8 +2392,8 @@ struct act_vars {
     struct flow_tnl *tnl_key;
     struct flow_tnl tnl_mask;
     bool is_e2e_cache;
-    uint32_t app_flows_counter;
-    uintptr_t app_ct_counter;
+    uintptr_t ct_counter_key;
+    struct flows_counter_key flows_counter_key;
 };
 
 static struct rte_flow *
@@ -3470,16 +3493,21 @@ add_count_action(struct netdev *netdev,
 {
     struct rte_flow_action_count *count = xzalloc(sizeof *count);
 
-    if (act_vars->is_e2e_cache && act_vars->app_flows_counter) {
+    if (act_vars->is_e2e_cache &&
+        !netdev_is_flow_counter_key_zero(&act_vars->flows_counter_key)) {
+        if (get_flows_counter_id(&act_vars->flows_counter_key, &count->id)) {
+            free(count);
+            return -1;
+        }
         count->shared = 1;
-        count->id = act_vars->app_flows_counter;
+        act_resources->counter_id = count->id;
     }
     add_flow_action(actions, RTE_FLOW_ACTION_TYPE_COUNT, count);
 
-    if (act_vars->is_e2e_cache && act_vars->app_ct_counter) {
+    if (act_vars->is_e2e_cache && act_vars->ct_counter_key) {
         struct shared_age_ctx **pctx;
 
-        pctx = get_shared_age_ctx(netdev, act_vars->app_ct_counter, true);
+        pctx = get_shared_age_ctx(netdev, act_vars->ct_counter_key, true);
         if (!pctx) {
             return -1;
         }
@@ -4405,8 +4433,9 @@ netdev_offload_dpdk_add_flow(struct netdev *netdev,
     int ret;
 
     act_vars.is_e2e_cache = info->is_e2e_cache_flow;
-    act_vars.app_flows_counter = info->flows_counter;
-    act_vars.app_ct_counter = info->ct_counter;
+    act_vars.ct_counter_key = info->ct_counter_key;
+    memcpy(&act_vars.flows_counter_key, &info->flows_counter_key,
+           sizeof info->flows_counter_key);
     ret = parse_flow_match(netdev, info->orig_in_port, &patterns, match,
                            &act_resources, &act_vars);
     if (ret) {
@@ -4854,7 +4883,7 @@ netdev_offload_dpdk_get_n_flows(struct netdev *netdev,
 
 static int
 netdev_offload_dpdk_ct_counter_query(struct netdev *netdev,
-                                     uintptr_t app_counter_id,
+                                     uintptr_t counter_key,
                                      long long now,
                                      long long prev_now,
                                      struct dpif_flow_stats *stats)
@@ -4866,10 +4895,10 @@ netdev_offload_dpdk_ct_counter_query(struct netdev *netdev,
 
     memset(stats, 0, sizeof *stats);
 
-    pctx = get_shared_age_ctx(netdev, app_counter_id, false);
+    pctx = get_shared_age_ctx(netdev, counter_key, false);
     if (pctx == NULL) {
         VLOG_ERR_RL(&rl, "Could not get shared age ctx for "
-                    "app_counter_id=0x%"PRIxPTR, app_counter_id);
+                    "counter_key=0x%"PRIxPTR, counter_key);
         return -1;
     }
     ctx = *pctx;
