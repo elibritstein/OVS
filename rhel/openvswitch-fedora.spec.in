@@ -21,8 +21,6 @@
 # testing out of tree kernel modules the appropriate openvswitch-kmod
 # package should be installed first.
 
-#%define kernel 2.6.40.4-5.fc15.x86_64
-
 # If libcap-ng isn't available and there is no need for running OVS
 # as regular user, specify the '--without libcapng'
 %bcond_without libcapng
@@ -30,6 +28,9 @@
 %bcond_with dpdk
 # To enable AF_XDP support, specify '--with afxdp' when building
 %bcond_with afxdp
+%if %{with dpdk}
+%{!?dpdk_datadir:%define dpdk_datadir /opt/mellanox/dpdk}
+%endif
 
 # Do a static build using '--with static'
 %bcond_with static
@@ -77,7 +78,7 @@ BuildRequires: libcap-ng libcap-ng-devel
 %endif
 %if %{with dpdk}
 BuildRequires: libpcap-devel numactl-devel
-BuildRequires: dpdk-devel >= 20.11
+BuildRequires: mlnx-dpdk-devel >= 20.11
 Provides: %{name}-dpdk = %{version}-%{release}
 %endif
 %if %{with afxdp}
@@ -172,7 +173,7 @@ This package provides IPsec tunneling support for OVS tunnels.
         --disable-libcapng \
 %endif
 %if %{with dpdk}
-        --with-dpdk=shared \
+        --with-dpdk=$(dirname %{dpdk_datadir}) \
 %endif
 %if %{with afxdp}
         --enable-afxdp \
