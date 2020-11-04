@@ -2370,7 +2370,7 @@ struct act_vars {
     struct flow_tnl tnl_mask;
     bool is_e2e_cache;
     uint32_t app_flows_counter;
-    uint32_t app_ct_counter;
+    uintptr_t app_ct_counter;
 };
 
 static struct rte_flow *

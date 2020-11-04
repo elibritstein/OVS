@@ -368,7 +368,7 @@ struct dp_offload_flow_item {
     odp_port_t orig_in_port; /* Originating in_port for tnl flows. */
     bool is_e2e_cache_flow;
     uint32_t flows_counter;
-    uint32_t ct_counter;
+    uintptr_t ct_counter;
 };
 
 struct dp_offload_flush_item {
@@ -644,7 +644,7 @@ struct e2e_cache_merged_flow {
     uint16_t actions_size;
     uint16_t associated_flows_len;
     uint32_t flows_counter;
-    uint32_t ct_counter;
+    uintptr_t ct_counter;
     struct ovs_list flow_counter_list; /* Anchor for list of merged flows
                                           using the same flow counter. */
     struct ovs_list ct_counter_list; /* Anchor for list of merged flows
@@ -9618,6 +9618,8 @@ e2e_cache_associate_counters(struct e2e_cache_merged_flow *merged_flow,
     uint16_t mt_index, flows_index = 0;
     size_t counter_hash;
 
+    BUILD_ASSERT_DECL(sizeof(size_t) >= sizeof(uintptr_t));
+
     ovs_mutex_lock(&flows_map_mutex);
 
     for (mt_index = 0; mt_index < trc_info->num_elements; mt_index++) {
@@ -9704,32 +9706,40 @@ e2e_cache_merged_flow_offload_del(struct e2e_cache_merged_flow *merged_flow)
 
 static void
 e2e_cache_calc_counters(struct e2e_cache_merged_flow *merged_flow,
+                        struct e2e_cache_ovs_flow *mt_flows[],
                         const struct e2e_cache_trace_info *trc_info)
 {
-    uint16_t mt_index, flows_index, ct_index;
+    uintptr_t ptr, ct_counter = UINTPTR_MAX;
+    uint16_t mt_index, flows_index = 0;
     ovs_u128 flow_ufids[E2E_CACHE_MAX_TRACE];
-    ovs_u128 ct_ufids[E2E_CACHE_MAX_TRACE];
 
+    merged_flow->ct_counter = 0;
     memset(flow_ufids, 0, sizeof flow_ufids);
-    memset(ct_ufids, 0, sizeof ct_ufids);
-    for (mt_index = 0, flows_index = 0, ct_index = 0;
-         mt_index < trc_info->num_elements; mt_index++) {
+
+    for (mt_index = 0; mt_index < trc_info->num_elements; mt_index++) {
         if (trc_info->e2e_trace_ct_ufids & (1 << mt_index)) {
             if (trc_info->e2e_trace_ct_ufids & (1 << (mt_index + 1))) {
                 continue;
             }
-            /* CT are traced only for both directions, adjacent. Calc the
-             * counter hash based on both, XORed.
+            /* CT are traced only for both directions, adjacent. Calc
+             * ct_counter as the lowest value among all pointers to DB items
+             * for all CT in the trace.
              */
-            ct_ufids[ct_index++] = ovs_u128_xor(trc_info->ufids[mt_index],
-                                                trc_info->ufids[mt_index - 1]);
+            ptr = (uintptr_t) mt_flows[mt_index];
+            if (ptr < ct_counter) {
+                ct_counter = ptr;
+            }
+            ptr = (uintptr_t) mt_flows[mt_index - 1];
+            if (ptr < ct_counter) {
+                ct_counter = ptr;
+            }
         } else {
             flow_ufids[flows_index++] = trc_info->ufids[mt_index];
         }
     }
     merged_flow->flows_counter = hash_bytes(flow_ufids, sizeof flow_ufids, 0);
     if (trc_info->e2e_trace_ct_ufids) {
-        merged_flow->ct_counter = hash_bytes(ct_ufids, sizeof ct_ufids, 0);
+        merged_flow->ct_counter = ct_counter;
     }
 }
 
@@ -9759,8 +9769,9 @@ e2e_cache_merged_flow_offload_put(struct dp_netdev *dp,
     e2e_cache_populate_offload_item(offload_item,
                                     DP_NETDEV_FLOW_OFFLOAD_OP_ADD, dp, &flow);
 
-    e2e_cache_calc_counters(merged_flow, trc_info);
+    e2e_cache_calc_counters(merged_flow, mt_flows, trc_info);
     e2e_cache_associate_counters(merged_flow, mt_flows, trc_info);
+
     flow_offload = &offload_item->data->flow;
     memcpy(&flow_offload->match, &merged_flow->match,
            sizeof merged_flow->match);
