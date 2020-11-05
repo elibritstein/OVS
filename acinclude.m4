@@ -489,7 +489,15 @@ AC_DEFUN([OVS_CHECK_DPDK], [
     OVS_FIND_DEPENDENCY([dlopen], [dl], [libdl])
 
     AC_MSG_CHECKING([whether linking with dpdk works])
-    LIBS="$DPDK_LIB $LIBS"
+    case "$DPDK_LINK" in
+       ""|"static")
+           LIBFIX=" -l:librte_bus_vdev.a "
+         ;;
+       *)
+           LIBFIX=" -lrte_bus_vdev -lrte_bus_pci -lrte_net_vhost "
+         ;;
+    esac
+    LIBS="$DPDK_LIB $LIBS $LIBFIX"
     AC_LINK_IFELSE(
       [AC_LANG_PROGRAM([#include <rte_config.h>
                         #include <rte_eal.h>],
