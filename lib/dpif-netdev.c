@@ -424,7 +424,8 @@ dp_netdev_offload_init(void)
         return;
     }
 
-    dp_offload_threads = xcalloc(nb_offload_thread,
+    dp_offload_threads = xcalloc(nb_offload_thread +
+                                 netdev_is_e2e_cache_enabled(),
                                  sizeof *dp_offload_threads);
 
     for (tid = 0; tid < nb_offload_thread; tid++) {
@@ -439,6 +440,10 @@ dp_netdev_offload_init(void)
         mov_avg_ema_init(&thread->ema, 100);
         atomic_init(&thread->ct_conns, 0);
         ovs_thread_create("hw_offload", dp_netdev_flow_offload_main, thread);
+    }
+    if (netdev_is_e2e_cache_enabled()) {
+        atomic_init(&dp_offload_threads[tid].enqueued_item, 0);
+        atomic_init(&dp_offload_threads[tid].ct_conns, 0);
     }
 
     ovsthread_once_done(&once);
@@ -5102,7 +5107,7 @@ dpif_netdev_offload_stats_get(struct dpif *dpif,
         return EINVAL;
     }
 
-    nb_thread = netdev_offload_thread_nb();
+    nb_thread = netdev_offload_thread_nb() + netdev_is_e2e_cache_enabled();
     /* nb_thread counters for the overall total as well. */
     stats->size = ARRAY_SIZE(hwol_stats) * (nb_thread + 1);
     stats->counters = xcalloc(stats->size, sizeof *stats->counters);
