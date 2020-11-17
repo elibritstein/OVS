@@ -36,6 +36,7 @@ v2.15.0 - 15 Feb 2021
    - DPDK:
      * Removed support for vhost-user dequeue zero-copy.
      * Add support for DPDK 20.11.
+     * Add hardware offload support for tunnel pop action (experimental).
    - Userspace datapath:
      * Add the 'pmd' option to "ovs-appctl dpctl/dump-flows", which
        restricts a flow dump to a single PMD thread if set.
