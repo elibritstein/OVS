@@ -7063,6 +7063,44 @@ smc_lookup_batch(struct dp_netdev_pmd_thread *pmd,
     pmd_perf_update_counter(&pmd->perf_stats, PMD_STAT_SMC_HIT, n_smc_hit);
 }
 
+static struct tx_port *
+pmd_send_port_cache_lookup(const struct dp_netdev_pmd_thread *pmd,
+                           odp_port_t port_no);
+
+static inline int
+dp_netdev_hw_flow(const struct dp_netdev_pmd_thread *pmd,
+                  odp_port_t port_no,
+                  struct dp_packet *packet,
+                  struct dp_netdev_flow **flow)
+{
+    struct tx_port *p;
+    uint32_t mark;
+
+    if (!netdev_is_flow_api_enabled() || *recirc_depth_get() != 0) {
+        *flow = NULL;
+        return 0;
+    }
+
+    /* Restore the packet if HW processing was terminated before completion. */
+    p = pmd_send_port_cache_lookup(pmd, port_no);
+    if (OVS_LIKELY(p)) {
+        int err = netdev_hw_miss_packet_recover(p->port->netdev, packet);
+
+        if (err != 0 && err != EOPNOTSUPP) {
+            return -1;
+        }
+    }
+
+    /* If no mark, no flow to find. */
+    if (!dp_packet_has_flow_mark(packet, &mark)) {
+        *flow = NULL;
+        return 0;
+    }
+
+    *flow = mark_to_flow_find(pmd, mark);
+    return 0;
+}
+
 /* Try to process all ('cnt') the 'packets' using only the datapath flow cache
  * 'pmd->flow_cache'. If a flow is not found for a packet 'packets[i]', the
  * miniflow is copied into 'keys' and the packet pointer is moved at the
@@ -7107,7 +7145,6 @@ dfc_processing(struct dp_netdev_pmd_thread *pmd,
 
     DP_PACKET_BATCH_REFILL_FOR_EACH (i, cnt, packet, packets_) {
         struct dp_netdev_flow *flow;
-        uint32_t mark;
 
         if (OVS_UNLIKELY(dp_packet_size(packet) < ETH_HEADER_LEN)) {
             dp_packet_delete(packet);
@@ -7126,24 +7163,25 @@ dfc_processing(struct dp_netdev_pmd_thread *pmd,
             pkt_metadata_init(&packet->md, port_no);
         }
 
-        if ((*recirc_depth_get() == 0) &&
-            dp_packet_has_flow_mark(packet, &mark)) {
-            flow = mark_to_flow_find(pmd, mark);
-            if (OVS_LIKELY(flow)) {
-                tcp_flags = parse_tcp_flags(packet);
-                if (OVS_LIKELY(batch_enable)) {
-                    dp_netdev_queue_batches(packet, flow, tcp_flags, batches,
-                                            n_batches);
-                } else {
-                    /* Flow batching should be performed only after fast-path
-                     * processing is also completed for packets with emc miss
-                     * or else it will result in reordering of packets with
-                     * same datapath flows. */
-                    packet_enqueue_to_flow_map(packet, flow, tcp_flags,
-                                               flow_map, map_cnt++);
-                }
-                continue;
+        if (OVS_UNLIKELY(dp_netdev_hw_flow(pmd, port_no, packet, &flow))) {
+            /* Packet restoration failed. Its mbuf was freed, do not continue
+             * processing.
+             */
+            continue;
+        } else if (OVS_LIKELY(flow)) {
+            tcp_flags = parse_tcp_flags(packet);
+            if (OVS_LIKELY(batch_enable)) {
+                dp_netdev_queue_batches(packet, flow, tcp_flags, batches,
+                                        n_batches);
+            } else {
+                /* Flow batching should be performed only after fast-path
+                 * processing is also completed for packets with emc miss
+                 * or else it will result in reordering of packets with
+                 * same datapath flows. */
+                packet_enqueue_to_flow_map(packet, flow, tcp_flags, flow_map,
+                                           map_cnt++);
             }
+            continue;
         }
 
         miniflow_extract(packet, &key->mf);
