@@ -2380,6 +2380,13 @@ dump_flow_action(struct ds *s, struct ds *s_extra,
         ds_put_format(s_extra, "flow indirect_action 0 create ingress transfer"
                       " action_id %p action age timeout 0xffffff / end;",
                       actions->conf);
+    } else if (actions->type == RTE_FLOW_ACTION_TYPE_RAW_DECAP) {
+        const struct rte_flow_action_raw_decap *raw_decap = actions->conf;
+
+        ds_put_cstr(s, "raw_decap index 0 / ");
+        if (raw_decap) {
+            ds_put_format(s_extra, "%s", ds_cstr(&flow_actions->s_tnl));
+        }
     } else {
         ds_put_format(s, "unknown rte flow action (%d)\n", actions->type);
     }
@@ -3797,10 +3804,10 @@ parse_set_actions(struct flow_actions *actions,
     return 0;
 }
 
-/* Maximum number of items in struct rte_flow_action_vxlan_encap.
- * ETH / IPv4(6) / UDP / VXLAN / END
+/* Maximum number of items in vxlan/geneve encap/decap.
+ * ETH / IPv4(6) / UDP / VXLAN(GENEVE) / END
  */
-#define ACTION_VXLAN_ENCAP_ITEMS_NUM 5
+#define TUNNEL_ITEMS_NUM 5
 
 static int
 add_vxlan_encap_action(struct flow_actions *actions,
@@ -3810,7 +3817,7 @@ add_vxlan_encap_action(struct flow_actions *actions,
     const struct udp_header *udp;
     struct vxlan_data {
         struct rte_flow_action_vxlan_encap conf;
-        struct rte_flow_item items[ACTION_VXLAN_ENCAP_ITEMS_NUM];
+        struct rte_flow_item items[TUNNEL_ITEMS_NUM];
     } *vxlan_data;
     BUILD_ASSERT_DECL(offsetof(struct vxlan_data, conf) == 0);
     const void *vxlan;
@@ -4063,10 +4070,47 @@ add_recirc_action(struct netdev *netdev,
     return 0;
 }
 
+static void
+dump_raw_decap(struct ds *s_extra,
+               struct act_vars *act_vars)
+{
+    ds_init(s_extra);
+    ds_put_format(s_extra, "set raw_decap eth / udp / ");
+    if (act_vars->is_outer_ipv4) {
+        ds_put_format(s_extra, "ipv4 / ");
+    } else {
+        ds_put_format(s_extra, "ipv6 / ");
+    }
+    ds_put_format(s_extra, "geneve / end_set");
+}
+
 static int
 add_vxlan_decap_action(struct flow_actions *actions)
 {
     add_flow_action(actions, RTE_FLOW_ACTION_TYPE_VXLAN_DECAP, NULL);
+    return 0;
+}
+
+static int
+add_geneve_decap_action(struct flow_actions *actions,
+                        struct act_vars *act_vars)
+{
+    struct rte_flow_action_raw_decap *conf;
+
+    conf = xmalloc(sizeof (struct rte_flow_action_raw_decap));
+    conf->size = sizeof (struct eth_header) +
+                 sizeof (struct udp_header) +
+                 sizeof (struct geneve_opt) +
+                 (act_vars->is_outer_ipv4 ?
+                  sizeof (struct ip_header) :
+                  sizeof (struct ovs_16aligned_ip6_hdr));
+
+    conf->data = NULL;
+
+    add_flow_action(actions, RTE_FLOW_ACTION_TYPE_RAW_DECAP, conf);
+    if (VLOG_IS_DBG_ENABLED()) {
+        dump_raw_decap(&actions->s_tnl, act_vars);
+    }
     return 0;
 }
 
@@ -4076,6 +4120,9 @@ add_tnl_decap_action(struct flow_actions *actions,
 {
     if (act_vars->tnl_type == TNL_TYPE_VXLAN) {
         return add_vxlan_decap_action(actions);
+    }
+    if (act_vars->tnl_type == TNL_TYPE_GENEVE) {
+        return add_geneve_decap_action(actions, act_vars);
     }
     return -1;
 }
@@ -4268,7 +4315,8 @@ split_pre_post_ct_actions(const struct rte_flow_action *actions,
     while (actions && actions->type != RTE_FLOW_ACTION_TYPE_END) {
         if (actions->type == RTE_FLOW_ACTION_TYPE_VXLAN_DECAP ||
             actions->type == RTE_FLOW_ACTION_TYPE_SET_TAG ||
-            actions->type == RTE_FLOW_ACTION_TYPE_SET_META) {
+            actions->type == RTE_FLOW_ACTION_TYPE_SET_META ||
+            actions->type == RTE_FLOW_ACTION_TYPE_RAW_DECAP) {
             add_flow_action(pre_ct_actions, actions->type, actions->conf);
         } else {
             add_flow_action(post_ct_actions, actions->type, actions->conf);
