@@ -2110,6 +2110,24 @@ dump_flow_pattern(struct ds *s,
             ds_put_format(s, "id mask %d ", mark_mask->id);
         }
         ds_put_cstr(s, "/ ");
+    } else if (item->type == RTE_FLOW_ITEM_TYPE_GENEVE) {
+        const struct rte_flow_item_geneve *gnv_spec = item->spec;
+        const struct rte_flow_item_geneve *gnv_mask = item->mask;
+        ovs_be32 spec_vni, mask_vni;
+
+        ds_put_cstr(s, "geneve ");
+        if (gnv_spec) {
+            if (!gnv_mask) {
+                gnv_mask = &rte_flow_item_geneve_mask;
+            }
+            spec_vni = get_unaligned_be32(ALIGNED_CAST(ovs_be32 *,
+                                                       gnv_spec->vni));
+            mask_vni = get_unaligned_be32(ALIGNED_CAST(ovs_be32 *,
+                                                       gnv_mask->vni));
+            DUMP_PATTERN_ITEM(gnv_mask->vni, false, "vni", "%"PRIu32,
+                              ntohl(spec_vni) >> 8, ntohl(mask_vni) >> 8, 0);
+        }
+        ds_put_cstr(s, "/ ");
     } else {
         ds_put_format(s, "unknown rte flow pattern (%d)\n", item->type);
     }
@@ -2400,6 +2418,7 @@ enum tnl_type {
     TNL_TYPE_NONE,
     TNL_TYPE_VXLAN,
     TNL_TYPE_GRE,
+    TNL_TYPE_GENEVE,
 };
 
 struct act_vars {
@@ -2882,6 +2901,47 @@ parse_gre_match(struct flow_patterns *patterns,
     return 0;
 }
 
+static int
+parse_geneve_match(struct flow_patterns *patterns,
+                   struct match *match)
+{
+    struct rte_flow_item_geneve *gnv_spec, *gnv_mask;
+    struct flow *consumed_masks;
+    int ret;
+
+    ret = parse_tnl_ip_match(patterns, match, IPPROTO_UDP);
+    if (ret) {
+        return -1;
+    }
+
+    parse_tnl_udp_match(patterns, match);
+
+    consumed_masks = &match->wc.masks;
+    /* GENEVE */
+    gnv_spec = xzalloc(sizeof *gnv_spec);
+    gnv_mask = xzalloc(sizeof *gnv_mask);
+
+    put_unaligned_be32((ovs_be32 *)gnv_spec->vni,
+                       htonl(ntohll(match->flow.tunnel.tun_id) << 8));
+    put_unaligned_be32((ovs_be32 *)gnv_mask->vni,
+                       htonl(ntohll(match->wc.masks.tunnel.tun_id) << 8));
+
+    consumed_masks->tunnel.tun_id = 0;
+    consumed_masks->tunnel.flags = 0;
+
+    add_flow_pattern(patterns, RTE_FLOW_ITEM_TYPE_GENEVE, gnv_spec, gnv_mask,
+                     NULL);
+
+    /* tunnel.metadata.present.len value indicates the number of
+     * options, it's mask does not indicate any match on the packet,
+     * thus masked.
+     */
+    memset(&consumed_masks->tunnel.metadata.present, 0,
+           sizeof consumed_masks->tunnel.metadata.present);
+
+    return 0;
+}
+
 static int OVS_UNUSED
 parse_flow_tnl_match(struct netdev *tnldev,
                      struct flow_patterns *patterns,
@@ -2907,6 +2967,10 @@ parse_flow_tnl_match(struct netdev *tnldev,
     else if (!strcmp(netdev_get_type(tnldev), "gre")) {
         act_vars->tnl_type = TNL_TYPE_GRE;
         ret = parse_gre_match(patterns, match);
+    }
+    if (!strcmp(netdev_get_type(tnldev), "geneve")) {
+        act_vars->tnl_type = TNL_TYPE_GENEVE;
+        return parse_geneve_match(patterns, match);
     }
 
     return ret;
