@@ -2853,6 +2853,15 @@ dp_netdev_free_flow_offload(struct dp_offload_thread_item *offload)
 static void
 dp_netdev_free_ct_offload__(struct dp_offload_thread_item *offload)
 {
+    struct ct_flow_offload_item *ct_offload = offload->data->ct_offload_item;
+
+    if (ct_offload[CT_DIR_INIT].ct_actions_set) {
+        free(ct_offload[CT_DIR_INIT].actions);
+    }
+    if (ct_offload[CT_DIR_REP].ct_actions_set) {
+        free(ct_offload[CT_DIR_REP].actions);
+    }
+
     free(offload);
 }
 
@@ -3292,14 +3301,36 @@ dp_netdev_ct_add(struct ct_flow_offload_item *ct_offload,
                  dp_netdev_ct_add_cb cb)
 {
     struct nlattr *actions;
+    size_t actions_size;
     struct ofpbuf buf;
     int ret;
 
-    ofpbuf_init(&buf, 0);
-    dp_netdev_create_ct_actions(&buf, ct_offload);
-    actions = ofpbuf_at_assert(&buf, 0, sizeof(struct nlattr));
-    ret = cb(ct_offload, &ct_offload->ct_match, actions, buf.size);
-    ofpbuf_uninit(&buf);
+    /* Bypass actions building if the work is already done.
+     *
+     * When e2e is enabled, the datapath will create the ct_actions and
+     * send them ready to the e2e thread. There, if the e2e-cache is not
+     * yet full, they will be consumed directly. Otherwise, an offload
+     * request will be emitted to the regular offload threads.
+     *
+     * In this case, those OFL-threads will call again this function,
+     * but the actions will already have been created.
+     */
+
+    if (!ct_offload->ct_actions_set) {
+        ofpbuf_init(&buf, 0);
+        dp_netdev_create_ct_actions(&buf, ct_offload);
+        actions = ofpbuf_at_assert(&buf, 0, sizeof(struct nlattr));
+        actions_size = buf.size;
+    } else {
+        actions = ct_offload->actions;
+        actions_size = ct_offload->actions_size;
+    }
+
+    ret = cb(ct_offload, &ct_offload->ct_match, actions, actions_size);
+
+    if (!ct_offload->ct_actions_set) {
+        ofpbuf_uninit(&buf);
+    }
 
     return ret;
 }
@@ -3508,6 +3539,7 @@ static void
 dp_netdev_ct_offload_add_item(struct ct_flow_offload_item *ct_offload)
 {
     struct dp_offload_thread_item *item;
+    int dir;
 
     if (!netdev_is_flow_api_enabled()) {
         return;
@@ -3521,10 +3553,11 @@ dp_netdev_ct_offload_add_item(struct ct_flow_offload_item *ct_offload)
     item = xzalloc(sizeof *item + CT_DIR_NUM * sizeof *ct_offload);
     item->type = DP_OFFLOAD_CT;
     item->dp = NULL;
-    item->data->ct_offload_item[0] = ct_offload[0];
-    item->data->ct_offload_item[0].op = DP_NETDEV_FLOW_OFFLOAD_OP_ADD;
-    item->data->ct_offload_item[1] = ct_offload[1];
-    item->data->ct_offload_item[1].op = DP_NETDEV_FLOW_OFFLOAD_OP_ADD;
+    for (dir = 0; dir < CT_DIR_NUM; dir++) {
+        item->data->ct_offload_item[dir] = ct_offload[dir];
+        item->data->ct_offload_item[dir].op = DP_NETDEV_FLOW_OFFLOAD_OP_ADD;
+        item->data->ct_offload_item[dir].ct_actions_set = false;
+    }
 
     dp_netdev_offload_ct_enqueue(item);
 }
@@ -3533,6 +3566,7 @@ static void
 dp_netdev_ct_offload_del_item(struct ct_flow_offload_item *ct_offload)
 {
     struct dp_offload_thread_item *item;
+    int dir;
 
     if (dp_netdev_e2e_cache_enabled) {
         free(ct_offload[CT_DIR_INIT].refcnt);
@@ -3541,10 +3575,11 @@ dp_netdev_ct_offload_del_item(struct ct_flow_offload_item *ct_offload)
     item = xzalloc(sizeof *item + CT_DIR_NUM * sizeof *ct_offload);
     item->type = DP_OFFLOAD_CT;
     item->dp = NULL;
-    item->data->ct_offload_item[0] = ct_offload[0];
-    item->data->ct_offload_item[0].op = DP_NETDEV_FLOW_OFFLOAD_OP_DEL;
-    item->data->ct_offload_item[1] = ct_offload[1];
-    item->data->ct_offload_item[1].op = DP_NETDEV_FLOW_OFFLOAD_OP_DEL;
+    for (dir = 0; dir < CT_DIR_NUM; dir++) {
+        item->data->ct_offload_item[dir] = ct_offload[dir];
+        item->data->ct_offload_item[dir].op = DP_NETDEV_FLOW_OFFLOAD_OP_DEL;
+        item->data->ct_offload_item[dir].ct_actions_set = false;
+    }
 
     dp_netdev_offload_ct_enqueue(item);
 }
@@ -9266,8 +9301,19 @@ e2e_cache_flow_state_set_at(struct e2e_cache_ovs_flow *flow,
 static void
 e2e_cache_offload_ct_mt_build(struct ct_flow_offload_item *offload,
                               ovs_u128 ufid, struct dp_netdev *dp,
-                              struct ct_match ct_match)
+                              struct ct_match ct_match,
+                              struct nlattr *actions, size_t actions_size)
 {
+    offload->ct_actions_set = true;
+    if (actions != NULL) {
+        offload->actions = xmalloc(actions_size);
+        memcpy(offload->actions, actions, actions_size);
+        offload->actions_size = actions_size;
+    } else {
+        offload->actions = NULL;
+        offload->actions_size = 0;
+    }
+
     offload->ct_match = ct_match;
     offload->ufid = ufid;
     offload->dp = dp;
@@ -9285,7 +9331,8 @@ e2e_cache_ct_mt_del_local(struct dp_netdev *dp,
     offload.op = DP_NETDEV_FLOW_OFFLOAD_OP_DEL;
     e2e_cache_offload_ct_mt_build(&offload,
                                   ct_flow->ufid, dp,
-                                  ct_flow->ct_match[0]);
+                                  ct_flow->ct_match[0],
+                                  NULL, 0);
 
     ret = dp_netdev_ct_offload_del(&offload);
 
@@ -9341,10 +9388,12 @@ e2e_cache_ct_mt_del_async(struct dp_netdev *dp,
 
     e2e_cache_offload_ct_mt_build(&offload[CT_DIR_INIT],
                                   ct_flow->ufid, dp,
-                                  ct_flow->ct_match[0]);
+                                  ct_flow->ct_match[0],
+                                  NULL, 0);
     e2e_cache_offload_ct_mt_build(&offload[CT_DIR_REP],
                                   ct_peer->ufid, dp,
-                                  ct_peer->ct_match[0]);
+                                  ct_peer->ct_match[0],
+                                  NULL, 0);
 
     dp_netdev_offload_ct_enqueue(&item.header);
 
@@ -9389,7 +9438,8 @@ e2e_cache_ct_mt_add_local(struct dp_netdev *dp,
     memset(offload, 0, sizeof offload);
     e2e_cache_offload_ct_mt_build(offload,
                                   ct_flow->ufid, dp,
-                                  ct_flow->ct_match[0]);
+                                  ct_flow->ct_match[0],
+                                  NULL, 0);
     ret = dp_netdev_ct_offload_add_cb(offload, ct_flow->ct_match, actions,
                                       actions_size);
 
@@ -9431,10 +9481,14 @@ e2e_cache_ct_mt_add_async(struct dp_netdev *dp,
 
     e2e_cache_offload_ct_mt_build(&offload[CT_DIR_INIT],
                                   ct_flow->ufid, dp,
-                                  ct_flow->ct_match[0]);
+                                  ct_flow->ct_match[0],
+                                  ct_flow->actions,
+                                  ct_flow->actions_size);
     e2e_cache_offload_ct_mt_build(&offload[CT_DIR_REP],
                                   ct_peer->ufid, dp,
-                                  ct_peer->ct_match[0]);
+                                  ct_peer->ct_match[0],
+                                  ct_peer->actions,
+                                  ct_peer->actions_size);
 
     offload[CT_DIR_INIT].refcnt = refcnt;
     offload[CT_DIR_INIT].op = DP_NETDEV_FLOW_OFFLOAD_OP_ADD;
