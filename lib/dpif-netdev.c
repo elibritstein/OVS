@@ -586,6 +586,7 @@ enum e2e_offload_state {
     E2E_OL_STATE_FLOW,
     E2E_OL_STATE_CT_SW,
     E2E_OL_STATE_CT_HW,
+    E2E_OL_STATE_CT_MT,
     E2E_OL_STATE_CT_ERR,
     E2E_OL_STATE_NUM,
 };
@@ -594,6 +595,7 @@ static const char * const e2e_offload_state_names[] = {
     [E2E_OL_STATE_FLOW] = "E2E_OL_STATE_FLOW",
     [E2E_OL_STATE_CT_SW] = "E2E_OL_STATE_CT_SW",
     [E2E_OL_STATE_CT_HW] = "E2E_OL_STATE_CT_HW",
+    [E2E_OL_STATE_CT_MT] = "E2E_OL_STATE_CT_MT",
     [E2E_OL_STATE_CT_ERR] = "E2E_OL_STATE_CT_ERR",
     [E2E_OL_STATE_NUM] = "Unknown",
 };
@@ -9119,14 +9121,18 @@ e2e_cache_update_ct_stats(struct e2e_cache_ovs_flow *mt_flow, int op)
 
     ct_peer = mt_flow->ct_peer;
     if (op == DP_NETDEV_FLOW_OFFLOAD_OP_ADD) {
-        if (ct_peer && ct_peer->offload_state == E2E_OL_STATE_CT_HW) {
+        if (ct_peer &&
+            (ct_peer->offload_state == E2E_OL_STATE_CT_HW ||
+             ct_peer->offload_state == E2E_OL_STATE_CT_MT)) {
             atomic_count_inc64(&ofl_thread->ct_bi_dir_connections);
             atomic_count_dec64(&ofl_thread->ct_uni_dir_connections);
         } else {
             atomic_count_inc64(&ofl_thread->ct_uni_dir_connections);
         }
     } else if (op == DP_NETDEV_FLOW_OFFLOAD_OP_DEL) {
-        if (ct_peer && ct_peer->offload_state == E2E_OL_STATE_CT_HW) {
+        if (ct_peer &&
+            (ct_peer->offload_state == E2E_OL_STATE_CT_HW ||
+             ct_peer->offload_state == E2E_OL_STATE_CT_MT)) {
             atomic_count_dec64(&ofl_thread->ct_bi_dir_connections);
             atomic_count_inc64(&ofl_thread->ct_uni_dir_connections);
         } else {
@@ -9235,13 +9241,19 @@ e2e_cache_flow_state_set_at(struct e2e_cache_ovs_flow *flow,
     static const int op[E2E_OL_STATE_NUM][E2E_OL_STATE_NUM] = {
         [E2E_OL_STATE_CT_SW] = {
             [E2E_OL_STATE_CT_HW] = DP_NETDEV_FLOW_OFFLOAD_OP_ADD,
+            [E2E_OL_STATE_CT_MT] = DP_NETDEV_FLOW_OFFLOAD_OP_ADD,
         },
         [E2E_OL_STATE_CT_HW] = {
             [E2E_OL_STATE_CT_SW] = DP_NETDEV_FLOW_OFFLOAD_OP_DEL,
             [E2E_OL_STATE_CT_ERR] = DP_NETDEV_FLOW_OFFLOAD_OP_DEL,
         },
+        [E2E_OL_STATE_CT_MT] = {
+            [E2E_OL_STATE_CT_SW] = DP_NETDEV_FLOW_OFFLOAD_OP_DEL,
+            [E2E_OL_STATE_CT_ERR] = DP_NETDEV_FLOW_OFFLOAD_OP_DEL,
+        },
         [E2E_OL_STATE_CT_ERR] = {
             [E2E_OL_STATE_CT_HW] = DP_NETDEV_FLOW_OFFLOAD_OP_ADD,
+            [E2E_OL_STATE_CT_MT] = DP_NETDEV_FLOW_OFFLOAD_OP_ADD,
         },
     };
     enum e2e_offload_state prev_state = flow->offload_state;
@@ -9303,7 +9315,7 @@ e2e_cache_ct_flow_offload_add_mt(struct dp_netdev *dp,
     ret = dp_netdev_ct_offload_add_cb(&offload, &ct_flow->ct_match[0], actions,
                                       ct_flow->actions_size);
     if (OVS_LIKELY(ret == 0)) {
-        e2e_cache_flow_state_set(ct_flow, E2E_OL_STATE_CT_HW);
+        e2e_cache_flow_state_set(ct_flow, E2E_OL_STATE_CT_MT);
         e2e_stats.add_ct_mt_flow_hw++;
     } else {
         e2e_cache_flow_state_set(ct_flow, E2E_OL_STATE_CT_ERR);
@@ -9345,10 +9357,10 @@ e2e_cache_flow_db_del(const ovs_u128 *ufid, struct dp_netdev *dp)
         /* This is a CT MT flow that is deleted. If it is offloaded using MT
          * remove it and update CT stats.
          */
-        if (ct_flow->offload_state == E2E_OL_STATE_CT_HW) {
+        if (ct_flow->offload_state == E2E_OL_STATE_CT_MT) {
             e2e_cache_ct_flow_offload_del_mt(dp, ct_flow);
-            e2e_cache_flow_state_set(ct_flow, E2E_OL_STATE_CT_SW);
         }
+        e2e_cache_flow_state_set(ct_flow, E2E_OL_STATE_CT_SW);
         if (ct_flow->ct_peer) {
             ct_flow->ct_peer->ct_peer = NULL;
         }
@@ -9957,7 +9969,7 @@ e2e_cache_merge_flows(struct e2e_cache_ovs_flow **flows,
  * flows.
  */
 static void
-e2e_cache_purge_ct_flows_from_hw(struct dp_netdev *dp,
+e2e_cache_purge_ct_flows_from_mt(struct dp_netdev *dp,
                                  struct e2e_cache_ovs_flow *mt_flows[],
                                  uint16_t num_flows)
 {
@@ -9968,7 +9980,7 @@ e2e_cache_purge_ct_flows_from_hw(struct dp_netdev *dp,
          * exists, but not its peer MT HW rule. Skip if not in HW or peer
          * CT flows.
          */
-        if (mt_flows[i]->offload_state != E2E_OL_STATE_CT_HW ||
+        if (mt_flows[i]->offload_state != E2E_OL_STATE_CT_MT ||
             (i > 0 && mt_flows[i - 1]->offload_state != E2E_OL_STATE_FLOW)) {
             continue;
         }
@@ -10044,7 +10056,7 @@ e2e_cache_process_trace_info(struct dp_netdev *dp,
     if (OVS_UNLIKELY(err)) {
         goto remove_flow_from_db;
     }
-    e2e_cache_purge_ct_flows_from_hw(dp, mt_flows, num_flows);
+    e2e_cache_purge_ct_flows_from_mt(dp, mt_flows, num_flows);
     for (i = 0; i < num_flows; i++) {
         if (mt_flows[i]->offload_state == E2E_OL_STATE_FLOW ||
             (i > 0 && mt_flows[i - 1]->offload_state != E2E_OL_STATE_FLOW)) {
