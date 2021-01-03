@@ -13110,6 +13110,7 @@ e2e_cache_merge_match(struct e2e_cache_ovs_flow **netdev_flows,
         if (match->flow.vlans[0].tci) {
             merge_flow_match(vlans[0].tci, match, merged_match);
         }
+        merge_flow_match(ct_zone, match, merged_match);
     }
 }
 
@@ -13128,6 +13129,7 @@ e2e_cache_merge_flows(struct e2e_cache_ovs_flow **flows,
         return -1;
     }
     e2e_cache_merge_match(flows, num_flows, &merged_flow->match);
+    merged_flow->match.wc.masks.ct_zone = 0;
     dp_netdev_get_mega_ufid(&merged_flow->match, &merged_flow->ufid);
     uuid_set_bits_v4((struct uuid *) &merged_flow->ufid, UUID_ATTR_3);
     e2e_cache_merge_actions(flows, num_flows, merged_actions);
