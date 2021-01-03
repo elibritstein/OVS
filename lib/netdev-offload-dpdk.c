@@ -4738,7 +4738,7 @@ netdev_offload_dpdk_add_flow(struct netdev *netdev,
                                       actions_len, &act_resources, &act_vars,
                                       &flow_item);
 
-    if (!flow_item.rte_flow[0] &&
+    if (!act_vars.is_e2e_cache && !flow_item.rte_flow[0] &&
         !netdev_vport_is_vport_class(netdev->netdev_class)) {
         /* If we failed to offload the rule actions fallback to MARK+RSS
          * actions.
