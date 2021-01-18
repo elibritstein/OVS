@@ -4460,6 +4460,12 @@ parse_ct_actions(struct flow_actions *actions,
                                      ct_miss_ctx.state, 0xFF);
             add_action_set_reg_field(actions, REG_FIELD_CT_CTX,
                                      act_resources->ct_miss_ctx_id, 0xFFFFFFFF);
+            if (act_resources->flow_id != INVALID_FLOW_MARK) {
+                struct rte_flow_action_mark *mark = xzalloc(sizeof *mark);
+
+                mark->id = act_resources->flow_id;
+                add_flow_action(actions, RTE_FLOW_ACTION_TYPE_MARK, mark);
+            }
             add_jump_action(actions, POSTCT_TABLE_ID);
         } else {
             VLOG_DBG_RL(&rl,
