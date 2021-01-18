@@ -95,7 +95,7 @@ struct ufid_to_rte_flow_data {
     struct netdev *physdev;
     struct ovs_mutex lock;
     unsigned int creation_tid;
-    bool dead;
+    volatile bool dead;
     struct act_resources act_resources;
 };
 
@@ -272,7 +272,7 @@ ufid_to_rte_flow_associate(const ovs_u128 *ufid, struct netdev *netdev,
      * the rte_flow is not destroyed.
      */
     data_prev = ufid_to_rte_flow_data_find_protected(netdev, ufid);
-    if (data_prev) {
+    if (data_prev && !data_prev->dead) {
         ovs_assert(data_prev->flow_item.rte_flow[0] == NULL);
     }
 
@@ -4779,6 +4779,10 @@ netdev_offload_dpdk_remove_flows(struct ufid_to_rte_flow_data *rte_flow_data)
     ovs_u128 *ufid;
     int ret;
     int i;
+
+    if (rte_flow_data->dead) {
+        return 0;
+    }
 
     ovs_mutex_lock(&rte_flow_data->lock);
 
