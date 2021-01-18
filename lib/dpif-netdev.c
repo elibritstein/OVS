@@ -3242,7 +3242,7 @@ dp_netdev_ct_offload_add_cb(struct ct_flow_offload_item *ct_offload,
 
     port = netdev_ports_get(ct_match->odp_port, dpif_type_str);
     if (OVS_UNLIKELY(!port)) {
-        return -1;
+        return ENODEV;
     }
 
     dp_netdev_fill_ct_match(&match, ct_match);
@@ -3345,7 +3345,7 @@ dp_netdev_ct_offload_del(struct ct_flow_offload_item *ct_offload)
 
     port = netdev_ports_get(ct_offload->ct_match.odp_port, dpif_type_str);
     if (!port) {
-        return -1;
+        return ENODEV;
     }
 
     ovs_rwlock_rdlock(&dp->port_rwlock);
@@ -3385,6 +3385,11 @@ dp_offload_ct(struct dp_offload_thread_item *item)
         case DP_NETDEV_FLOW_OFFLOAD_OP_DEL:
             op = "delete";
             ret = dp_netdev_ct_offload_del(&ct_offload[dir]);
+            if (ret == ENODEV) {
+                /* If the port was previously deleted, its offloads
+                 * have been flushed. Count as deletion. */
+                ret = 0;
+            }
             break;
         case DP_NETDEV_FLOW_OFFLOAD_OP_MOD:
         default:
