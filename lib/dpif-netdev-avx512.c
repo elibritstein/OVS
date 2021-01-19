@@ -187,12 +187,15 @@ dp_netdev_input_outer_avx512(struct dp_netdev_pmd_thread *pmd,
 
         /* Check for a partial hardware offload match. */
         if (hwol_enabled) {
-            if (OVS_UNLIKELY(dp_netdev_hw_flow(pmd, packet, &f))) {
+            uint8_t skip_actions = 0;
+
+            if (OVS_UNLIKELY(dp_netdev_hw_flow(pmd, packet, &f, &skip_actions))) {
                 /* Packet restoration failed and it was dropped, do not
                  * continue processing. */
                 continue;
             }
             if (f) {
+                f->skip_actions = skip_actions;
                 rules[i] = &f->cr;
                 /* If AVX512 MFEX already classified the packet, use it. */
                 if (mfex_hit) {

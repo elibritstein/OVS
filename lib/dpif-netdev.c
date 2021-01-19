@@ -4828,6 +4828,7 @@ dp_netdev_flow_add(struct dp_netdev_pmd_thread *pmd,
     flow->batch = NULL;
     flow->mark = INVALID_FLOW_MARK;
     flow->orig_in_port = orig_in_port;
+    flow->skip_actions = 0;
     *CONST_CAST(unsigned *, &flow->pmd_id) = pmd->core_id;
     *CONST_CAST(struct flow *, &flow->flow) = match->flow;
     *CONST_CAST(ovs_u128 *, &flow->ufid) = *ufid;
@@ -8632,15 +8633,25 @@ packet_batch_per_flow_execute(struct packet_batch_per_flow *batch,
 {
     struct dp_netdev_actions *actions;
     struct dp_netdev_flow *flow = batch->flow;
+    struct nlattr *updated_actions;
+    size_t updated_actions_size;
+    int i;
 
     dp_netdev_flow_used(flow, dp_packet_batch_size(&batch->array),
                         batch->byte_count,
                         batch->tcp_flags, pmd->ctx.now / 1000);
 
+    /*skip the actions that were executed by the HW */
     actions = dp_netdev_flow_get_actions(flow);
+    updated_actions = actions->actions;
+    updated_actions_size = actions->size;
+    for (i = 0; i < flow->skip_actions; i++) {
+        updated_actions_size -= updated_actions->nla_len;
+        updated_actions = nl_attr_next(updated_actions);
+    }
 
     dp_netdev_execute_actions(pmd, &batch->array, true, &flow->flow,
-                              actions->actions, actions->size);
+                              updated_actions, updated_actions_size);
 }
 
 void
@@ -10662,7 +10673,8 @@ smc_lookup_single(struct dp_netdev_pmd_thread *pmd,
 inline int
 dp_netdev_hw_flow(const struct dp_netdev_pmd_thread *pmd,
                   struct dp_packet *packet,
-                  struct dp_netdev_flow **flow)
+                  struct dp_netdev_flow **flow,
+                  uint8_t *skip_actions)
 {
     uint32_t mark;
 
@@ -10671,7 +10683,8 @@ dp_netdev_hw_flow(const struct dp_netdev_pmd_thread *pmd,
     struct dp_netdev_rxq *rxq = pmd->ctx.last_rxq;
 
     if (rxq->hw_miss_api_supported) {
-        int err = netdev_hw_miss_packet_recover(rxq->port->netdev, packet, NULL);
+        int err = netdev_hw_miss_packet_recover(rxq->port->netdev, packet,
+                                                skip_actions);
         if (err) {
             if (err != EOPNOTSUPP) {
                 COVERAGE_INC(datapath_drop_hw_miss_recover);
@@ -10756,6 +10769,7 @@ dfc_processing(struct dp_netdev_pmd_thread *pmd,
     struct dp_packet *packet;
     size_t map_cnt = 0;
     bool batch_enable = true;
+    uint8_t skip_actions = 0;
 
     const bool simple_match_enabled =
         !md_is_valid && dp_netdev_simple_match_enabled(pmd, port_no);
@@ -10794,13 +10808,15 @@ dfc_processing(struct dp_netdev_pmd_thread *pmd,
         }
 
         if (netdev_flow_api && recirc_depth == 0) {
-            if (OVS_UNLIKELY(dp_netdev_hw_flow(pmd, packet, &flow))) {
+            if (OVS_UNLIKELY(dp_netdev_hw_flow(pmd, packet, &flow,
+                             &skip_actions))) {
                 /* Packet restoration failed and it was dropped, do not
                  * continue processing.
                  */
                 continue;
             }
             if (OVS_LIKELY(flow)) {
+                flow->skip_actions = skip_actions;
                 tcp_flags = parse_tcp_flags(packet, NULL, NULL, NULL);
                 n_phwol_hit++;
                 dfc_processing_enqueue_classified_packet(

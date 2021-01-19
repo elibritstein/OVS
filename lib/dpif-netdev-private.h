@@ -47,6 +47,7 @@ dp_netdev_batch_execute(struct dp_netdev_pmd_thread *pmd,
 int
 dp_netdev_hw_flow(const struct dp_netdev_pmd_thread *pmd,
                   struct dp_packet *packet,
-                  struct dp_netdev_flow **flow);
+                  struct dp_netdev_flow **flow,
+                  uint8_t *skip_actions);
 
 #endif /* dpif-netdev-private.h */
