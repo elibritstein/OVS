@@ -3764,6 +3764,10 @@ dp_netdev_offload_flush_enqueue(struct dp_netdev *dp,
     }
 }
 
+static int
+e2e_cache_flow_flush(struct netdev *netdev, struct ovs_barrier *barrier,
+                     struct dp_netdev *dp);
+
 /* Blocking call that will wait on the offload thread to
  * complete its work.  As the flush order will only be
  * enqueued after existing offload requests, those previous
@@ -3804,10 +3808,20 @@ dp_netdev_offload_flush(struct dp_netdev *dp,
     ovs_mutex_lock(&flush_mutex);
 
     /* This thread and the offload threads. */
-    ovs_barrier_init(&barrier, 1 + netdev_offload_thread_nb());
+    ovs_barrier_init(&barrier, 1 + netdev_offload_thread_nb() +
+                     dp_netdev_e2e_cache_enabled);
 
     netdev = netdev_ref(port->netdev);
-    dp_netdev_offload_flush_enqueue(dp, netdev, &barrier);
+    if (dp_netdev_e2e_cache_enabled) {
+        /* If e2e is enabled, it must send the flush requests
+         * after it has processed its own queue. This means that this
+         * thread should not send the flush requests, only e2e can do so.
+         * cf. e2e_cache_flow_db_flush().
+         */
+        e2e_cache_flow_flush(netdev, &barrier, dp);
+    } else {
+        dp_netdev_offload_flush_enqueue(dp, netdev, &barrier);
+    }
     ovs_barrier_block(&barrier);
     netdev_close(netdev);
 
@@ -8658,7 +8672,8 @@ packet_enqueue_to_flow_map(struct dp_packet *packet,
 
 enum {
     E2E_UFID_MSG_PUT = 1,
-    E2E_UFID_MSG_DEL = 2
+    E2E_UFID_MSG_DEL = 2,
+    E2E_UFID_MSG_FLUSH = 3,
 };
 
 struct e2e_cache_ufid_msg {
@@ -8668,6 +8683,8 @@ struct e2e_cache_ufid_msg {
     bool is_ct;
     struct nlattr *actions;
     struct dp_netdev *dp;
+    struct netdev *netdev;
+    struct ovs_barrier *barrier;
     size_t actions_len;
     union {
         struct match match[0];
@@ -8693,6 +8710,7 @@ struct e2e_cache_thread_msg_queues {
  * new_flow_msgs = Amount of new flow messages received by E2E cache.
  * del_flow_msgs = Amount of delete flow messages received by E2E cache.
  * succ_merged_flows = Amount of successfully merged flows.
+ * flush_flow_msgs = Amount of flush flow messages received by E2E cache.
  * merge_rej_flows = Amount of flows rejected by the merge engine.
  * add_merged_flow_hw = Amount of add merged flow messages dispatched to
  *                      HW offload.
@@ -8714,6 +8732,7 @@ struct e2e_cache_stats {
     atomic_count trace_msgs_queue_overflow;
     atomic_uint64_t new_flow_msgs;
     atomic_uint64_t del_flow_msgs;
+    uint32_t flush_flow_msgs;
     atomic_uint64_t succ_merged_flows;
     atomic_uint64_t merge_rej_flows;
     atomic_uint64_t add_merged_flow_hw;
@@ -8821,6 +8840,8 @@ dpif_netdev_dump_e2e_stats(struct ds *s)
                   atomic_count_get64(&stats->new_flow_msgs));
     ds_put_format(s, "\n%-45s : %"PRIu64"", "delete flow messages",
                   atomic_count_get64(&stats->del_flow_msgs));
+    ds_put_format(s, "\n%-45s : %"PRIu32"", "flush flow messages",
+                  stats->flush_flow_msgs);
     ds_put_format(s, "\n%-45s : %"PRIu64"", "successfully merged flows",
                   atomic_count_get64(&stats->succ_merged_flows));
     ds_put_format(s, "\n%-45s : %"PRIu64"", "flows rejected by the merge engine",
@@ -9581,6 +9602,30 @@ e2e_cache_flow_db_del(const ovs_u128 *ufid, struct dp_netdev *dp)
     e2e_cache_del_merged_flows(&merged_flows_to_delete);
 }
 
+static void
+e2e_cache_flow_db_flush(struct netdev *netdev,
+                        struct ovs_barrier *barrier,
+                        struct dp_netdev *dp)
+{
+    dp_netdev_offload_init();
+
+    /* From e2e perspective, its flow DB can be cleaned up later.
+     * However, the flush request must be forwarded to MT threads.
+     * Main thread cannot send it, as it needs to arrive *after* all
+     * potential e2e -> MT async CT del requests, that could have been
+     * issued by conntrack_destroy(), and that requires 'dp' to still
+     * exist.
+     *
+     * Both types of flush are forwarded: either with 'netdev' defined,
+     * used to flush a port HW offloads, or undefined, and used only as
+     * a barrier after CT del requests to ensure the datapath exists.
+     */
+
+    dp_netdev_offload_flush_enqueue(dp, netdev, barrier);
+
+    ovs_barrier_block(barrier);
+}
+
 static int
 e2e_cache_flow_db_put(struct e2e_cache_ufid_msg *ufid_msg)
 {
@@ -9680,6 +9725,27 @@ e2e_cache_flow_put(bool is_ct, const ovs_u128 *ufid, const void *match,
     mpsc_queue_insert(&e2e_cache_thread_msg_queues.ufid_queue,
                       &put_msg->node);
     atomic_count_inc64(&e2e_stats.new_flow_msgs);
+    return 0;
+}
+
+static int
+e2e_cache_flow_flush(struct netdev *netdev, struct ovs_barrier *barrier,
+                     struct dp_netdev *dp)
+{
+    struct e2e_cache_ufid_msg *msg;
+
+    msg = xzalloc(sizeof *msg);
+    msg->op = E2E_UFID_MSG_FLUSH;
+    msg->netdev = netdev;
+    msg->barrier = barrier;
+    msg->dp = dp;
+
+    /* Insert message into queue, e2e_cache_ufid_msg_dequeue()
+     * is used to dequeue it from there.
+     */
+    mpsc_queue_insert(&e2e_cache_thread_msg_queues.ufid_queue,
+                      &msg->node);
+    e2e_stats.flush_flow_msgs++;
     return 0;
 }
 
@@ -10390,8 +10456,14 @@ dp_netdev_e2e_cache_main(void *arg OVS_UNUSED)
         while (ufid_msg != NULL) {
             if (ufid_msg->op == E2E_UFID_MSG_PUT) {
                 e2e_cache_flow_db_put(ufid_msg);
-            } else {
+            } else if (ufid_msg->op == E2E_UFID_MSG_DEL) {
                 e2e_cache_flow_db_del(&ufid_msg->ufid, ufid_msg->dp);
+            } else if (ufid_msg->op == E2E_UFID_MSG_FLUSH) {
+                e2e_cache_flow_db_flush(ufid_msg->netdev,
+                                        ufid_msg->barrier,
+                                        ufid_msg->dp);
+            } else {
+                OVS_NOT_REACHED();
             }
             e2e_cache_ufid_msg_free(ufid_msg);
             ufid_msg = e2e_cache_ufid_msg_dequeue();
@@ -10439,6 +10511,13 @@ e2e_cache_flow_put(bool is_ct OVS_UNUSED,
 static int
 e2e_cache_flow_del(const ovs_u128 *ufid OVS_UNUSED,
                    struct dp_netdev *dp OVS_UNUSED)
+{
+    return 0;
+}
+static int
+e2e_cache_flow_flush(struct netdev *netdev OVS_UNUSED,
+                     struct ovs_barrier *barrier OVS_UNUSED,
+                     struct dp_netdev *dp OVS_UNUSED)
 {
     return 0;
 }
