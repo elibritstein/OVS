@@ -403,7 +403,7 @@ struct dp_offload_thread {
         atomic_uint64_t ct_bi_dir_connections;
     );
 };
-static struct dp_offload_thread *dp_offload_threads;
+static struct dp_offload_thread *dp_offload_threads = NULL;
 static void *dp_netdev_flow_offload_main(void *arg);
 
 static void
@@ -436,6 +436,25 @@ static struct conntrack_offload_class dpif_ct_offload_class = {
 };
 
 static void
+dp_netdev_offload_ct_stats_reset(void)
+{
+    unsigned int i;
+
+    if (!dp_offload_threads) {
+       return;
+    }
+    for (i = 0; i < netdev_offload_thread_nb(); i++) {
+        atomic_init(&dp_offload_threads[i].ct_uni_dir_connections, 0);
+        atomic_init(&dp_offload_threads[i].ct_bi_dir_connections, 0);
+    }
+    if (netdev_is_e2e_cache_enabled()) {
+        atomic_init(&dp_offload_threads[i].enqueued_item, 0);
+        atomic_init(&dp_offload_threads[i].ct_uni_dir_connections, 0);
+        atomic_init(&dp_offload_threads[i].ct_bi_dir_connections, 0);
+    }
+}
+
+static void
 dp_netdev_offload_init(void)
 {
     static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
@@ -460,15 +479,9 @@ dp_netdev_offload_init(void)
         atomic_init(&thread->enqueued_item, 0);
         mov_avg_cma_init(&thread->cma);
         mov_avg_ema_init(&thread->ema, 100);
-        atomic_init(&thread->ct_uni_dir_connections, 0);
-        atomic_init(&thread->ct_bi_dir_connections, 0);
         ovs_thread_create("hw_offload", dp_netdev_flow_offload_main, thread);
     }
-    if (netdev_is_e2e_cache_enabled()) {
-        atomic_init(&dp_offload_threads[tid].enqueued_item, 0);
-        atomic_init(&dp_offload_threads[tid].ct_uni_dir_connections, 0);
-        atomic_init(&dp_offload_threads[tid].ct_bi_dir_connections, 0);
-    }
+    dp_netdev_offload_ct_stats_reset();
 
     ovsthread_once_done(&once);
 }
@@ -2157,7 +2170,7 @@ dp_netdev_free(struct dp_netdev *dp)
 
     conntrack_set_offload_class(dp->conntrack, NULL);
     conntrack_destroy(dp->conntrack);
-
+    dp_netdev_offload_ct_stats_reset();
 
     seq_destroy(dp->reconfigure_seq);
 
