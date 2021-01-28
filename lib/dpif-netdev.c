@@ -394,9 +394,9 @@ struct dp_offload_thread_item {
 
 struct dp_offload_thread {
     PADDED_MEMBERS(CACHE_LINE_SIZE,
-        struct mpsc_queue queue;
-        atomic_uint64_t enqueued_item_add;
-        atomic_uint64_t enqueued_item;
+        struct mpsc_queue offload_queue;
+        atomic_uint64_t enqueued_offload_add;
+        atomic_uint64_t enqueued_offload;
         struct cmap megaflow_to_mark;
         struct cmap mark_to_flow;
         struct mov_avg_cma cma;
@@ -463,7 +463,7 @@ dp_netdev_offload_queue_full(void)
 
     for (tid = 0; tid < netdev_offload_thread_nb(); tid++) {
         total_add +=
-            atomic_count_get64(&dp_offload_threads[tid].enqueued_item_add);
+            atomic_count_get64(&dp_offload_threads[tid].enqueued_offload_add);
     }
 
     return total_add > offload_queue_size;
@@ -492,8 +492,8 @@ dp_netdev_offload_ct_stats_reset(void)
         atomic_init(&dp_offload_threads[i].ct_bi_dir_connections, 0);
     }
     if (netdev_is_e2e_cache_enabled()) {
-        atomic_init(&dp_offload_threads[i].enqueued_item, 0);
-        atomic_init(&dp_offload_threads[i].enqueued_item_add, 0);
+        atomic_init(&dp_offload_threads[i].enqueued_offload, 0);
+        atomic_init(&dp_offload_threads[i].enqueued_offload_add, 0);
         atomic_init(&dp_offload_threads[i].ct_uni_dir_connections, 0);
         atomic_init(&dp_offload_threads[i].ct_bi_dir_connections, 0);
     }
@@ -518,11 +518,11 @@ dp_netdev_offload_init(void)
         struct dp_offload_thread *thread;
 
         thread = &dp_offload_threads[tid];
-        mpsc_queue_init(&thread->queue);
+        mpsc_queue_init(&thread->offload_queue);
         cmap_init(&thread->megaflow_to_mark);
         cmap_init(&thread->mark_to_flow);
-        atomic_init(&thread->enqueued_item, 0);
-        atomic_init(&thread->enqueued_item_add, 0);
+        atomic_init(&thread->enqueued_offload, 0);
+        atomic_init(&thread->enqueued_offload_add, 0);
         mov_avg_cma_init(&thread->cma);
         mov_avg_ema_init(&thread->ema, 100);
         ovs_thread_create("hw_offload", dp_netdev_flow_offload_main, thread);
@@ -2952,10 +2952,10 @@ dp_netdev_append_offload(struct dp_offload_thread_item *offload,
 {
     dp_netdev_offload_init();
 
-    mpsc_queue_insert(&dp_offload_threads[tid].queue, &offload->node);
-    atomic_count_inc64(&dp_offload_threads[tid].enqueued_item);
+    mpsc_queue_insert(&dp_offload_threads[tid].offload_queue, &offload->node);
+    atomic_count_inc64(&dp_offload_threads[tid].enqueued_offload);
     if (op == DP_NETDEV_FLOW_OFFLOAD_OP_ADD) {
-        atomic_count_inc64(&dp_offload_threads[tid].enqueued_item_add);
+        atomic_count_inc64(&dp_offload_threads[tid].enqueued_offload_add);
     }
 }
 
@@ -3098,7 +3098,7 @@ dp_offload_flow(struct dp_offload_thread_item *item)
     switch (flow_offload->op) {
     case DP_NETDEV_FLOW_OFFLOAD_OP_ADD:
         op = "add";
-        atomic_count_dec64(&ofl_thread->enqueued_item_add);
+        atomic_count_dec64(&ofl_thread->enqueued_offload_add);
         ret = dp_netdev_flow_offload_put(item);
         break;
     case DP_NETDEV_FLOW_OFFLOAD_OP_MOD:
@@ -3485,19 +3485,19 @@ dp_netdev_flow_offload_main(void *arg)
 {
     struct dp_offload_thread *ofl_thread = arg;
     struct dp_offload_thread_item *offload;
+    struct mpsc_queue *offload_queue;
     struct mpsc_queue_node *node;
-    struct mpsc_queue *queue;
     long long int latency_us;
     long long int next_rcu;
     long long int now;
     uint64_t backoff;
 
-    queue = &ofl_thread->queue;
-    mpsc_queue_acquire(queue);
+    offload_queue = &ofl_thread->offload_queue;
+    mpsc_queue_acquire(offload_queue);
 
     while (true) {
         backoff = DP_NETDEV_OFFLOAD_BACKOFF_MIN;
-        while (mpsc_queue_tail(queue) == NULL) {
+        while (mpsc_queue_tail(offload_queue) == NULL) {
             xnanosleep(backoff * 1E6);
             if (backoff < DP_NETDEV_OFFLOAD_BACKOFF_MAX) {
                 backoff <<= 1;
@@ -3505,9 +3505,9 @@ dp_netdev_flow_offload_main(void *arg)
         }
 
         next_rcu = time_usec() + DP_NETDEV_OFFLOAD_QUIESCE_INTERVAL_US;
-        MPSC_QUEUE_FOR_EACH_POP (node, queue) {
+        MPSC_QUEUE_FOR_EACH_POP (node, offload_queue) {
             offload = CONTAINER_OF(node, struct dp_offload_thread_item, node);
-            atomic_count_dec64(&ofl_thread->enqueued_item);
+            atomic_count_dec64(&ofl_thread->enqueued_offload);
 
             switch (offload->type) {
             case DP_OFFLOAD_FLOW:
@@ -3540,7 +3540,7 @@ dp_netdev_flow_offload_main(void *arg)
     }
 
     OVS_NOT_REACHED();
-    mpsc_queue_release(queue);
+    mpsc_queue_release(offload_queue);
 
     return NULL;
 }
@@ -5419,7 +5419,7 @@ dpif_netdev_offload_stats_get(struct dpif *dpif,
                               struct netdev_custom_stats *stats)
 {
     enum {
-        DP_NETDEV_HW_OFFLOADS_STATS_ENQUEUED,
+        DP_NETDEV_HW_OFFLOADS_STATS_ENQUEUED_OFFLOADS,
         DP_NETDEV_HW_OFFLOADS_STATS_INSERTED,
         DP_NETDEV_HW_OFFLOADS_STATS_CT_UNI_DIR_CONNS,
         DP_NETDEV_HW_OFFLOADS_STATS_CT_BI_DIR_CONNS,
@@ -5432,7 +5432,7 @@ dpif_netdev_offload_stats_get(struct dpif *dpif,
         const char *name;
         uint64_t total;
     } hwol_stats[] = {
-        [DP_NETDEV_HW_OFFLOADS_STATS_ENQUEUED] =
+        [DP_NETDEV_HW_OFFLOADS_STATS_ENQUEUED_OFFLOADS] =
             { "                Enqueued offloads", 0 },
         [DP_NETDEV_HW_OFFLOADS_STATS_INSERTED] =
             { "                Inserted offloads", 0 },
@@ -5490,8 +5490,8 @@ dpif_netdev_offload_stats_get(struct dpif *dpif,
         memset(counts, 0, sizeof counts);
         counts[DP_NETDEV_HW_OFFLOADS_STATS_INSERTED] = nb_offloads[tid];
         if (dp_offload_threads != NULL) {
-            atomic_read_relaxed(&dp_offload_threads[tid].enqueued_item,
-                                &counts[DP_NETDEV_HW_OFFLOADS_STATS_ENQUEUED]);
+            atomic_read_relaxed(&dp_offload_threads[tid].enqueued_offload,
+                                &counts[DP_NETDEV_HW_OFFLOADS_STATS_ENQUEUED_OFFLOADS]);
             atomic_read_relaxed(&dp_offload_threads[tid].ct_uni_dir_connections,
                                 &counts[DP_NETDEV_HW_OFFLOADS_STATS_CT_UNI_DIR_CONNS]);
             atomic_read_relaxed(&dp_offload_threads[tid].ct_bi_dir_connections,
