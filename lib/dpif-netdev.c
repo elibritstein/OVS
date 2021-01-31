@@ -3480,35 +3480,58 @@ dp_offload_ct(struct dp_offload_thread_item *item)
 #define DP_NETDEV_OFFLOAD_BACKOFF_MAX 64
 #define DP_NETDEV_OFFLOAD_QUIESCE_INTERVAL_US (10 * 1000) /* 10 ms */
 
+static void
+dp_netdev_offload_poll_queues(struct dp_offload_thread *ofl_thread,
+                              struct dp_offload_thread_item **offload_item)
+{
+    struct mpsc_queue_node *queue_node;
+    struct mpsc_queue *offload_queue;
+    uint64_t backoff;
+
+    offload_queue = &ofl_thread->offload_queue;
+
+    *offload_item = NULL;
+
+    backoff = DP_NETDEV_OFFLOAD_BACKOFF_MIN;
+
+    while (1) {
+        queue_node = mpsc_queue_pop(offload_queue);
+        if (queue_node != NULL) {
+            *offload_item = CONTAINER_OF(queue_node,
+                                         struct dp_offload_thread_item, node);
+            atomic_count_dec64(&ofl_thread->enqueued_offload);
+            return;
+        }
+
+        /* The thread is flagged as quiescent during xnanosleep(). */
+        xnanosleep(backoff * 1E6);
+        if (backoff < DP_NETDEV_OFFLOAD_BACKOFF_MAX) {
+            backoff <<= 1;
+        }
+    }
+}
+
 static void *
 dp_netdev_flow_offload_main(void *arg)
 {
     struct dp_offload_thread *ofl_thread = arg;
     struct dp_offload_thread_item *offload;
     struct mpsc_queue *offload_queue;
-    struct mpsc_queue_node *node;
     long long int latency_us;
     long long int next_rcu;
     long long int now;
-    uint64_t backoff;
 
     offload_queue = &ofl_thread->offload_queue;
     mpsc_queue_acquire(offload_queue);
 
-    while (true) {
-        backoff = DP_NETDEV_OFFLOAD_BACKOFF_MIN;
-        while (mpsc_queue_tail(offload_queue) == NULL) {
-            xnanosleep(backoff * 1E6);
-            if (backoff < DP_NETDEV_OFFLOAD_BACKOFF_MAX) {
-                backoff <<= 1;
-            }
-        }
+    next_rcu = time_usec() + DP_NETDEV_OFFLOAD_QUIESCE_INTERVAL_US;
 
-        next_rcu = time_usec() + DP_NETDEV_OFFLOAD_QUIESCE_INTERVAL_US;
-        MPSC_QUEUE_FOR_EACH_POP (node, offload_queue) {
-            offload = CONTAINER_OF(node, struct dp_offload_thread_item, node);
-            atomic_count_dec64(&ofl_thread->enqueued_offload);
+    for (;;) {
+        dp_netdev_offload_poll_queues(ofl_thread, &offload);
 
+        ovs_assert(offload != NULL);
+
+        if (offload != NULL) {
             switch (offload->type) {
             case DP_OFFLOAD_FLOW:
                 dp_offload_flow(offload);
