@@ -1265,7 +1265,7 @@ dpif_netdev_subtable_lookup_set(struct unixctl_conn *conn, int argc OVS_UNUSED,
         struct dp_netdev_pmd_thread **pmd_list;
         sorted_poll_thread_list(dp, &pmd_list, &n);
 
-        /* take port mutex as HMAP iters over them. */
+        /* take port rwlock as HMAP iters over them. */
         ovs_rwlock_rdlock(&dp->port_rwlock);
 
         for (size_t i = 0; i < n; i++) {
