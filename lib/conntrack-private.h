@@ -60,94 +60,6 @@ struct alg_exp_node {
     bool nat_rpl_dst;
 };
 
-enum OVS_PACKED_ENUM ct_conn_type {
-    CT_CONN_TYPE_DEFAULT,
-    CT_CONN_TYPE_UN_NAT,
-};
-
-static inline int
-ct_get_packet_dir(bool reply)
-{
-    return reply ? CT_DIR_REP : CT_DIR_INIT;
-}
-
-struct ct_dir_info {
-    odp_port_t port;
-    ovs_u128 ufid;
-    void *dp;
-    int status;
-    uint8_t pkt_ct_state;
-    bool e2e_flow;
-    uint8_t e2e_seen_pkts;
-};
-
-enum ct_offload_flag {
-    CT_OFFLOAD_NONE = 0,
-    CT_OFFLOAD_INIT = 0x1 << 0,
-    CT_OFFLOAD_REP  = 0x1 << 1,
-    CT_OFFLOAD_SKIP = 0x1 << 2,
-    CT_OFFLOAD_BOTH = (CT_OFFLOAD_INIT | CT_OFFLOAD_REP),
-};
-
-struct ct_offloads {
-    uint8_t flags;
-    struct ovs_refcount *refcnt;
-    struct ct_dir_info dir_info[CT_DIR_NUM];
-};
-
-struct conn_exp_node {
-    struct rculist node;
-    struct conn *up;
-};
-
-struct conn {
-    /* Immutable data. */
-    struct conn_key key;
-    struct conn_key rev_key;
-    struct conn_key parent_key; /* Only used for orig_tuple support. */
-    struct conn_exp_node *exp;
-    struct cmap_node cm_node;
-    uint16_t nat_action;
-    char *alg;
-    struct conn *nat_conn; /* The NAT 'conn' context, if there is one. */
-    struct conn *master_conn; /* The master 'conn' context if this is a NAT
-                               * 'conn' */
-    atomic_flag reclaimed; /* False during the lifetime of the connection,
-                            * True as soon as a thread has started freeing
-                            * its memory. */
-
-    /* Mutable data. */
-    struct ovs_mutex lock; /* Guards all mutable fields. */
-    ovs_u128 label;
-    atomic_llong expiration;
-    long long prev_query;
-    uint32_t mark;
-    int seq_skew;
-
-    /* Immutable data. */
-    int32_t admit_zone; /* The zone for managing zone limit counts. */
-    uint32_t zone_limit_seq; /* Used to disambiguate zone limit counts. */
-
-    /* Mutable data. */
-    bool seq_skew_dir; /* TCP sequence skew direction due to NATTing of FTP
-                        * control messages; true if reply direction. */
-    bool cleaned; /* True if cleaned from expiry lists. */
-
-    /* Immutable data. */
-    bool alg_related; /* True if alg data connection. */
-    enum ct_conn_type conn_type;
-
-    uint32_t tp_id; /* Timeout policy ID. */
-    struct ct_offloads offloads;
-};
-
-enum ct_update_res {
-    CT_UPDATE_INVALID,
-    CT_UPDATE_VALID,
-    CT_UPDATE_NEW,
-    CT_UPDATE_VALID_NEW,
-};
-
 /* Timeouts: all the possible timeout states passed to update_expiration()
  * are listed here. The name will be prefix by CT_TM_ and the value is in
  * milliseconds */
@@ -204,6 +116,105 @@ enum ct_timeout {
     N_CT_TM
 };
 
+enum OVS_PACKED_ENUM ct_conn_type {
+    CT_CONN_TYPE_DEFAULT,
+    CT_CONN_TYPE_UN_NAT,
+};
+
+static inline int
+ct_get_packet_dir(bool reply)
+{
+    return reply ? CT_DIR_REP : CT_DIR_INIT;
+}
+
+struct ct_dir_info {
+    odp_port_t port;
+    ovs_u128 ufid;
+    void *dp;
+    int status;
+    uint8_t pkt_ct_state;
+    bool e2e_flow;
+    uint8_t e2e_seen_pkts;
+};
+
+enum ct_offload_flag {
+    CT_OFFLOAD_NONE = 0,
+    CT_OFFLOAD_INIT = 0x1 << 0,
+    CT_OFFLOAD_REP  = 0x1 << 1,
+    CT_OFFLOAD_SKIP = 0x1 << 2,
+    CT_OFFLOAD_BOTH = (CT_OFFLOAD_INIT | CT_OFFLOAD_REP),
+};
+
+struct ct_offloads {
+    uint8_t flags;
+    struct ovs_refcount *refcnt;
+    struct ct_dir_info dir_info[CT_DIR_NUM];
+};
+
+struct conn_expire {
+    /* Set once when initializing the expiration node. */
+    struct conntrack *ct;
+    /* Timeout state of the connection.
+     * It follows the connection state updates.
+     */
+    enum ct_timeout tm;
+    /* Insert and remove the expiration node only once per RCU syncs.
+     * If multiple threads update the connection, its expiration should
+     * be removed only once and added only once to timeout lists.
+     */
+    atomic_flag insert_once;
+    atomic_flag remove_once;
+    struct rculist node;
+};
+
+struct conn {
+    /* Immutable data. */
+    struct conn_key key;
+    struct conn_key rev_key;
+    struct conn_key parent_key; /* Only used for orig_tuple support. */
+    struct cmap_node cm_node;
+    uint16_t nat_action;
+    char *alg;
+    struct conn *nat_conn; /* The NAT 'conn' context, if there is one. */
+    struct conn *master_conn; /* The master 'conn' context if this is a NAT
+                               * 'conn' */
+    atomic_flag reclaimed; /* False during the lifetime of the connection,
+                            * True as soon as a thread has started freeing
+                            * its memory. */
+
+    /* Mutable data. */
+    struct ovs_mutex lock; /* Guards all mutable fields. */
+    struct conn_expire exp;
+    ovs_u128 label;
+    atomic_llong expiration;
+    long long prev_query;
+    uint32_t mark;
+    int seq_skew;
+
+    /* Immutable data. */
+    int32_t admit_zone; /* The zone for managing zone limit counts. */
+    uint32_t zone_limit_seq; /* Used to disambiguate zone limit counts. */
+
+    /* Mutable data. */
+    bool seq_skew_dir; /* TCP sequence skew direction due to NATTing of FTP
+                        * control messages; true if reply direction. */
+    bool cleaned; /* True if cleaned from expiry lists. */
+
+    /* Immutable data. */
+    bool alg_related; /* True if alg data connection. */
+    enum ct_conn_type conn_type;
+
+    uint32_t tp_id; /* Timeout policy ID. */
+    struct ct_offloads offloads;
+};
+
+enum ct_update_res {
+    CT_UPDATE_INVALID,
+    CT_UPDATE_VALID,
+    CT_UPDATE_NEW,
+    CT_UPDATE_VALID_NEW,
+};
+
 struct conntrack {
     struct ovs_mutex ct_lock; /* Protects 2 following fields. */
     struct cmap conns OVS_GUARDED;
@@ -258,5 +269,21 @@ struct ct_l4_proto {
                                struct ct_dpif_protoinfo *);
     enum ct_timeout (*get_tm)(struct conn *conn);
 };
+
+static inline void
+conn_expire_remove(struct conn_expire *exp, bool need_ct_lock)
+    OVS_NO_THREAD_SAFETY_ANALYSIS
+{
+    if (!atomic_flag_test_and_set(&exp->remove_once)
+        && rculist_next(&exp->node)) {
+        if (need_ct_lock) {
+            ovs_mutex_lock(&exp->ct->ct_lock);
+        }
+        rculist_remove(&exp->node);
+        if (need_ct_lock) {
+            ovs_mutex_unlock(&exp->ct->ct_lock);
+        }
+    }
+}
 
 #endif /* conntrack-private.h */
