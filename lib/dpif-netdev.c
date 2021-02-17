@@ -525,7 +525,8 @@ dp_netdev_offload_init(void)
         atomic_init(&thread->enqueued_offload_add, 0);
         mov_avg_cma_init(&thread->cma);
         mov_avg_ema_init(&thread->ema, 100);
-        ovs_thread_create("hw_offload", dp_netdev_flow_offload_main, thread);
+        ovs_thread_create("hw_offload", dp_netdev_flow_offload_main,
+                          (void *)(uintptr_t) tid);
     }
     dp_netdev_offload_ct_stats_reset();
 
@@ -3514,12 +3515,16 @@ dp_netdev_offload_poll_queues(struct dp_offload_thread *ofl_thread,
 static void *
 dp_netdev_flow_offload_main(void *arg)
 {
-    struct dp_offload_thread *ofl_thread = arg;
+    unsigned int tid = (unsigned int)(uintptr_t) arg;
     struct dp_offload_thread_item *offload;
+    struct dp_offload_thread *ofl_thread;
     struct mpsc_queue *offload_queue;
     long long int latency_us;
     long long int next_rcu;
     long long int now;
+
+    netdev_offload_thread_init(tid);
+    ofl_thread = &dp_offload_threads[tid];
 
     offload_queue = &ofl_thread->offload_queue;
     mpsc_queue_acquire(offload_queue);
