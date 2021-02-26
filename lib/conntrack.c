@@ -575,7 +575,7 @@ conn_clean(struct conntrack *ct, struct conn *conn)
         return;
     }
 
-    ovs_mutex_lock(&conn->lock);
+    conn_lock(conn);
     conntrack_lock(ct);
 
     conn_clean_cmn(ct, conn);
@@ -589,7 +589,7 @@ conn_clean(struct conntrack *ct, struct conn *conn)
     atomic_count_dec(&ct->n_conn);
 
     conntrack_unlock(ct);
-    ovs_mutex_unlock(&conn->lock);
+    conn_unlock(conn);
 }
 
 static void
@@ -600,7 +600,7 @@ conn_clean_one(struct conntrack *ct, struct conn *conn)
         return;
     }
 
-    ovs_mutex_lock(&conn->lock);
+    conn_lock(conn);
     conntrack_lock(ct);
 
     conn_clean_cmn(ct, conn);
@@ -612,7 +612,7 @@ conn_clean_one(struct conntrack *ct, struct conn *conn)
     ovsrcu_postpone(delete_conn_one, conn);
 
     conntrack_unlock(ct);
-    ovs_mutex_unlock(&conn->lock);
+    conn_unlock(conn);
 }
 
 /* Destroys the connection tracker 'ct' and frees all the allocated memory.
@@ -871,10 +871,10 @@ handle_alg_ctl(struct conntrack *ct, const struct conn_lookup_ctx *ctx,
 {
     /* ALG control packet handling with expectation creation. */
     if (OVS_UNLIKELY(alg_helpers[ct_alg_ctl] && conn && conn->alg)) {
-        ovs_mutex_lock(&conn->lock);
+        conn_lock(conn);
         alg_helpers[ct_alg_ctl](ct, ctx, pkt, conn, now, CT_FTP_CTL_INTEREST,
                                 nat);
-        ovs_mutex_unlock(&conn->lock);
+        conn_unlock(conn);
     }
 }
 
@@ -1092,9 +1092,9 @@ conn_seq_skew_set(struct conntrack *ct, const struct conn *conn_in,
     OVS_NO_THREAD_SAFETY_ANALYSIS
 {
     struct conn *conn;
-    ovs_mutex_unlock(&conn_in->lock);
+    conn_unlock(conn_in);
     conn_lookup(ct, &conn_in->key, now, &conn, NULL);
-    ovs_mutex_lock(&conn_in->lock);
+    conn_lock(conn_in);
 
     if (conn && seq_skew) {
         conn->seq_skew = seq_skew;
@@ -1215,7 +1215,7 @@ conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
         }
 
         nc->nat_conn = nat_conn;
-        ovs_mutex_init_adaptive(&nc->lock);
+        conn_lock_init(nc);
         nc->conn_type = CT_CONN_TYPE_DEFAULT;
         atomic_flag_clear(&nc->reclaimed);
         conntrack_lock(ct);
@@ -1394,23 +1394,23 @@ conn_update_state_alg(struct conntrack *ct, struct dp_packet *pkt,
     if (is_ftp_ctl(ct_alg_ctl)) {
         /* Keep sequence tracking in sync with the source of the
          * sequence skew. */
-        ovs_mutex_lock(&conn->lock);
+        conn_lock(conn);
         if (ctx->reply != conn->seq_skew_dir) {
             handle_ftp_ctl(ct, ctx, pkt, conn, now, CT_FTP_CTL_OTHER,
                            !!nat_action_info);
             /* conn_update_state locks for unrelated fields, so unlock. */
-            ovs_mutex_unlock(&conn->lock);
+            conn_unlock(conn);
             *create_new_conn = conn_update_state(ct, pkt, ctx, conn, now);
         } else {
             /* conn_update_state locks for unrelated fields, so unlock. */
-            ovs_mutex_unlock(&conn->lock);
+            conn_unlock(conn);
             *create_new_conn = conn_update_state(ct, pkt, ctx, conn, now);
-            ovs_mutex_lock(&conn->lock);
+            conn_lock(conn);
             if (*create_new_conn == false) {
                 handle_ftp_ctl(ct, ctx, pkt, conn, now, CT_FTP_CTL_OTHER,
                                !!nat_action_info);
             }
-            ovs_mutex_unlock(&conn->lock);
+            conn_unlock(conn);
         }
         return true;
     }
@@ -1443,7 +1443,7 @@ process_one_fast(uint16_t zone, const uint32_t *setmark,
     }
 
     pkt->md.ct_zone = zone;
-    ovs_mutex_lock(&conn->lock);
+    conn_lock(conn);
     pkt->md.ct_mark = conn->mark;
     pkt->md.ct_label = conn->label;
 
@@ -1455,7 +1455,7 @@ process_one_fast(uint16_t zone, const uint32_t *setmark,
         set_label(pkt, conn, &setlabel[0], &setlabel[1]);
     }
 
-    ovs_mutex_unlock(&conn->lock);
+    conn_unlock(conn);
 }
 
 static void
@@ -1580,7 +1580,7 @@ process_one(struct conntrack *ct, struct dp_packet *pkt,
     }
 
     if (conn) {
-        ovs_mutex_lock(&conn->lock);
+        conn_lock(conn);
 
         write_ct_md_conn(pkt, zone, conn);
         if (setmark) {
@@ -1590,7 +1590,7 @@ process_one(struct conntrack *ct, struct dp_packet *pkt,
             set_label(pkt, conn, &setlabel[0], &setlabel[1]);
         }
 
-        ovs_mutex_unlock(&conn->lock);
+        conn_unlock(conn);
     } else {
         write_ct_md_alg_exp(pkt, zone, &ctx->key, alg_exp);
     }
@@ -1979,9 +1979,9 @@ conn_hw_update(struct conntrack *ct,
             *rv_active = offload_class->conn_active(&item, now,
                                                     conn->prev_query);
             if (!*rv_active) {
-                ovs_mutex_lock(&conn->lock);
+                conn_lock(conn);
                 conn_update_expiration(ct, conn, tm, now);
-                ovs_mutex_unlock(&conn->lock);
+                conn_unlock(conn);
                 updated = true;
                 break;
             }
@@ -1992,9 +1992,9 @@ conn_hw_update(struct conntrack *ct,
             *rv_active = offload_class->conn_active(&item, now,
                                                     conn->prev_query);
             if (!*rv_active) {
-                ovs_mutex_lock(&conn->lock);
+                conn_lock(conn);
                 conn_update_expiration(ct, conn, tm, now);
-                ovs_mutex_unlock(&conn->lock);
+                conn_unlock(conn);
                 updated = true;
                 break;
             }
@@ -3064,11 +3064,11 @@ static enum ct_update_res
 conn_update(struct conntrack *ct, struct conn *conn, struct dp_packet *pkt,
             struct conn_lookup_ctx *ctx, long long now)
 {
-    ovs_mutex_lock(&conn->lock);
+    conn_lock(conn);
     enum ct_update_res update_res =
         l4_protos[conn->key.nw_proto]->conn_update(ct, conn, pkt, ctx->reply,
                                                    now);
-    ovs_mutex_unlock(&conn->lock);
+    conn_unlock(conn);
     return update_res;
 }
 
@@ -3114,7 +3114,7 @@ static void
 delete_conn(struct conn *conn)
 {
     ovs_assert(conn->conn_type == CT_CONN_TYPE_DEFAULT);
-    ovs_mutex_destroy(&conn->lock);
+    conn_lock_destroy(conn);
     free(conn->nat_conn);
     delete_conn_cmn(conn);
 }
@@ -3124,7 +3124,7 @@ static void
 delete_conn_one(struct conn *conn)
 {
     if (conn->conn_type == CT_CONN_TYPE_DEFAULT) {
-        ovs_mutex_destroy(&conn->lock);
+        conn_lock_destroy(conn);
     }
     delete_conn_cmn(conn);
 }
@@ -3223,7 +3223,7 @@ conn_to_ct_dpif_entry(const struct conn *conn, struct ct_dpif_entry *entry,
 
     entry->zone = conn->key.zone;
 
-    ovs_mutex_lock(&conn->lock);
+    conn_lock(conn);
     entry->mark = conn->mark;
     memcpy(&entry->labels, &conn->label, sizeof entry->labels);
 
@@ -3241,7 +3241,7 @@ conn_to_ct_dpif_entry(const struct conn *conn, struct ct_dpif_entry *entry,
         entry->offload_status_reply |=
             conn->nat_conn->offloads.dir_info[CT_DIR_REP].status;
     }
-    ovs_mutex_unlock(&conn->lock);
+    conn_unlock(conn);
 
     entry->timeout = (expiration > 0) ? expiration / 1000 : 0;
 
