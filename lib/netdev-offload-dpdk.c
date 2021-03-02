@@ -319,6 +319,10 @@ ufid_to_rte_flow_disassociate(struct ufid_to_rte_flow_data *data)
  * "id_alloc" is used to allocate an id for a new data.
  * "id_free" is used to free an id for the last data release.
  * "data_size" is the size of the data in the elements.
+ * "priv_size" is the size of the priv data in the elements. priv is just
+ *     allocated with the object, and used by users.
+ * "priv_ref" is called upon a reference to the priv.
+ * "priv_unref" is called upon a un-reference to the priv.
  */
 struct context_metadata {
     const char *name;
@@ -332,6 +336,9 @@ struct context_metadata {
     void (*id_free)(uint32_t id);
     size_t data_size;
     bool delayed_release;
+    size_t priv_size;
+    int (*priv_ref)(void *priv, void *priv_arg, uint32_t id);
+    void (*priv_unref)(void *priv);
 };
 
 struct context_release_item;
@@ -344,8 +351,10 @@ struct context_data {
     struct cmap_node associated_i2d_node;
     uint32_t associated_i2d_hash;
     void *data;
+    void *priv;
     uint32_t id;
     struct ovs_refcount refcount;
+    uint32_t priv_refcount;
 };
 
 static bool
@@ -372,10 +381,12 @@ context_data_ref(struct context_metadata *md,
 static int
 get_context_data_id_by_data(struct context_metadata *md,
                             struct context_data *data_req,
+                            void *priv_arg,
                             uint32_t *id)
 {
     struct context_data *data_cur;
     size_t dhash, ihash;
+    size_t data_size;
     struct ds s;
 
     ds_init(&s);
@@ -397,6 +408,20 @@ get_context_data_id_by_data(struct context_metadata *md,
                         data_cur->id);
             ds_destroy(&s);
             *id = data_cur->id;
+            if (md->priv_ref) {
+                ovs_mutex_lock(&md->maps_lock);
+                if (data_cur->priv_refcount == 0) {
+                    int ret;
+
+                    ret = md->priv_ref(data_cur->priv, priv_arg, *id);
+                    if (ret) {
+                        ovs_mutex_unlock(&md->maps_lock);
+                        return -1;
+                    }
+                }
+                data_cur->priv_refcount++;
+                ovs_mutex_unlock(&md->maps_lock);
+            }
             return 0;
         }
     }
@@ -405,17 +430,24 @@ get_context_data_id_by_data(struct context_metadata *md,
     if (!data_cur) {
         goto err;
     }
-    data_cur->data = xmalloc(md->data_size);
+    data_size = ROUND_UP(md->data_size, 8);
+    data_cur->data = xmalloc(data_size + md->priv_size);
     if (!data_cur->data) {
         goto err_data_alloc;
     }
+    data_cur->priv = (uint8_t *) data_cur->data + data_size;
     memcpy(data_cur->data, data_req->data, md->data_size);
     ovs_refcount_init(&data_cur->refcount);
+    data_cur->priv_refcount = 1;
     data_cur->id = md->id_alloc();
     if (data_cur->id == 0) {
         goto err_id_alloc;
     }
     ovs_mutex_lock(&md->maps_lock);
+    if (md->priv_ref && md->priv_ref(data_cur->priv, priv_arg, data_cur->id)) {
+        ovs_mutex_unlock(&md->maps_lock);
+        goto err_id_alloc;
+    }
     data_cur->d2i_hash = dhash;
     cmap_insert(&md->d2i_map, &data_cur->d2i_node, dhash);
     ihash = hash_add(0, data_cur->id);
@@ -571,6 +603,14 @@ context_delayed_release(struct context_metadata *md, uint32_t id,
     item->id = id;
     item->data = data;
     item->associated = associated;
+    if (md->priv_unref) {
+        ovs_mutex_lock(&md->maps_lock);
+        if (item->data->priv_refcount == 1) {
+            md->priv_unref(item->data->priv);
+        }
+        item->data->priv_refcount--;
+        ovs_mutex_unlock(&md->maps_lock);
+    }
     if (!md->delayed_release) {
         context_release(item);
         return;
@@ -858,7 +898,7 @@ get_label_id(ovs_u128 *ct_label, uint32_t *ct_label_id)
         *ct_label_id = 0;
         return 0;
     }
-    return get_context_data_id_by_data(&label_id_md, &label_id_context,
+    return get_context_data_id_by_data(&label_id_md, &label_id_context, NULL,
                                        ct_label_id);
 }
 
@@ -929,7 +969,7 @@ get_zone_id(uint16_t ct_zone, uint32_t *ct_zone_id)
         .data = &ct_zone,
     };
 
-    return get_context_data_id_by_data(&zone_id_md, &zone_id_context,
+    return get_context_data_id_by_data(&zone_id_md, &zone_id_context, NULL,
                                        ct_zone_id);
 }
 
@@ -1003,7 +1043,7 @@ get_table_id(odp_port_t vport, uint32_t recirc_id, uint32_t *table_id)
         return 0;
     }
 
-    return get_context_data_id_by_data(&table_id_md, &table_id_context,
+    return get_context_data_id_by_data(&table_id_md, &table_id_context, NULL,
                                        table_id);
 }
 
@@ -1083,7 +1123,8 @@ get_ct_ctx_id(struct ct_miss_ctx *ct_miss_ctx_data, uint32_t *ct_ctx_id)
         .data = ct_miss_ctx_data,
     };
 
-    return get_context_data_id_by_data(&ct_miss_ctx_md, &ct_ctx, ct_ctx_id);
+    return get_context_data_id_by_data(&ct_miss_ctx_md, &ct_ctx, NULL,
+                                       ct_ctx_id);
 }
 
 static void
@@ -1190,7 +1231,7 @@ get_tnl_id(struct flow_tnl *tnl_key, struct flow_tnl *tnl_mask,
         *tnl_id = 0;
         return 0;
     }
-    return get_context_data_id_by_data(&tnl_md, &tnl_ctx, tnl_id);
+    return get_context_data_id_by_data(&tnl_md, &tnl_ctx, NULL, tnl_id);
 }
 
 static void
@@ -1239,7 +1280,7 @@ get_flow_miss_ctx_id(struct flow_miss_ctx *flow_ctx_data,
         .data = flow_ctx_data,
     };
 
-    return get_context_data_id_by_data(&flow_miss_ctx_md, &flow_ctx,
+    return get_context_data_id_by_data(&flow_miss_ctx_md, &flow_ctx, NULL,
                                        miss_ctx_id);
 }
 
