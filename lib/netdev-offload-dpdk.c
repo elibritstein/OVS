@@ -371,27 +371,6 @@ struct context_data {
     uint32_t priv_refcount;
 };
 
-static bool
-context_data_ref(struct context_metadata *md,
-                 struct context_data *ctx_data,
-                 uint32_t dhash)
-{
-    struct context_data *data_cur;
-    bool found = false;
-
-    ovs_mutex_lock(&md->maps_lock);
-    CMAP_FOR_EACH_WITH_HASH_PROTECTED (data_cur, d2i_node, dhash,
-                                       &md->d2i_map) {
-        if (data_cur == ctx_data) {
-            ovs_refcount_ref(&data_cur->refcount);
-            found = true;
-            break;
-        }
-    }
-    ovs_mutex_unlock(&md->maps_lock);
-    return found;
-}
-
 static int
 get_context_data_id_by_data(struct context_metadata *md,
                             struct context_data *data_req,
@@ -408,7 +387,7 @@ get_context_data_id_by_data(struct context_metadata *md,
     dhash = hash_bytes(data_req->data, md->data_size, 0);
     CMAP_FOR_EACH_WITH_HASH (data_cur, d2i_node, dhash, &md->d2i_map) {
         if (!memcmp(data_req->data, data_cur->data, md->data_size)) {
-            if (!context_data_ref(md, data_cur, dhash)) {
+            if (!ovs_refcount_try_ref_rcu(&data_cur->refcount)) {
                 /* If a reference could not be taken, it means that
                  * while the data has been found within the map, it has
                  * since been removed and related ID freed. At this point,
@@ -1502,7 +1481,7 @@ get_shared_age_ctx(struct netdev *netdev,
     dhash = hash_bytes(&app_counter_key, sizeof app_counter_key, 0);
     CMAP_FOR_EACH_WITH_HASH (data_cur, d2i_node, dhash, &md->d2i_map) {
         if (app_counter_key == *((uintptr_t *) data_cur->data)) {
-            if (!context_data_ref(md, data_cur, dhash)) {
+            if (!ovs_refcount_try_ref_rcu(&data_cur->refcount)) {
                 /* If a reference could not be taken, it means that
                  * while the data has been found within the map, it has
                  * since been removed and related ID freed. At this point,
