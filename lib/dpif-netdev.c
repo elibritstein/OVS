@@ -394,6 +394,7 @@ struct dp_offload_thread_item {
 struct dp_offload_thread {
     PADDED_MEMBERS(CACHE_LINE_SIZE,
         struct mpsc_queue queue;
+        atomic_uint64_t enqueued_item_add;
         atomic_uint64_t enqueued_item;
         struct cmap megaflow_to_mark;
         struct cmap mark_to_flow;
@@ -403,6 +404,11 @@ struct dp_offload_thread {
         atomic_uint64_t ct_bi_dir_connections;
     );
 };
+
+#define HW_OFFLOAD_DEFAULT_QUEUE_SIZE 50000
+static unsigned long long int offload_queue_size =
+    HW_OFFLOAD_DEFAULT_QUEUE_SIZE;
+
 static struct dp_offload_thread *dp_offload_threads = NULL;
 static void *dp_netdev_flow_offload_main(void *arg);
 
@@ -425,6 +431,42 @@ dp_netdev_ct_offload_e2e_del(ovs_u128 *ufid, void *dp)
 {
     e2e_cache_flow_del(ufid, dp);
 }
+static void
+dp_netdev_offload_init(void);
+static bool
+dp_netdev_offload_queue_full(void)
+{
+    uint64_t total_add = 0;
+    unsigned int tid;
+
+    dp_netdev_offload_init();
+
+    /* Queue size of 0 disables burst limit.
+     *
+     * E2E code depends on MT path executing in conntrack module.
+     * If the queue is full, some offloads info will be missing from
+     * the e2e trace. Do not enforce the queue limit if e2e is enabled.
+     * This workaround should be fixed by making the e2e code independent.
+     *
+     * in conntrack_offload_add_conn()
+     *    +--> conntrack_offload_prepare_add(conn, packet, ct->dp);
+     *         This call adds necessary infos for e2e and will
+     *         be skipped if the queue is full.
+     *
+     *    e2e_cache_trace_add_ct()
+     *    +--> Without the above info, corrupted data are used in the trace.
+     */
+    if (offload_queue_size == 0 || dp_netdev_e2e_cache_enabled) {
+        return false;
+    }
+
+    for (tid = 0; tid < netdev_offload_thread_nb(); tid++) {
+        total_add +=
+            atomic_count_get64(&dp_offload_threads[tid].enqueued_item_add);
+    }
+
+    return total_add > offload_queue_size;
+}
 
 static struct conntrack_offload_class dpif_ct_offload_class = {
     .conn_get_ufid = dp_netdev_ct_offload_get_ufid,
@@ -433,6 +475,7 @@ static struct conntrack_offload_class dpif_ct_offload_class = {
     .conn_active = dp_netdev_ct_offload_active,
     .conn_e2e_add = dp_netdev_ct_offload_e2e_add,
     .conn_e2e_del = dp_netdev_ct_offload_e2e_del,
+    .queue_full = dp_netdev_offload_queue_full,
 };
 
 static void
@@ -449,6 +492,7 @@ dp_netdev_offload_ct_stats_reset(void)
     }
     if (netdev_is_e2e_cache_enabled()) {
         atomic_init(&dp_offload_threads[i].enqueued_item, 0);
+        atomic_init(&dp_offload_threads[i].enqueued_item_add, 0);
         atomic_init(&dp_offload_threads[i].ct_uni_dir_connections, 0);
         atomic_init(&dp_offload_threads[i].ct_bi_dir_connections, 0);
     }
@@ -477,6 +521,7 @@ dp_netdev_offload_init(void)
         cmap_init(&thread->megaflow_to_mark);
         cmap_init(&thread->mark_to_flow);
         atomic_init(&thread->enqueued_item, 0);
+        atomic_init(&thread->enqueued_item_add, 0);
         mov_avg_cma_init(&thread->cma);
         mov_avg_ema_init(&thread->ema, 100);
         ovs_thread_create("hw_offload", dp_netdev_flow_offload_main, thread);
@@ -2905,12 +2950,15 @@ dp_netdev_free_offload(struct dp_offload_thread_item *offload)
 
 static void
 dp_netdev_append_offload(struct dp_offload_thread_item *offload,
-                         unsigned int tid)
+                         unsigned int tid, int op)
 {
     dp_netdev_offload_init();
 
     mpsc_queue_insert(&dp_offload_threads[tid].queue, &offload->node);
     atomic_count_inc64(&dp_offload_threads[tid].enqueued_item);
+    if (op == DP_NETDEV_FLOW_OFFLOAD_OP_ADD) {
+        atomic_count_inc64(&dp_offload_threads[tid].enqueued_item_add);
+    }
 }
 
 static void
@@ -2922,7 +2970,7 @@ dp_netdev_offload_flow_enqueue(struct dp_offload_thread_item *item)
     ovs_assert(item->type == DP_OFFLOAD_FLOW);
 
     tid = netdev_offload_ufid_to_thread_id(flow_offload->flow->mega_ufid);
-    dp_netdev_append_offload(item, tid);
+    dp_netdev_append_offload(item, tid, flow_offload->op);
 }
 
 static int
@@ -3043,12 +3091,16 @@ static void
 dp_offload_flow(struct dp_offload_thread_item *item)
 {
     struct dp_offload_flow_item *flow_offload = &item->data->flow;
+    struct dp_offload_thread *ofl_thread;
     const char *op;
     int ret;
+
+    ofl_thread = &dp_offload_threads[netdev_offload_thread_id()];
 
     switch (flow_offload->op) {
     case DP_NETDEV_FLOW_OFFLOAD_OP_ADD:
         op = "add";
+        atomic_count_dec64(&ofl_thread->enqueued_item_add);
         ret = dp_netdev_flow_offload_put(item);
         break;
     case DP_NETDEV_FLOW_OFFLOAD_OP_MOD:
@@ -3531,7 +3583,7 @@ dp_netdev_offload_ct_enqueue(struct dp_offload_thread_item *item)
                                     ovs_u128_xor(ct_offload[CT_DIR_INIT].ufid,
                                                  ct_offload[CT_DIR_REP].ufid));
 
-    dp_netdev_append_offload(item, tid);
+    dp_netdev_append_offload(item, tid, ct_offload->op);
 }
 
 static void
@@ -3720,6 +3772,10 @@ queue_netdev_flow_put(struct dp_netdev_pmd_thread *pmd,
         e2e_cache_flow_put(false, &flow->mega_ufid, match, actions,
                            actions_len);
     }
+    if (dp_netdev_offload_queue_full()) {
+        return;
+    }
+
     item = dp_netdev_alloc_flow_offload(pmd->dp, flow, op);
     flow_offload = &item->data->flow;
     flow_offload->match = *match;
@@ -3774,7 +3830,7 @@ dp_netdev_offload_flush_enqueue(struct dp_netdev *dp,
         flush->netdev = netdev;
         flush->barrier = barrier;
 
-        dp_netdev_append_offload(item, tid);
+        dp_netdev_append_offload(item, tid, 0);
     }
 }
 
@@ -5700,6 +5756,8 @@ dpif_netdev_set_config(struct dpif *dpif, const struct smap *other_config)
     bool autolb_state = smap_get_bool(other_config, "pmd-auto-lb", false);
 
     set_pmd_auto_lb(dp, autolb_state, log_autolb);
+    offload_queue_size = smap_get_ullong(other_config, "hw-offload-queue-size",
+                                         HW_OFFLOAD_DEFAULT_QUEUE_SIZE);
     return 0;
 }
 
