@@ -21,6 +21,7 @@
 #include "openvswitch/netdev.h"
 #include "openvswitch/types.h"
 #include "dp-packet.h"
+#include "dpif.h"
 #include "ovs-rcu.h"
 #include "ovs-thread.h"
 #include "packets.h"
@@ -148,7 +149,7 @@ int netdev_flow_put(struct netdev *, struct match *, struct nlattr *actions,
                     size_t actions_len, const ovs_u128 *,
                     struct offload_info *, struct dpif_flow_stats *);
 int netdev_hw_miss_packet_recover(struct netdev *, struct dp_packet *,
-                                  uint8_t *);
+                                  uint8_t *, struct dpif_sflow_attr *);
 int netdev_flow_get(struct netdev *, struct match *, struct nlattr **actions,
                     const ovs_u128 *, struct dpif_flow_stats *,
                     struct dpif_flow_attrs *, struct ofpbuf *wbuffer,

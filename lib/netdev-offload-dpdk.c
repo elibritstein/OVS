@@ -5617,7 +5617,9 @@ get_vport_netdev(const char *dpif_type,
 static int
 netdev_offload_dpdk_hw_miss_packet_recover(struct netdev *netdev,
                                            struct dp_packet *packet,
-                                           uint8_t *skip_actions)
+                                           uint8_t *skip_actions,
+                                           struct dpif_sflow_attr *sflow_attr
+                                           OVS_UNUSED)
 {
     struct flow_miss_ctx flow_miss_ctx;
     struct ct_miss_ctx ct_miss_ctx;
