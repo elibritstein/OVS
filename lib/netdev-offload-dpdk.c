@@ -172,6 +172,7 @@ struct act_resources {
     struct shared_age_ctx **pshared_age_ctx;
     uint32_t ctid;
     uint32_t counter_id;
+    uint32_t sflow_id;
 };
 
 #define NUM_RTE_FLOWS_PER_PORT 2
@@ -876,6 +877,7 @@ enum {
     REG_FIELD_CT_LABEL_ID,
     REG_FIELD_TUN_INFO,
     REG_FIELD_CT_CTX,
+    REG_FIELD_SFLOW_CTX,
     REG_FIELD_NUM,
 };
 
@@ -923,6 +925,15 @@ static struct reg_field reg_fields[] = {
         .mask = 0xFFFFFFFF,
     },
     [REG_FIELD_CT_CTX] = {
+        .type = REG_TYPE_META,
+        .index = 0,
+        .offset = 0,
+        .mask = 0x0000FFFF,
+    },
+    /* Since sFlow and CT will not work concurrently is it safe
+     * to have the reg_fields use the same bits for SFLOW_CTX and CT_CTX.
+     */
+    [REG_FIELD_SFLOW_CTX] = {
         .type = REG_TYPE_META,
         .index = 0,
         .offset = 0,
@@ -1251,6 +1262,95 @@ put_table_id(uint32_t table_id)
         return;
     }
     put_context_data_by_id(&table_id_md, table_id);
+}
+
+struct sflow_ctx {
+    struct dpif_sflow_attr sflow_attr;
+    struct user_action_cookie cookie;
+    struct flow_tnl sflow_tnl;
+};
+
+static struct ds *
+dump_sflow_id(struct ds *s, void *data)
+{
+    struct sflow_ctx *sflow_ctx = data;
+    struct user_action_cookie *cookie;
+
+    cookie = &sflow_ctx->cookie;
+    ds_put_format(s, "sFlow cookie %p, ofproto_uuid "UUID_FMT,
+                  cookie, UUID_ARGS(&cookie->ofproto_uuid));
+    return s;
+}
+
+#define MIN_SFLOW_ID     1
+#define MAX_SFLOW_ID     (reg_fields[REG_FIELD_SFLOW_CTX].mask - 1)
+
+static struct id_fpool *sflow_id_pool = NULL;
+
+static uint32_t
+sflow_id_alloc(void)
+{
+    static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
+    unsigned int tid = netdev_offload_thread_id();
+    uint32_t id;
+
+    if (ovsthread_once_start(&init_once)) {
+        unsigned int nb_thread = netdev_offload_thread_nb();
+
+        /* Haven't initiated yet, do it here */
+        sflow_id_pool = id_fpool_create(nb_thread, MIN_SFLOW_ID, MAX_SFLOW_ID);
+
+        ovsthread_once_done(&init_once);
+    }
+    if (id_fpool_new_id(sflow_id_pool, tid, &id)) {
+        return id;
+    }
+    return 0;
+}
+
+static void
+sflow_id_free(uint32_t sflow_id)
+{
+    unsigned int tid = netdev_offload_thread_id();
+
+    id_fpool_free_id(sflow_id_pool, tid, sflow_id);
+}
+
+static struct context_metadata sflow_id_md = {
+    .name = "sflow_id",
+    .dump_context_data = dump_sflow_id,
+    .maps_lock = OVS_MUTEX_INITIALIZER,
+    .d2i_map = CMAP_INITIALIZER,
+    .i2d_map = CMAP_INITIALIZER,
+    .id_alloc = sflow_id_alloc,
+    .id_free = sflow_id_free,
+    .data_size = sizeof(struct sflow_ctx),
+};
+
+OVS_UNUSED
+static int
+get_sflow_id(struct sflow_ctx *sflow_ctx, uint32_t *sflow_id)
+{
+    struct context_data sflow_id_context = {
+        .data = sflow_ctx,
+    };
+
+    return get_context_data_id_by_data(&sflow_id_md, &sflow_id_context,
+                                       NULL, sflow_id);
+}
+
+OVS_UNUSED
+static void
+put_sflow_id(uint32_t sflow_id)
+{
+    put_context_data_by_id(&sflow_id_md, sflow_id);
+}
+
+OVS_UNUSED
+static int
+find_sflow_ctx(int sflow_id, struct sflow_ctx *ctx)
+{
+    return get_context_data_by_id(&sflow_id_md, sflow_id, ctx);
 }
 
 #define MIN_CT_CTX_ID 1
