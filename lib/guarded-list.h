@@ -40,6 +40,8 @@ bool guarded_list_is_empty(const struct guarded_list *);
 
 size_t guarded_list_push_back(struct guarded_list *, struct ovs_list *,
                               size_t max);
+void guarded_list_push_back_all(struct guarded_list *, struct ovs_list *,
+                                size_t n);
 struct ovs_list *guarded_list_pop_front(struct guarded_list *);
 size_t guarded_list_pop_all(struct guarded_list *, struct ovs_list *);
 

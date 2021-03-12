@@ -65,6 +65,16 @@ guarded_list_push_back(struct guarded_list *list,
     return retval;
 }
 
+void
+guarded_list_push_back_all(struct guarded_list *list,
+                           struct ovs_list *nodes, size_t n)
+{
+    ovs_mutex_lock(&list->mutex);
+    ovs_list_push_back_all(&list->list, nodes);
+    list->n += n;
+    ovs_mutex_unlock(&list->mutex);
+}
+
 struct ovs_list *
 guarded_list_pop_front(struct guarded_list *list)
 {
