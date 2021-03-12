@@ -95,6 +95,7 @@ struct ufid_to_rte_flow_data {
     struct netdev *physdev;
     struct ovs_mutex lock;
     unsigned int creation_tid;
+    struct ovsrcu_gc_node gc_node;
     volatile bool dead;
     struct act_resources act_resources;
 };
@@ -294,7 +295,7 @@ ufid_to_rte_flow_associate(const ovs_u128 *ufid, struct netdev *netdev,
 }
 
 static void
-rte_flow_data_unref(struct ufid_to_rte_flow_data *data)
+rte_flow_data_gc(struct ufid_to_rte_flow_data *data)
 {
     ovs_mutex_destroy(&data->lock);
     free(data);
@@ -319,7 +320,7 @@ ufid_to_rte_flow_disassociate(struct ufid_to_rte_flow_data *data)
         netdev_close(data->netdev);
     }
     netdev_close(data->physdev);
-    ovsrcu_postpone(rte_flow_data_unref, data);
+    ovsrcu_gc(rte_flow_data_gc, data, gc_node);
 }
 
 /* A generic data structure used for mapping data to id and id to data. The
