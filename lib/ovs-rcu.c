@@ -20,6 +20,7 @@
 #include "fatal-signal.h"
 #include "guarded-list.h"
 #include "latch.h"
+#include "mpsc-queue.h"
 #include "openvswitch/list.h"
 #include "ovs-thread.h"
 #include "openvswitch/poll-loop.h"
@@ -49,6 +50,7 @@ struct ovsrcu_perthread {
 
     uint64_t seqno;
     struct ovsrcu_cbset *cbset;
+    bool do_inline;
     char name[16];              /* This thread's name. */
 };
 
@@ -61,6 +63,8 @@ static struct ovs_mutex ovsrcu_threads_mutex;
 static struct guarded_list flushed_cbsets;
 static struct seq *flushed_cbsets_seq;
 
+static struct seq *inline_seq;
+
 static struct latch postpone_exit;
 static struct ovs_barrier postpone_barrier;
 
@@ -68,7 +72,8 @@ static void ovsrcu_init_module(void);
 static void ovsrcu_flush_cbset__(struct ovsrcu_perthread *, bool);
 static void ovsrcu_flush_cbset(struct ovsrcu_perthread *);
 static void ovsrcu_unregister__(struct ovsrcu_perthread *);
-static bool ovsrcu_call_postponed(void);
+static bool ovsrcu_call_inline(uint64_t);
+static bool ovsrcu_call_postponed(struct ovs_list *cbsets);
 static void *ovsrcu_postpone_thread(void *arg OVS_UNUSED);
 
 static struct ovsrcu_perthread *
@@ -85,6 +90,7 @@ ovsrcu_perthread_get(void)
         perthread = xmalloc(sizeof *perthread);
         perthread->seqno = seq_read(global_seqno);
         perthread->cbset = NULL;
+        perthread->do_inline = false;
         ovs_strlcpy(perthread->name, name[0] ? name : "main",
                     sizeof perthread->name);
 
@@ -112,7 +118,11 @@ static void
 ovsrcu_quiesced(void)
 {
     if (single_threaded()) {
-        ovsrcu_call_postponed();
+        struct ovs_list cbsets = OVS_LIST_INITIALIZER(&cbsets);
+
+        ovsrcu_call_inline(seq_read(global_seqno));
+        guarded_list_pop_all(&flushed_cbsets, &cbsets);
+        ovsrcu_call_postponed(&cbsets);
     } else {
         static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
         if (ovsthread_once_start(&once)) {
@@ -156,6 +166,9 @@ ovsrcu_quiesce(void)
     if (perthread->cbset) {
         ovsrcu_flush_cbset(perthread);
     }
+    if (perthread->do_inline) {
+        seq_change(inline_seq);
+    }
     seq_change(global_seqno);
 
     ovsrcu_quiesced();
@@ -174,6 +187,9 @@ ovsrcu_try_quiesce(void)
         if (perthread->cbset) {
             ovsrcu_flush_cbset__(perthread, true);
         }
+        if (perthread->do_inline) {
+            seq_change_protected(inline_seq);
+        }
         seq_change_protected(global_seqno);
         seq_unlock();
         ovsrcu_quiesced();
@@ -189,20 +205,27 @@ ovsrcu_is_quiescent(void)
     return pthread_getspecific(perthread_key) == NULL;
 }
 
-void
-ovsrcu_synchronize(void)
+static uint64_t
+ovsrcu_synchronize_(struct ovs_list *cbsets)
 {
     unsigned int warning_threshold = 1000;
     uint64_t target_seqno;
     long long int start;
 
     if (single_threaded()) {
-        return;
+        return UINT64_MAX;
     }
 
     target_seqno = seq_read(global_seqno);
     ovsrcu_quiesce_start();
     start = time_msec();
+
+    if (cbsets != NULL) {
+        /* Move the flushed 'cbsets' after 'ovsrcu_quiesce_start',
+         * as this function has the potential in single-threaded mode
+         * to itself execute those 'cbsets'. */
+        guarded_list_pop_all(&flushed_cbsets, cbsets);
+    }
 
     for (;;) {
         uint64_t cur_seqno = seq_read(global_seqno);
@@ -237,6 +260,15 @@ ovsrcu_synchronize(void)
         poll_block();
     }
     ovsrcu_quiesce_end();
+
+    /* Return the 'seqno' that is safe to consider reached by all threads. */
+    return target_seqno;
+}
+
+void
+ovsrcu_synchronize(void)
+{
+    ovs_ignore(ovsrcu_synchronize_(NULL));
 }
 
 /* Waits until as many postponed callbacks as possible have executed.
@@ -275,11 +307,57 @@ ovsrcu_exit(void)
      * infinite loop.  This function is just for making memory leaks easier to
      * spot so there's no point in breaking things on that basis. */
     for (int i = 0; i < 8; i++) {
-        ovsrcu_synchronize();
-        if (!ovsrcu_call_postponed()) {
+        struct ovs_list cbsets = OVS_LIST_INITIALIZER(&cbsets);
+        uint64_t target = ovsrcu_synchronize_(&cbsets);
+        bool inline_active;
+        bool cbsets_active;
+
+        /* Both RCU calls must be examined for activity. */
+        inline_active = ovsrcu_call_inline(target);
+        cbsets_active = ovsrcu_call_postponed(&cbsets);
+        if (!inline_active && !cbsets_active) {
             break;
         }
     }
+}
+
+static struct mpsc_queue inline_queue = MPSC_QUEUE_INITIALIZER(&inline_queue);
+
+void
+ovsrcu_postpone_inline__(void (*function)(void *aux), void *aux,
+                         struct ovsrcu_inline_node *rcu_node)
+{
+    struct ovsrcu_perthread *perthread = ovsrcu_perthread_get();
+
+    rcu_node->seqno = perthread->seqno;
+    rcu_node->cb = function;
+    rcu_node->aux = aux;
+    mpsc_queue_insert(&inline_queue, &rcu_node->node);
+
+    perthread->do_inline = true;
+}
+
+static bool
+ovsrcu_call_inline(uint64_t target_seqno)
+{
+    struct mpsc_queue_node *msg;
+    unsigned int count = 0;
+
+    mpsc_queue_acquire(&inline_queue);
+    MPSC_QUEUE_FOR_EACH_POP (msg, &inline_queue) {
+        struct ovsrcu_inline_node *node;
+
+        node = CONTAINER_OF(msg, struct ovsrcu_inline_node, node);
+        if (node->seqno >= target_seqno) {
+            mpsc_queue_push_front(&inline_queue, msg);
+            break;
+        }
+        node->cb(node->aux);
+        count++;
+    }
+    mpsc_queue_release(&inline_queue);
+
+    return count > 0;
 }
 
 /* Registers 'function' to be called, passing 'aux' as argument, after the
@@ -327,19 +405,18 @@ ovsrcu_postpone__(void (*function)(void *aux), void *aux)
 }
 
 static bool OVS_NO_SANITIZE_FUNCTION
-ovsrcu_call_postponed(void)
+ovsrcu_call_postponed(struct ovs_list *cbsets)
 {
     struct ovsrcu_cbset *cbset;
-    struct ovs_list cbsets;
 
-    guarded_list_pop_all(&flushed_cbsets, &cbsets);
-    if (ovs_list_is_empty(&cbsets)) {
+    if (cbsets == NULL) {
+        return false;
+    }
+    if (ovs_list_is_empty(cbsets)) {
         return false;
     }
 
-    ovsrcu_synchronize();
-
-    LIST_FOR_EACH_POP (cbset, list_node, &cbsets) {
+    LIST_FOR_EACH_POP (cbset, list_node, cbsets) {
         struct ovsrcu_cb *cb;
 
         for (cb = cbset->cbs; cb < &cbset->cbs[cbset->n_cbs]; cb++) {
@@ -358,9 +435,19 @@ ovsrcu_postpone_thread(void *arg OVS_UNUSED)
     pthread_detach(pthread_self());
 
     while (!latch_is_set(&postpone_exit)) {
-        uint64_t seqno = seq_read(flushed_cbsets_seq);
-        if (!ovsrcu_call_postponed()) {
-            seq_wait(flushed_cbsets_seq, seqno);
+        struct ovs_list cbsets = OVS_LIST_INITIALIZER(&cbsets);
+        uint64_t cb_seqno = seq_read(flushed_cbsets_seq);
+        uint64_t target = ovsrcu_synchronize_(&cbsets);
+        uint64_t inline_seqno = seq_read(inline_seq);
+        bool inline_active;
+        bool cbsets_active;
+
+        /* Both RCU calls must be examined for activity. */
+        inline_active = ovsrcu_call_inline(target);
+        cbsets_active = ovsrcu_call_postponed(&cbsets);
+        if (!inline_active && !cbsets_active) {
+            seq_wait(flushed_cbsets_seq, cb_seqno);
+            seq_wait(inline_seq, inline_seqno);
             latch_wait(&postpone_exit);
             poll_block();
         }
@@ -398,6 +485,9 @@ ovsrcu_unregister__(struct ovsrcu_perthread *perthread)
 {
     if (perthread->cbset) {
         ovsrcu_flush_cbset(perthread);
+    }
+    if (perthread->do_inline) {
+        seq_change(inline_seq);
     }
 
     ovs_mutex_lock(&ovsrcu_threads_mutex);
@@ -440,6 +530,7 @@ ovsrcu_init_module(void)
 
         guarded_list_init(&flushed_cbsets);
         flushed_cbsets_seq = seq_create();
+        inline_seq = seq_create();
 
         ovsthread_once_done(&once);
     }

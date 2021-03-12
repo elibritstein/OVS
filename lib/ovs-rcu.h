@@ -125,6 +125,22 @@
  *         ovs_mutex_unlock(&mutex);
  *     }
  *
+ * As an alternative to ovsrcu_postpone(), the same deferred execution can be
+ * achieved using ovsrcu_postpone_inline():
+ *
+ *      struct deferrable {
+ *          struct ovsrcu_inline_node rcu_node;
+ *      };
+ *
+ *      void
+ *      deferred_free(struct deferrable *d)
+ *      {
+ *          ovsrcu_postpone_inline(free, d, rcu_node);
+ *      }
+ *
+ * Using inline fields can be preferred sometimes to avoid the small
+ * allocations done in ovsrcu_postpone().
+ *
  * In some rare cases an object may not be addressable with a pointer, but only
  * through an array index (e.g. because it's provided by another library).  It
  * is still possible to have RCU semantics by using the ovsrcu_index type.
@@ -171,6 +187,7 @@
  */
 
 #include "compiler.h"
+#include "mpsc-queue.h"
 #include "ovs-atomic.h"
 
 #if __GNUC__
@@ -255,6 +272,28 @@ void ovsrcu_postpone__(void (*function)(void *aux), void *aux);
      /* Verify that ARG is a pointer type. */                   \
      (void) sizeof(*(ARG)),                                     \
      ovsrcu_postpone__((void (*)(void *))(FUNCTION), ARG))
+
+struct ovsrcu_inline_node {
+    struct mpsc_queue_node node;
+    void (*cb)(void *aux);
+    void *aux;
+    uint64_t seqno;
+};
+
+/* Calls FUNCTION passing ARG as its pointer-type argument, which
+ * contains an 'ovsrcu_inline_node' as a field named MEMBER. The function
+ * is called following the next grace period.  See 'Usage' above for an
+ * example.
+ */
+void ovsrcu_postpone_inline__(void (*function)(void *aux), void *aux,
+                              struct ovsrcu_inline_node *node);
+#define ovsrcu_postpone_inline(FUNCTION, ARG, MEMBER)               \
+    (/* Verify that ARG is appropriate for FUNCTION. */             \
+     (void) sizeof((FUNCTION)(ARG), 1),                             \
+     /* Verify that ARG is a pointer type. */                       \
+     (void) sizeof(*(ARG)),                                         \
+     ovsrcu_postpone_inline__((void (*)(void *))(FUNCTION), ARG,    \
+                              &(ARG)->MEMBER))
 
 /* An array index protected by RCU semantics.  This is an easier alternative to
  * an RCU protected pointer to a malloc'd int. */
