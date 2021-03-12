@@ -20,6 +20,7 @@
 #include "fatal-signal.h"
 #include "guarded-list.h"
 #include "latch.h"
+#include "mpsc-queue.h"
 #include "openvswitch/list.h"
 #include "ovs-thread.h"
 #include "openvswitch/poll-loop.h"
@@ -49,6 +50,7 @@ struct ovsrcu_perthread {
 
     uint64_t seqno;
     struct ovsrcu_cbset *cbset;
+    bool do_gc;
     char name[16];              /* This thread's name. */
 };
 
@@ -61,6 +63,8 @@ static struct ovs_mutex ovsrcu_threads_mutex;
 static struct guarded_list flushed_cbsets;
 static struct seq *flushed_cbsets_seq;
 
+static struct seq *gc_seq;
+
 static struct latch postpone_exit;
 static struct ovs_barrier postpone_barrier;
 
@@ -68,6 +72,7 @@ static void ovsrcu_init_module(void);
 static void ovsrcu_flush_cbset__(struct ovsrcu_perthread *, bool);
 static void ovsrcu_flush_cbset(struct ovsrcu_perthread *);
 static void ovsrcu_unregister__(struct ovsrcu_perthread *);
+static bool ovsrcu_call_gc(uint64_t);
 static bool ovsrcu_call_postponed(void);
 static void *ovsrcu_postpone_thread(void *arg OVS_UNUSED);
 
@@ -85,6 +90,7 @@ ovsrcu_perthread_get(void)
         perthread = xmalloc(sizeof *perthread);
         perthread->seqno = seq_read(global_seqno);
         perthread->cbset = NULL;
+        perthread->do_gc = false;
         ovs_strlcpy(perthread->name, name[0] ? name : "main",
                     sizeof perthread->name);
 
@@ -112,6 +118,7 @@ static void
 ovsrcu_quiesced(void)
 {
     if (single_threaded()) {
+        ovsrcu_call_gc(seq_read(global_seqno));
         ovsrcu_call_postponed();
     } else {
         static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
@@ -156,6 +163,9 @@ ovsrcu_quiesce(void)
     if (perthread->cbset) {
         ovsrcu_flush_cbset(perthread);
     }
+    if (perthread->do_gc) {
+        seq_change(gc_seq);
+    }
     seq_change(global_seqno);
 
     ovsrcu_quiesced();
@@ -174,6 +184,9 @@ ovsrcu_try_quiesce(void)
         if (perthread->cbset) {
             ovsrcu_flush_cbset__(perthread, true);
         }
+        if (perthread->do_gc) {
+            seq_change_protected(gc_seq);
+        }
         seq_change_protected(global_seqno);
         seq_unlock();
         ovsrcu_quiesced();
@@ -189,15 +202,15 @@ ovsrcu_is_quiescent(void)
     return pthread_getspecific(perthread_key) == NULL;
 }
 
-void
-ovsrcu_synchronize(void)
+static uint64_t
+ovsrcu_synchronize_(void)
 {
     unsigned int warning_threshold = 1000;
     uint64_t target_seqno;
     long long int start;
 
     if (single_threaded()) {
-        return;
+        return 0;
     }
 
     target_seqno = seq_read(global_seqno);
@@ -237,6 +250,15 @@ ovsrcu_synchronize(void)
         poll_block();
     }
     ovsrcu_quiesce_end();
+
+    /* Return the 'seqno' that is safe to consider reached by all threads. */
+    return target_seqno;
+}
+
+void
+ovsrcu_synchronize(void)
+{
+    ignore(ovsrcu_synchronize_());
 }
 
 /* Waits until as many postponed callbacks as possible have executed.
@@ -275,11 +297,50 @@ ovsrcu_exit(void)
      * infinite loop.  This function is just for making memory leaks easier to
      * spot so there's no point in breaking things on that basis. */
     for (int i = 0; i < 8; i++) {
-        ovsrcu_synchronize();
-        if (!ovsrcu_call_postponed()) {
+        uint64_t target = ovsrcu_synchronize_();
+        if (!ovsrcu_call_gc(target) && !ovsrcu_call_postponed()) {
             break;
         }
     }
+}
+
+static struct mpsc_queue gc_queue = MPSC_QUEUE_INITIALIZER(&gc_queue);
+
+void
+ovsrcu_gc__(void (*function)(void *aux), void *aux,
+            struct ovsrcu_gc_node *gcn)
+{
+    struct ovsrcu_perthread *perthread = ovsrcu_perthread_get();
+
+    gcn->seqno = perthread->seqno;
+    gcn->cb = function;
+    gcn->aux = aux;
+    mpsc_queue_insert(&gc_queue, &gcn->node);
+
+    perthread->do_gc = true;
+}
+
+static bool
+ovsrcu_call_gc(uint64_t target_seqno)
+{
+    struct mpsc_queue_node *msg;
+    unsigned int count = 0;
+
+    mpsc_queue_acquire(&gc_queue);
+    MPSC_QUEUE_FOR_EACH_POP (msg, &gc_queue) {
+        struct ovsrcu_gc_node *gcn;
+
+        gcn = CONTAINER_OF(msg, struct ovsrcu_gc_node, node);
+        if (gcn->seqno >= target_seqno) {
+            mpsc_queue_push_front(&gc_queue, msg);
+            break;
+        }
+        gcn->cb(gcn->aux);
+        count++;
+    }
+    mpsc_queue_release(&gc_queue);
+
+    return count > 0;
 }
 
 /* Registers 'function' to be called, passing 'aux' as argument, after the
@@ -337,8 +398,6 @@ ovsrcu_call_postponed(void)
         return false;
     }
 
-    ovsrcu_synchronize();
-
     LIST_FOR_EACH_POP (cbset, list_node, &cbsets) {
         struct ovsrcu_cb *cb;
 
@@ -358,9 +417,12 @@ ovsrcu_postpone_thread(void *arg OVS_UNUSED)
     pthread_detach(pthread_self());
 
     while (!latch_is_set(&postpone_exit)) {
-        uint64_t seqno = seq_read(flushed_cbsets_seq);
-        if (!ovsrcu_call_postponed()) {
-            seq_wait(flushed_cbsets_seq, seqno);
+        uint64_t cb_seqno = seq_read(flushed_cbsets_seq);
+        uint64_t gc_seqno = seq_read(gc_seq);
+        uint64_t target = ovsrcu_synchronize_();
+        if (!ovsrcu_call_gc(target) && !ovsrcu_call_postponed()) {
+            seq_wait(flushed_cbsets_seq, cb_seqno);
+            seq_wait(gc_seq, gc_seqno);
             latch_wait(&postpone_exit);
             poll_block();
         }
@@ -398,6 +460,9 @@ ovsrcu_unregister__(struct ovsrcu_perthread *perthread)
 {
     if (perthread->cbset) {
         ovsrcu_flush_cbset(perthread);
+    }
+    if (perthread->do_gc) {
+        seq_change(gc_seq);
     }
 
     ovs_mutex_lock(&ovsrcu_threads_mutex);
@@ -440,6 +505,7 @@ ovsrcu_init_module(void)
 
         guarded_list_init(&flushed_cbsets);
         flushed_cbsets_seq = seq_create();
+        gc_seq = seq_create();
 
         ovsthread_once_done(&once);
     }
