@@ -385,6 +385,7 @@ union dp_offload_thread_data {
 
 struct dp_offload_thread_item {
     struct mpsc_queue_node node;
+    struct ovsrcu_gc_node gc_node;
     enum dp_offload_type type;
     long long int timestamp;
     struct dp_netdev *dp;
@@ -2906,7 +2907,7 @@ dp_netdev_free_flow_offload(struct dp_offload_thread_item *offload)
     struct dp_offload_flow_item *flow_offload = &offload->data->flow;
 
     dp_netdev_flow_unref(flow_offload->flow);
-    ovsrcu_postpone(dp_netdev_free_flow_offload__, offload);
+    ovsrcu_gc(dp_netdev_free_flow_offload__, offload, gc_node);
 }
 
 static void
@@ -2927,7 +2928,7 @@ dp_netdev_free_ct_offload__(struct dp_offload_thread_item *offload)
 static void
 dp_netdev_free_ct_offload(struct dp_offload_thread_item *offload)
 {
-    ovsrcu_postpone(dp_netdev_free_ct_offload__, offload);
+    ovsrcu_gc(dp_netdev_free_ct_offload__, offload, gc_node);
 }
 
 static void
