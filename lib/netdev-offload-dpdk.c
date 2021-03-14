@@ -210,6 +210,8 @@ dump_flow_pattern(struct ds *s,
 
         ds_put_cstr(s, "eth ");
         if (eth_spec) {
+            uint32_t has_vlan_mask;
+
             if (!eth_mask) {
                 eth_mask = &rte_flow_item_eth_mask;
             }
@@ -222,6 +224,9 @@ dump_flow_pattern(struct ds *s,
             DUMP_PATTERN_ITEM(eth_mask->type, "type", "0x%04"PRIx16,
                               ntohs(eth_spec->type),
                               ntohs(eth_mask->type));
+            has_vlan_mask = eth_mask->has_vlan ? UINT32_MAX : 0;
+            DUMP_PATTERN_ITEM(has_vlan_mask, "has_vlan", "%d",
+                              eth_spec->has_vlan, eth_mask->has_vlan);
         }
         ds_put_cstr(s, "/ ");
     } else if (item->type == RTE_FLOW_ITEM_TYPE_VLAN) {
@@ -1037,6 +1042,7 @@ parse_flow_match(struct netdev *netdev,
                  struct flow_patterns *patterns,
                  struct match *match)
 {
+    struct rte_flow_item_eth *eth_spec = NULL, *eth_mask = NULL;
     struct flow *consumed_masks;
     uint8_t proto = 0;
 
@@ -1082,6 +1088,11 @@ parse_flow_match(struct netdev *netdev,
         memset(&consumed_masks->dl_src, 0, sizeof consumed_masks->dl_src);
         consumed_masks->dl_type = 0;
 
+        spec->has_vlan = 0;
+        mask->has_vlan = 1;
+        eth_spec = spec;
+        eth_mask = mask;
+
         add_flow_pattern(patterns, RTE_FLOW_ITEM_TYPE_ETH, spec, mask);
     }
 
@@ -1097,6 +1108,11 @@ parse_flow_match(struct netdev *netdev,
 
         /* Match any protocols. */
         mask->inner_type = 0;
+
+        if (eth_spec && eth_mask) {
+            eth_spec->has_vlan = 1;
+            eth_mask->has_vlan = 1;
+        }
 
         add_flow_pattern(patterns, RTE_FLOW_ITEM_TYPE_VLAN, spec, mask);
     }
