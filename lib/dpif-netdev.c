@@ -462,7 +462,6 @@ static unsigned long long int offload_queue_size =
 enum {
     E2E_UFID_MSG_PUT = 1,
     E2E_UFID_MSG_DEL = 2,
-    E2E_UFID_MSG_FLUSH = 3,
 };
 
 struct e2e_cache_ufid_msg {
@@ -565,12 +564,6 @@ dp_netdev_offload_ct_stats_reset(void)
         atomic_init(&dp_offload_threads[i].ct_uni_dir_connections, 0);
         atomic_init(&dp_offload_threads[i].ct_bi_dir_connections, 0);
     }
-    if (netdev_is_e2e_cache_enabled()) {
-        atomic_init(&dp_offload_threads[i].enqueued_offload, 0);
-        atomic_init(&dp_offload_threads[i].enqueued_offload_add, 0);
-        atomic_init(&dp_offload_threads[i].ct_uni_dir_connections, 0);
-        atomic_init(&dp_offload_threads[i].ct_bi_dir_connections, 0);
-    }
 }
 
 static void
@@ -607,8 +600,7 @@ dp_netdev_offload_init(void)
         return;
     }
 
-    dp_offload_threads = xcalloc(nb_offload_thread +
-                                 netdev_is_e2e_cache_enabled(),
+    dp_offload_threads = xcalloc(nb_offload_thread,
                                  sizeof *dp_offload_threads);
 
     for (tid = 0; tid < nb_offload_thread; tid++) {
@@ -627,10 +619,6 @@ dp_netdev_offload_init(void)
         dp_netdev_e2e_offload_init(&thread->e2e_stats);
         ovs_thread_create("hw_offload", dp_netdev_flow_offload_main,
                           (void *)(uintptr_t) tid);
-    }
-    if (netdev_is_e2e_cache_enabled()) {
-        mpsc_queue_init(&dp_offload_threads[tid].ufid_queue);
-        mpsc_queue_init(&dp_offload_threads[tid].trace_queue);
     }
     dp_netdev_offload_ct_stats_reset();
 
@@ -4030,10 +4018,6 @@ dp_netdev_offload_flush_enqueue(struct dp_netdev *dp,
     }
 }
 
-static int
-e2e_cache_flow_flush(struct netdev *netdev, struct ovs_barrier *barrier,
-                     struct dp_netdev *dp);
-
 /* Blocking call that will wait on the offload thread to
  * complete its work.  As the flush order will only be
  * enqueued after existing offload requests, those previous
@@ -4074,18 +4058,9 @@ dp_netdev_offload_flush(struct dp_netdev *dp,
     ovs_mutex_lock(&flush_mutex);
 
     /* This thread and the offload threads. */
-    ovs_barrier_init(&barrier, 1 + netdev_offload_thread_nb() +
-                     dp_netdev_e2e_cache_enabled);
+    ovs_barrier_init(&barrier, 1 + netdev_offload_thread_nb());
 
     netdev = netdev_ref(port->netdev);
-    if (dp_netdev_e2e_cache_enabled) {
-        /* If e2e is enabled, it must send the flush requests
-         * after it has processed its own queue. This means that this
-         * thread should not send the flush requests, only e2e can do so.
-         * cf. e2e_cache_flow_db_flush().
-         */
-        e2e_cache_flow_flush(netdev, &barrier, dp);
-    }
     dp_netdev_offload_flush_enqueue(dp, netdev, &barrier);
 
     ovs_barrier_block(&barrier);
@@ -5739,7 +5714,7 @@ dpif_netdev_offload_stats_get(struct dpif *dpif,
         return EINVAL;
     }
 
-    nb_thread = netdev_offload_thread_nb() + netdev_is_e2e_cache_enabled();
+    nb_thread = netdev_offload_thread_nb();
     /* nb_thread counters for the overall total as well. */
     nb_counts = ARRAY_SIZE(hwol_stats);
     if (netdev_is_e2e_cache_enabled() && verbose) {
@@ -5897,10 +5872,6 @@ set_pmd_auto_lb(struct dp_netdev *dp, bool state, bool always_log)
     }
 }
 
-static struct ovsthread_once e2e_cache_thread_once
-    = OVSTHREAD_ONCE_INITIALIZER;
-static void *dp_netdev_e2e_cache_main(void *arg);
-
 /* Applies datapath configuration from the database. Some of the changes are
  * actually applied in dpif_netdev_run(). */
 static int
@@ -6011,10 +5982,6 @@ dpif_netdev_set_config(struct dpif *dpif, const struct smap *other_config)
                 VLOG_INFO("E2E cache trace queue unlimited");
             }
             done = true;
-        }
-        if (ovsthread_once_start(&e2e_cache_thread_once)) {
-            ovs_thread_create("e2e_cache", dp_netdev_e2e_cache_main, NULL);
-            ovsthread_once_done(&e2e_cache_thread_once);
         }
     }
 #endif
@@ -9195,66 +9162,6 @@ e2e_cache_trace_msg_enqueue(struct e2e_cache_trace_message *msg,
     atomic_count_inc(&e2e_stats->queue_trcs);
 }
 
-#define E2E_CACHE_BACKOFF_MS_MIN 1
-#define E2E_CACHE_BACKOFF_MS_MAX 64
-
-static inline void
-e2e_cache_poll_queues(struct e2e_cache_ufid_msg **ufid_msg,
-                      struct e2e_cache_trace_message **trace_msg)
-{
-    enum mpsc_queue_poll_result trace_poll_result;
-    unsigned int tid = netdev_offload_thread_id();
-    enum mpsc_queue_poll_result ufid_poll_result;
-    struct mpsc_queue_node *trace_node;
-    struct mpsc_queue_node *ufid_node;
-    struct e2e_cache_stats *e2e_stats;
-    struct mpsc_queue *trace_list;
-    struct mpsc_queue *ufid_list;
-    uint64_t backoff;
-
-    e2e_stats = &dp_offload_threads[tid].e2e_stats;
-    ufid_list = &dp_offload_threads[tid].ufid_queue;
-    trace_list = &dp_offload_threads[tid].trace_queue;
-
-    *ufid_msg = NULL;
-    *trace_msg = NULL;
-
-    backoff = E2E_CACHE_BACKOFF_MS_MIN;
-    while (1) {
-        ufid_poll_result = mpsc_queue_poll(ufid_list, &ufid_node);
-        trace_poll_result = mpsc_queue_poll(trace_list, &trace_node);
-
-        if (ufid_poll_result != MPSC_QUEUE_EMPTY ||
-            trace_poll_result != MPSC_QUEUE_EMPTY) {
-            break;
-        }
-
-        /* The thread is flagged as quiescent during xnanosleep(). */
-        xnanosleep(backoff * 1E6);
-        if (backoff < E2E_CACHE_BACKOFF_MS_MAX) {
-            backoff <<= 1;
-        }
-    }
-
-    while (ufid_poll_result == MPSC_QUEUE_RETRY) {
-        ufid_poll_result = mpsc_queue_poll(ufid_list, &ufid_node);
-    }
-
-    while (trace_poll_result == MPSC_QUEUE_RETRY) {
-        trace_poll_result = mpsc_queue_poll(trace_list, &trace_node);
-    }
-
-    if (ufid_poll_result == MPSC_QUEUE_ITEM) {
-        *ufid_msg = CONTAINER_OF(ufid_node, struct e2e_cache_ufid_msg, node);
-    }
-
-    if (trace_poll_result == MPSC_QUEUE_ITEM) {
-        *trace_msg = CONTAINER_OF(trace_node,
-                                  struct e2e_cache_trace_message, node);
-        atomic_count_dec(&e2e_stats->queue_trcs);
-    }
-}
-
 /* Associate the merged flow to each of its composing flows,
  * to allow accessing:
  * - From the merged flow to all its composing flows.
@@ -9767,24 +9674,6 @@ e2e_cache_flow_db_del(struct e2e_cache_ufid_msg *ufid_msg)
     e2e_cache_del_merged_flows(&merged_flows_to_delete);
 }
 
-static void
-e2e_cache_flow_db_flush(struct netdev *netdev,
-                        struct ovs_barrier *barrier,
-                        struct dp_netdev *dp)
-{
-    struct flush_item {
-        struct dp_offload_thread_item item;
-        struct dp_offload_flush_item flush;
-    } flush_item = {
-        .item.dp = dp,
-        .flush = { .netdev = netdev, .barrier = barrier, },
-    };
-    BUILD_ASSERT_DECL(offsetof(struct flush_item, flush) ==
-                      offsetof(struct dp_offload_thread_item, data));
-
-    dp_offload_flush(&flush_item.item);
-}
-
 static int
 e2e_cache_flow_db_put(struct e2e_cache_ufid_msg *ufid_msg)
 {
@@ -9915,50 +9804,6 @@ e2e_cache_flow_put(bool is_ct, const ovs_u128 *ufid, const void *match,
 }
 
 static int
-e2e_cache_flow_flush(struct netdev *netdev, struct ovs_barrier *barrier,
-                     struct dp_netdev *dp)
-{
-    unsigned int tid = netdev_offload_thread_nb();
-    struct e2e_cache_stats *e2e_stats;
-    struct e2e_cache_ufid_msg *msg;
-
-    e2e_stats = &dp_offload_threads[tid].e2e_stats;
-
-    msg = xzalloc(sizeof *msg);
-    msg->op = E2E_UFID_MSG_FLUSH;
-    msg->netdev = netdev;
-    msg->barrier = barrier;
-    msg->dp = dp;
-
-    /* Insert message into queue, e2e_cache_ufid_msg_dequeue()
-     * is used to dequeue it from there.
-     */
-    mpsc_queue_insert(&dp_offload_threads[tid].ufid_queue, &msg->node);
-    e2e_stats->flush_flow_msgs++;
-    return 0;
-}
-
-static struct e2e_cache_ufid_msg *
-e2e_cache_ufid_msg_dequeue(struct dp_offload_thread *ofl_thread)
-{
-    enum mpsc_queue_poll_result poll_result;
-    struct e2e_cache_ufid_msg *ufid_msg;
-    struct mpsc_queue *ufid_queue;
-    struct mpsc_queue_node *node;
-
-    ufid_queue = &ofl_thread->ufid_queue;
-    do {
-        poll_result = mpsc_queue_poll(ufid_queue, &node);
-        if (poll_result == MPSC_QUEUE_EMPTY) {
-            return NULL;
-        }
-    } while (poll_result == MPSC_QUEUE_RETRY);
-
-    ufid_msg = CONTAINER_OF(node, struct e2e_cache_ufid_msg, node);
-    return ufid_msg;
-}
-
-static int
 e2e_cache_ufids_to_flows(const ovs_u128 *ufids,
                          uint16_t num_elements,
                          struct e2e_cache_ovs_flow *flows[]);
@@ -10028,11 +9873,11 @@ static void
 e2e_cache_dispatch_trace_message(struct dp_netdev *dp,
                                  struct dp_packet_batch *batch)
 {
-    struct e2e_cache_trace_info *cur_trace_info[MAX_OFFLOAD_THREAD_NB + 1];
-    struct e2e_cache_trace_message *buffer[MAX_OFFLOAD_THREAD_NB + 1];
-    struct e2e_cache_stats *e2e_stats[MAX_OFFLOAD_THREAD_NB + 1];
-    uint32_t num_elements[MAX_OFFLOAD_THREAD_NB + 1];
-    uint32_t cur_q_size[MAX_OFFLOAD_THREAD_NB + 1];
+    struct e2e_cache_trace_info *cur_trace_info[MAX_OFFLOAD_THREAD_NB];
+    struct e2e_cache_trace_message *buffer[MAX_OFFLOAD_THREAD_NB];
+    struct e2e_cache_stats *e2e_stats[MAX_OFFLOAD_THREAD_NB];
+    uint32_t num_elements[MAX_OFFLOAD_THREAD_NB];
+    uint32_t cur_q_size[MAX_OFFLOAD_THREAD_NB];
     struct dp_packet *packet;
     size_t buffer_size;
     unsigned int tid;
@@ -10040,9 +9885,7 @@ e2e_cache_dispatch_trace_message(struct dp_netdev *dp,
     buffer_size = sizeof(struct e2e_cache_trace_message) +
                          2 * batch->count * sizeof(struct e2e_cache_trace_info);
 
-    for (tid = 0;
-         tid < netdev_offload_thread_nb() + netdev_is_e2e_cache_enabled();
-         tid++) {
+    for (tid = 0; tid < netdev_offload_thread_nb(); tid++) {
         buffer[tid] =
             (struct e2e_cache_trace_message *) xmalloc_cacheline(buffer_size);
         num_elements[tid] = 0;
@@ -10140,9 +9983,7 @@ e2e_cache_dispatch_trace_message(struct dp_netdev *dp,
         cur_trace_info[tid]++;
     }
 
-    for (tid = 0;
-         tid < netdev_offload_thread_nb() + netdev_is_e2e_cache_enabled();
-         tid++) {
+    for (tid = 0; tid < netdev_offload_thread_nb(); tid++) {
         if (num_elements[tid] == 0) {
             free_cacheline(buffer[tid]);
             continue;
@@ -10721,71 +10562,9 @@ e2e_cache_get_merged_flows_stats(struct netdev *netdev,
     return rv;
 }
 
-#define E2E_CACHE_QUIESCE_INTERVAL_MS 10
-
-static void *
-dp_netdev_e2e_cache_main(void *arg OVS_UNUSED)
-{
-    unsigned int tid = netdev_offload_thread_id();
-    struct e2e_cache_trace_message *trace_msg;
-    struct dp_offload_thread *ofl_thread;
-    struct e2e_cache_ufid_msg *ufid_msg;
-    struct e2e_cache_stats *e2e_stats;
-    uint32_t i, num_elements;
-    long long int next_rcu;
-
-    e2e_stats = &dp_offload_threads[tid].e2e_stats;
-    ofl_thread = &dp_offload_threads[tid];
-
-    mpsc_queue_acquire(&dp_offload_threads[tid].ufid_queue);
-    mpsc_queue_acquire(&dp_offload_threads[tid].trace_queue);
-
-    next_rcu = time_msec() + E2E_CACHE_QUIESCE_INTERVAL_MS;
-    for (;;) {
-        e2e_cache_poll_queues(&ufid_msg, &trace_msg);
-
-        while (ufid_msg != NULL) {
-            if (ufid_msg->op == E2E_UFID_MSG_PUT) {
-                e2e_cache_flow_db_put(ufid_msg);
-            } else if (ufid_msg->op == E2E_UFID_MSG_DEL) {
-                e2e_cache_flow_db_del(ufid_msg);
-            } else if (ufid_msg->op == E2E_UFID_MSG_FLUSH) {
-                e2e_cache_flow_db_flush(ufid_msg->netdev,
-                                        ufid_msg->barrier,
-                                        ufid_msg->dp);
-            } else {
-                OVS_NOT_REACHED();
-            }
-            e2e_cache_ufid_msg_free(ufid_msg);
-            ufid_msg = e2e_cache_ufid_msg_dequeue(ofl_thread);
-        }
-
-        if (!trace_msg) {
-            continue;
-        }
-
-        e2e_stats->processed_trcs++;
-        num_elements = trace_msg->num_elements;
-        for (i = 0; i < num_elements; i++) {
-            e2e_cache_process_trace_info((struct dp_netdev *)trace_msg->dp,
-                                         &trace_msg->data[i], tid);
-        }
-
-        free_cacheline(trace_msg);
-
-        if (time_msec() > next_rcu) {
-            if (!ovsrcu_try_quiesce()) {
-                next_rcu += E2E_CACHE_QUIESCE_INTERVAL_MS;
-            }
-        }
-    }
-
-    return NULL;
-}
 #else
 #define e2e_cache_trace_add_flow(p, ufid) do { } while (0)
 #define e2e_cache_trace_msg_enqueue(m, t) do { } while (0)
-#define e2e_cache_poll_queues() do { } while (0)
 #define e2e_cache_dispatch_trace_message(d, b) do { } while (0)
 #define e2e_cache_trace_tnl_pop(p) do { } while (0)
 OVS_UNUSED
@@ -10801,13 +10580,6 @@ e2e_cache_flow_put(bool is_ct OVS_UNUSED,
 static int
 e2e_cache_flow_del(const ovs_u128 *ufid OVS_UNUSED,
                    struct dp_netdev *dp OVS_UNUSED)
-{
-    return 0;
-}
-static int
-e2e_cache_flow_flush(struct netdev *netdev OVS_UNUSED,
-                     struct ovs_barrier *barrier OVS_UNUSED,
-                     struct dp_netdev *dp OVS_UNUSED)
 {
     return 0;
 }
