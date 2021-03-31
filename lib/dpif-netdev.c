@@ -10896,6 +10896,11 @@ dp_netdev_hw_flow(const struct dp_netdev_pmd_thread *pmd,
                   struct dp_netdev_flow **flow,
                   uint8_t *skip_actions)
 {
+    struct user_action_cookie sflow_cookie;
+    struct flow_tnl sflow_tunnel_info;
+    struct dpif_sflow_attr sflow_attr = {
+        .userdata = &sflow_cookie,
+        .tunnel = &sflow_tunnel_info };
     uint32_t mark;
 
 #ifdef ALLOW_EXPERIMENTAL_API /* Packet restoration API required. */
@@ -10904,7 +10909,23 @@ dp_netdev_hw_flow(const struct dp_netdev_pmd_thread *pmd,
 
     if (rxq->hw_miss_api_supported) {
         int err = netdev_hw_miss_packet_recover(rxq->port->netdev, packet,
-                                                skip_actions, NULL);
+                                                skip_actions, &sflow_attr);
+
+        /* Return code EIO for this case indicates succesfully recovered
+         * sFlow packet, handle this packet in the sFlow upcall then drop it
+         * from the datapath.
+         */
+        if (err == EIO) {
+            struct dpif_upcall_sflow dupcall;
+
+            dupcall.iifindex = -1;
+            dupcall.packet = *packet;
+            dupcall.in_port = packet->md.in_port.odp_port;
+            dupcall.sflow_attr = &sflow_attr;
+            sflow_upcall_cb(&dupcall);
+            dp_packet_delete(packet);
+            return -1;
+        }
         if (err) {
             if (err != EOPNOTSUPP) {
                 COVERAGE_INC(datapath_drop_hw_miss_recover);
