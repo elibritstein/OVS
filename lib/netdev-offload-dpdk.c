@@ -1327,7 +1327,6 @@ static struct context_metadata sflow_id_md = {
     .data_size = sizeof(struct sflow_ctx),
 };
 
-OVS_UNUSED
 static int
 get_sflow_id(struct sflow_ctx *sflow_ctx, uint32_t *sflow_id)
 {
@@ -1339,14 +1338,12 @@ get_sflow_id(struct sflow_ctx *sflow_ctx, uint32_t *sflow_id)
                                        NULL, sflow_id);
 }
 
-OVS_UNUSED
 static void
 put_sflow_id(uint32_t sflow_id)
 {
     put_context_data_by_id(&sflow_id_md, sflow_id);
 }
 
-OVS_UNUSED
 static int
 find_sflow_ctx(int sflow_id, struct sflow_ctx *ctx)
 {
@@ -1905,6 +1902,7 @@ put_action_resources(struct act_resources *act_resources)
     put_shared_age_ctx(act_resources->pshared_age_ctx);
     put_ct_counter_id(act_resources->ctid);
     put_flows_counter_id(act_resources->counter_id);
+    put_sflow_id(act_resources->sflow_id);
 }
 
 static int
@@ -2673,8 +2671,9 @@ dump_flow_action(struct ds *s, struct ds *s_extra,
             const struct rte_flow_action *rte_actions;
 
             rte_actions = sample->actions;
-            ds_put_format(s_extra, "set sample_actions %d ", act_index);
-
+            if (rte_actions->type == RTE_FLOW_ACTION_TYPE_END) {
+                ds_put_format(s_extra, "set sample_actions %d ", act_index);
+            }
             while (rte_actions &&
                    rte_actions->type != RTE_FLOW_ACTION_TYPE_END) {
                 if (rte_actions->type == RTE_FLOW_ACTION_TYPE_PORT_ID) {
@@ -4035,6 +4034,118 @@ netdev_offload_dpdk_mark_rss(struct flow_patterns *patterns,
     return flow;
 }
 
+static void
+add_empty_sample_action(int ratio,
+                        struct flow_actions *actions)
+{
+    struct sample_data {
+        struct rte_flow_action_sample sample;
+        struct rte_flow_action end_action;
+    } *sample_data;
+    BUILD_ASSERT_DECL(offsetof(struct sample_data, sample) == 0);
+
+    sample_data = xzalloc(sizeof *sample_data);
+    sample_data->end_action.type = RTE_FLOW_ACTION_TYPE_END;
+    sample_data->sample.actions = &sample_data->end_action;
+    sample_data->sample.ratio = ratio;
+
+    add_flow_action(actions, RTE_FLOW_ACTION_TYPE_SAMPLE,
+                    sample_data);
+}
+
+static int
+map_sflow_attr(struct flow_actions *actions,
+               const struct nlattr *nl_actions,
+               struct dpif_sflow_attr *sflow_attr,
+               struct act_resources *act_resources,
+               struct act_vars *act_vars)
+{
+    struct sflow_ctx sflow_ctx;
+    const struct nlattr *nla;
+    unsigned int left;
+
+    NL_NESTED_FOR_EACH_UNSAFE (nla, left, nl_actions) {
+        if (nl_attr_type(nla) == OVS_USERSPACE_ATTR_USERDATA) {
+            const struct user_action_cookie *cookie;
+
+            cookie = nl_attr_get(nla);
+            if (cookie->type == USER_ACTION_COOKIE_SFLOW) {
+                sflow_attr->userdata_len = nl_attr_get_size(nla);
+                sflow_ctx.sflow_attr = *sflow_attr;
+                sflow_ctx.cookie = *cookie;
+                if (act_vars->tnl_type != TNL_TYPE_NONE) {
+                    memcpy(&sflow_ctx.sflow_tnl, act_vars->tnl_key,
+                           sizeof sflow_ctx.sflow_tnl);
+                } else {
+                    memset(&sflow_ctx.sflow_tnl, 0,
+                           sizeof sflow_ctx.sflow_tnl);
+                }
+                if (!get_sflow_id(&sflow_ctx, &act_resources->sflow_id) &&
+                    !add_action_set_reg_field(actions, REG_FIELD_SFLOW_CTX,
+                                              act_resources->sflow_id,
+                                              UINT32_MAX)) {
+                    return 0;
+                }
+            }
+        }
+    }
+
+    VLOG_DBG_RL(&rl, "no sFlow cookie");
+    return -1;
+}
+
+static int
+parse_userspace_action(struct flow_actions *actions,
+                       const struct nlattr *nl_actions,
+                       struct dpif_sflow_attr *sflow_attr,
+                       struct act_resources *act_resources,
+                       struct act_vars *act_vars)
+{
+    const struct nlattr *nla;
+    unsigned int left;
+
+    NL_NESTED_FOR_EACH_UNSAFE (nla, left, nl_actions) {
+        if (nl_attr_type(nla) == OVS_ACTION_ATTR_USERSPACE) {
+            return map_sflow_attr(actions, nla, sflow_attr,
+                                  act_resources, act_vars);
+        }
+    }
+
+    VLOG_DBG_RL(&rl, "no OVS_ACTION_ATTR_USERSPACE attribute");
+    return -1;
+}
+
+static int
+parse_sample_action(struct flow_actions *actions,
+                    const struct nlattr *nl_actions,
+                    struct dpif_sflow_attr *sflow_attr,
+                    struct act_resources *act_resources,
+                    struct act_vars *act_vars)
+{
+    const struct nlattr *nla;
+    unsigned int left;
+    int ratio = 0;
+
+    sflow_attr->sflow = nl_actions;
+    sflow_attr->sflow_len = nl_actions->nla_len;
+
+    NL_NESTED_FOR_EACH_UNSAFE (nla, left, nl_actions) {
+        if (nl_attr_type(nla) == OVS_SAMPLE_ATTR_ACTIONS) {
+            if (parse_userspace_action(actions, nla,
+                                       sflow_attr, act_resources, act_vars)) {
+                return -1;
+            }
+        } else if (nl_attr_type(nla) == OVS_SAMPLE_ATTR_PROBABILITY) {
+            ratio = UINT32_MAX / nl_attr_get_u32(nla);
+        } else {
+            return -1;
+        }
+    }
+
+    add_empty_sample_action(ratio, actions);
+    return 0;
+}
+
 static int
 add_count_action(struct netdev *netdev,
                  struct flow_actions *actions,
@@ -4594,6 +4705,11 @@ add_tnl_pop_action(struct netdev *netdev,
     struct flow_miss_ctx miss_ctx;
     odp_port_t port;
 
+    if (act_resources->sflow_id) {
+        /* Reject flows with sample and jump actions */
+        VLOG_DBG_RL(&rl, "cannot offload sFlow with jump");
+        return -1;
+    }
     port = nl_attr_get_odp_port(nla);
     miss_ctx.vport = port;
     miss_ctx.recirc_id = 0;
@@ -4621,6 +4737,11 @@ add_recirc_action(struct netdev *netdev,
 {
     struct flow_miss_ctx miss_ctx;
 
+    if (act_resources->sflow_id) {
+        /* Reject flows with sample and jump actions */
+        VLOG_DBG_RL(&rl, "cannot offload sFlow with jump");
+        return -1;
+    }
     miss_ctx.vport = act_vars->vport;
     miss_ctx.recirc_id = nl_attr_get_u32(nla);
     miss_ctx.skip_actions = act_vars->pre_ct_cnt;
@@ -5250,6 +5371,30 @@ parse_flow_actions(struct netdev *netdev,
                                  act_resources, act_vars)) {
                 return -1;
             }
+        } else if (nl_attr_type(nla) == OVS_ACTION_ATTR_SAMPLE) {
+            struct dpif_sflow_attr sflow_attr;
+
+            memset(&sflow_attr, 0, sizeof sflow_attr);
+            if (parse_sample_action(actions, nla,
+                                    &sflow_attr, act_resources, act_vars)) {
+                return -1;
+            }
+        } else if (nl_attr_type(nla) == OVS_ACTION_ATTR_USERSPACE) {
+            struct dpif_sflow_attr sflow_attr;
+
+            memset(&sflow_attr, 0, sizeof sflow_attr);
+            /* Cases where the sFlow sampling rate is 1 the ovs action
+             * is translated into OVS_ACTION_ATTR_USERSPACE and not
+             * OVS_ACTION_ATTR_SAMPLE, this requires only mapping the
+             * sFlow cookie.
+             */
+            sflow_attr.sflow = nla;
+            sflow_attr.sflow_len = nla->nla_len;
+            if (map_sflow_attr(actions, nla, &sflow_attr,
+                               act_resources, act_vars)) {
+                return -1;
+            }
+            add_empty_sample_action(1, actions);
         } else {
             VLOG_DBG_RL(&rl, "Unsupported action type %d", nl_attr_type(nla));
             return -1;
