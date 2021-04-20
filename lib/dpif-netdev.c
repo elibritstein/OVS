@@ -2457,6 +2457,61 @@ queue_netdev_flow_put(struct dp_netdev_pmd_thread *pmd,
     struct dp_flow_offload_item *offload;
     int op;
 
+    if (OVS_UNLIKELY(!VLOG_DROP_DBG((&upcall_rl)))) {
+        struct ds ds = DS_EMPTY_INITIALIZER;
+        struct ofpbuf key_buf, mask_buf;
+        struct odp_flow_key_parms odp_parms = {
+            .flow = &match->flow,
+            .mask = &match->wc.masks,
+            .support = dp_netdev_support,
+        };
+
+        ofpbuf_init(&key_buf, 0);
+        ofpbuf_init(&mask_buf, 0);
+
+        odp_flow_key_from_flow(&odp_parms, &key_buf);
+        odp_parms.key_buf = &key_buf;
+        odp_flow_key_from_mask(&odp_parms, &mask_buf);
+
+        if (old_actions) {
+            ds_put_cstr(&ds, "flow_mod: ");
+        } else {
+            ds_put_cstr(&ds, "flow_add: ");
+        }
+        odp_format_ufid(&flow->ufid, &ds);
+        ds_put_cstr(&ds, " mega_");
+        odp_format_ufid(&flow->mega_ufid, &ds);
+        ds_put_cstr(&ds, " ");
+        odp_flow_format(key_buf.data, key_buf.size,
+                        mask_buf.data, mask_buf.size,
+                        NULL, &ds, false);
+        if (old_actions) {
+            ds_put_cstr(&ds, ", old_actions:");
+            format_odp_actions(&ds, old_actions->actions, old_actions->size,
+                               NULL);
+        }
+        ds_put_cstr(&ds, ", actions:");
+        format_odp_actions(&ds, actions, actions_len, NULL);
+
+        VLOG_DBG("%s", ds_cstr(&ds));
+
+        ofpbuf_uninit(&key_buf);
+        ofpbuf_uninit(&mask_buf);
+
+        /* Add a printout of the actual match installed. */
+        struct match m;
+        ds_clear(&ds);
+        ds_put_cstr(&ds, "flow match: ");
+        miniflow_expand(&flow->cr.flow.mf, &m.flow);
+        miniflow_expand(&flow->cr.mask->mf, &m.wc.masks);
+        memset(&m.tun_md, 0, sizeof m.tun_md);
+        match_format(&m, NULL, &ds, OFP_DEFAULT_PRIORITY);
+
+        VLOG_DBG("%s", ds_cstr(&ds));
+
+        ds_destroy(&ds);
+    }
+
     if (!netdev_is_flow_api_enabled()) {
         return;
     }
@@ -3323,52 +3378,6 @@ dp_netdev_flow_add(struct dp_netdev_pmd_thread *pmd,
 
     queue_netdev_flow_put(pmd, flow, match, actions, actions_len,
                           orig_in_port, NULL);
-
-    if (OVS_UNLIKELY(!VLOG_DROP_DBG((&upcall_rl)))) {
-        struct ds ds = DS_EMPTY_INITIALIZER;
-        struct ofpbuf key_buf, mask_buf;
-        struct odp_flow_key_parms odp_parms = {
-            .flow = &match->flow,
-            .mask = &match->wc.masks,
-            .support = dp_netdev_support,
-        };
-
-        ofpbuf_init(&key_buf, 0);
-        ofpbuf_init(&mask_buf, 0);
-
-        odp_flow_key_from_flow(&odp_parms, &key_buf);
-        odp_parms.key_buf = &key_buf;
-        odp_flow_key_from_mask(&odp_parms, &mask_buf);
-
-        ds_put_cstr(&ds, "flow_add: ");
-        odp_format_ufid(ufid, &ds);
-        ds_put_cstr(&ds, " mega_");
-        odp_format_ufid(&flow->mega_ufid, &ds);
-        ds_put_cstr(&ds, " ");
-        odp_flow_format(key_buf.data, key_buf.size,
-                        mask_buf.data, mask_buf.size,
-                        NULL, &ds, false);
-        ds_put_cstr(&ds, ", actions:");
-        format_odp_actions(&ds, actions, actions_len, NULL);
-
-        VLOG_DBG("%s", ds_cstr(&ds));
-
-        ofpbuf_uninit(&key_buf);
-        ofpbuf_uninit(&mask_buf);
-
-        /* Add a printout of the actual match installed. */
-        struct match m;
-        ds_clear(&ds);
-        ds_put_cstr(&ds, "flow match: ");
-        miniflow_expand(&flow->cr.flow.mf, &m.flow);
-        miniflow_expand(&flow->cr.mask->mf, &m.wc.masks);
-        memset(&m.tun_md, 0, sizeof m.tun_md);
-        match_format(&m, NULL, &ds, OFP_DEFAULT_PRIORITY);
-
-        VLOG_DBG("%s", ds_cstr(&ds));
-
-        ds_destroy(&ds);
-    }
 
     return flow;
 }
