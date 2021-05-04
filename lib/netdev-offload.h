@@ -146,7 +146,8 @@ int netdev_hw_miss_packet_recover(struct netdev *, struct dp_packet *,
                                   uint8_t *);
 int netdev_flow_get(struct netdev *, struct match *, struct nlattr **actions,
                     const ovs_u128 *, struct dpif_flow_stats *,
-                    struct dpif_flow_attrs *, struct ofpbuf *wbuffer);
+                    struct dpif_flow_attrs *, struct ofpbuf *wbuffer,
+                    long long now);
 int netdev_flow_del(struct netdev *, const ovs_u128 *,
                     struct dpif_flow_stats *);
 int netdev_init_flow_api(struct netdev *);

@@ -5191,7 +5191,8 @@ netdev_offload_dpdk_flow_get(struct netdev *netdev,
                              const ovs_u128 *ufid,
                              struct dpif_flow_stats *stats,
                              struct dpif_flow_attrs *attrs,
-                             struct ofpbuf *buf OVS_UNUSED)
+                             struct ofpbuf *buf OVS_UNUSED,
+                             long long now)
 {
     struct rte_flow_query_count query = { .reset = 1 };
     struct ufid_to_rte_flow_data *rte_flow_data;
@@ -5238,7 +5239,7 @@ netdev_offload_dpdk_flow_get(struct netdev *netdev,
     rte_flow_data->stats.n_packets += (query.hits_set) ? query.hits : 0;
     rte_flow_data->stats.n_bytes += (query.bytes_set) ? query.bytes : 0;
     if (query.hits_set && query.hits) {
-        rte_flow_data->stats.used = time_msec();
+        rte_flow_data->stats.used = now;
     }
     memcpy(stats, &rte_flow_data->stats, sizeof *stats);
 out:
