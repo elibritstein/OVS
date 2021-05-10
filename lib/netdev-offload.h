@@ -200,6 +200,8 @@ int netdev_ports_get_n_flows(const char *dpif_type,
 uint32_t netdev_offload_flow_mark_alloc(void);
 void netdev_offload_flow_mark_free(uint32_t mark);
 
+extern bool netdev_offload_ct_on_ct_nat;
+
 #ifdef  __cplusplus
 }
 #endif

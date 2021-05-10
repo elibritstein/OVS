@@ -100,10 +100,17 @@ struct ufid_to_rte_flow_data {
     struct act_resources act_resources;
 };
 
+struct fixed_rule {
+    struct rte_flow *flow;
+    unsigned int creation_tid;
+};
+
 struct netdev_offload_dpdk_data {
     struct cmap ufid_to_rte_flow;
     uint64_t *rte_flow_counters;
     struct ovs_mutex map_lock;
+    struct ovsthread_once ct_tables_once;
+    struct fixed_rule ct_nat_miss;
 };
 
 static int
@@ -118,6 +125,7 @@ offload_data_init(struct netdev *netdev)
     cmap_set_min_load(&data->ufid_to_rte_flow, 0.0);
     data->rte_flow_counters = xcalloc(netdev_offload_thread_nb(),
                                       sizeof *data->rte_flow_counters);
+    data->ct_tables_once = (struct ovsthread_once) OVSTHREAD_ONCE_INITIALIZER;
 
     ovsrcu_set(&netdev->hw_info.offload_data, (void *) data);
 
@@ -127,6 +135,7 @@ offload_data_init(struct netdev *netdev)
 static void
 offload_data_destroy__(struct netdev_offload_dpdk_data *data)
 {
+    ovs_mutex_destroy(&data->ct_tables_once.mutex);
     ovs_mutex_destroy(&data->map_lock);
     free(data->rte_flow_counters);
     free(data);
@@ -243,6 +252,9 @@ ufid_to_rte_flow_data_find_protected(struct netdev *netdev,
     return NULL;
 }
 
+static int
+ct_tables_init(struct netdev *netdev, unsigned int tid);
+
 static inline struct ufid_to_rte_flow_data *
 ufid_to_rte_flow_associate(const ovs_u128 *ufid, struct netdev *netdev,
                            struct netdev *physdev, struct flow_item *flow_item,
@@ -250,6 +262,7 @@ ufid_to_rte_flow_associate(const ovs_u128 *ufid, struct netdev *netdev,
                            struct act_resources *act_resources)
 {
     size_t hash = hash_bytes(ufid, sizeof *ufid, 0);
+    unsigned int tid = netdev_offload_thread_id();
     struct cmap *map = offload_data_map(netdev);
     struct ufid_to_rte_flow_data *data_prev;
     struct ufid_to_rte_flow_data *data;
@@ -261,6 +274,8 @@ ufid_to_rte_flow_associate(const ovs_u128 *ufid, struct netdev *netdev,
     data = xzalloc(sizeof *data);
 
     offload_data_lock(netdev);
+
+    ct_tables_init(physdev, tid);
 
     /*
      * We should not simply overwrite an existing rte flow.
@@ -278,7 +293,7 @@ ufid_to_rte_flow_associate(const ovs_u128 *ufid, struct netdev *netdev,
     data->physdev = netdev != physdev ? netdev_ref(physdev) : physdev;
     data->flow_item = *flow_item;
     data->actions_offloaded = actions_offloaded;
-    data->creation_tid = netdev_offload_thread_id();
+    data->creation_tid = tid;
     ovs_mutex_init(&data->lock);
     memcpy(&data->act_resources, act_resources, sizeof data->act_resources);
 
@@ -4610,33 +4625,46 @@ create_ct_conn(struct netdev *netdev,
     struct flow_actions ct_actions = { .actions = NULL, .cnt = 0 };
     struct rte_flow_attr attr = { .ingress = 1, .transfer = 1 };
     int ret = -1;
+    int pos = 0;
+    bool is_ct;
+
+    fi->rte_flow[0] = fi->rte_flow[1] = NULL;
+    fi->has_count[0] = fi->has_count[1] = false;
 
     split_ct_conn_actions(flow_actions->actions, &ct_actions, &nat_actions,
                           act_resources->ctid);
-    attr.group = CTNAT_TABLE_ID;
-    fi->has_count[0] = true;
-    fi->rte_flow[1] = create_rte_flow(netdev, &attr, flow_patterns,
-                                      &nat_actions, error);
-    ret = fi->rte_flow[1] == NULL ? -1 : 0;
-    if (ret) {
-        goto out;
-    }
+    is_ct = ct_actions.cnt == nat_actions.cnt;
 
+    fi->has_count[0] = true;
     put_table_id(act_resources->self_table_id);
     act_resources->self_table_id = 0;
-    attr.group = CT_TABLE_ID;
-    fi->has_count[1] = true;
+    pos = netdev_offload_ct_on_ct_nat;
 
-    fi->rte_flow[0] = create_rte_flow(netdev, &attr, flow_patterns,
-                                      &ct_actions, error);
-    ret = fi->rte_flow[0] == NULL ? -1 : 0;
-    if (ret) {
-        goto ct_err;
+    if (netdev_offload_ct_on_ct_nat || !is_ct) {
+        attr.group = CTNAT_TABLE_ID;
+        fi->rte_flow[pos] = create_rte_flow(netdev, &attr, flow_patterns,
+                                            &nat_actions, error);
+        ret = fi->rte_flow[pos] == NULL ? -1 : 0;
+        if (ret) {
+            goto out;
+        }
+    }
+
+    if (netdev_offload_ct_on_ct_nat || is_ct) {
+        attr.group = CT_TABLE_ID;
+        fi->rte_flow[0] = create_rte_flow(netdev, &attr, flow_patterns,
+                                          &ct_actions, error);
+        ret = fi->rte_flow[0] == NULL ? -1 : 0;
+        if (ret) {
+            goto ct_err;
+        }
     }
     goto out;
 
 ct_err:
-    netdev_offload_dpdk_destroy_flow(netdev, fi->rte_flow[1], NULL);
+    if (netdev_offload_ct_on_ct_nat) {
+        netdev_offload_dpdk_destroy_flow(netdev, fi->rte_flow[1], NULL);
+    }
 out:
     free_flow_actions(&ct_actions, false);
     free_flow_actions(&nat_actions, false);
@@ -5247,6 +5275,9 @@ out:
     return ret;
 }
 
+static void
+ct_tables_uninit(struct netdev *netdev, unsigned int tid);
+
 static int
 netdev_offload_dpdk_flow_flush(struct netdev *netdev)
 {
@@ -5257,6 +5288,8 @@ netdev_offload_dpdk_flow_flush(struct netdev *netdev)
     if (!map) {
         return -1;
     }
+
+    ct_tables_uninit(netdev, tid);
 
     CMAP_FOR_EACH (data, node, map) {
         if (data->netdev != netdev && data->physdev != netdev) {
@@ -5442,6 +5475,66 @@ netdev_offload_dpdk_ct_counter_query(struct netdev *netdev,
     }
     put_shared_age_ctx(pctx);
     return ret;
+}
+
+static void
+ct_nat_miss_uninit(struct netdev *netdev, unsigned int tid,
+                   struct fixed_rule *fr)
+{
+    if (fr->creation_tid != tid || !fr->flow) {
+        return;
+    }
+
+    netdev_offload_dpdk_destroy_flow(netdev, fr->flow, NULL);
+    fr->flow = NULL;
+}
+
+static int
+ct_nat_miss_init(struct netdev *netdev, unsigned int tid,
+                 struct fixed_rule *fr)
+{
+    fr->flow = add_miss_flow(netdev, CTNAT_TABLE_ID, CT_TABLE_ID, 0);
+    fr->creation_tid = tid;
+
+    if (fr->flow == NULL) {
+        return -1;
+    }
+    return 0;
+}
+
+static void
+ct_tables_uninit(struct netdev *netdev, unsigned int tid)
+{
+    struct netdev_offload_dpdk_data *data;
+
+    if (netdev_vport_is_vport_class(netdev->netdev_class)) {
+        return;
+    }
+
+    data = (struct netdev_offload_dpdk_data *)
+        ovsrcu_get(void *, &netdev->hw_info.offload_data);
+
+    ct_nat_miss_uninit(netdev, tid, &data->ct_nat_miss);
+}
+
+static int
+ct_tables_init(struct netdev *netdev, unsigned int tid)
+{
+    struct netdev_offload_dpdk_data *data;
+
+    if (netdev_vport_is_vport_class(netdev->netdev_class)) {
+        return 0;
+    }
+
+    data = (struct netdev_offload_dpdk_data *)
+        ovsrcu_get(void *, &netdev->hw_info.offload_data);
+
+    if (ovsthread_once_start(&data->ct_tables_once)) {
+        ct_nat_miss_init(netdev, tid, &data->ct_nat_miss);
+        ovsthread_once_done(&data->ct_tables_once);
+    }
+
+    return 0;
 }
 
 const struct netdev_flow_api netdev_offload_dpdk = {
