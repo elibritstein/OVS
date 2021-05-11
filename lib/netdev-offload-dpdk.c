@@ -1690,9 +1690,12 @@ static int
 parse_clone_actions(struct netdev *netdev,
                     struct flow_actions *actions,
                     const struct nlattr *clone_actions,
-                    const size_t clone_actions_len)
+                    const size_t clone_actions_len,
+                    int *outdev_id,
+                    struct rte_flow_action_raw_encap *raw_encap)
 {
     const struct nlattr *ca;
+    struct netdev *outdev;
     unsigned int cleft;
 
     NL_ATTR_FOR_EACH_UNSAFE (ca, cleft, clone_actions, clone_actions_len) {
@@ -1700,23 +1703,35 @@ parse_clone_actions(struct netdev *netdev,
 
         if (clone_type == OVS_ACTION_ATTR_TUNNEL_PUSH) {
             const struct ovs_action_push_tnl *tnl_push = nl_attr_get(ca);
-            struct rte_flow_action_raw_encap *raw_encap;
+            struct rte_flow_action_raw_encap *action_raw_encap = NULL;
 
-            if (tnl_push->tnl_type == OVS_VPORT_TYPE_VXLAN &&
-                !add_vxlan_encap_action(actions, tnl_push->header)) {
-                continue;
+            if (!raw_encap) {
+                action_raw_encap = xzalloc(sizeof *action_raw_encap);
+                raw_encap = action_raw_encap;
+                if (tnl_push->tnl_type == OVS_VPORT_TYPE_VXLAN &&
+                    !add_vxlan_encap_action(actions, tnl_push->header)) {
+                    continue;
+                }
             }
 
-            raw_encap = xzalloc(sizeof *raw_encap);
             raw_encap->data = (uint8_t *) tnl_push->header;
             raw_encap->preserve = NULL;
             raw_encap->size = tnl_push->header_len;
 
-            add_flow_action(actions, RTE_FLOW_ACTION_TYPE_RAW_ENCAP,
-                            raw_encap);
+            if (action_raw_encap) {
+                add_flow_action(actions, RTE_FLOW_ACTION_TYPE_RAW_ENCAP,
+                                action_raw_encap);
+            }
         } else if (clone_type == OVS_ACTION_ATTR_OUTPUT) {
-            if (add_output_action(netdev, actions, ca)) {
-                return -1;
+            if (actions) {
+                if (add_output_action(netdev, actions, ca)) {
+                    return -1;
+                }
+            } else {
+                if (get_netdev_by_port(netdev, ca, outdev_id, &outdev)) {
+                    return -1;
+                }
+                netdev_close(outdev);
             }
         } else {
             VLOG_DBG_RL(&rl,
@@ -1872,7 +1887,7 @@ parse_flow_actions(struct netdev *netdev,
             size_t clone_actions_len = nl_attr_get_size(nla);
 
             if (parse_clone_actions(netdev, actions, clone_actions,
-                                    clone_actions_len)) {
+                                    clone_actions_len, NULL, NULL)) {
                 return -1;
             }
         } else if (nl_attr_type(nla) == OVS_ACTION_ATTR_TUNNEL_POP) {
