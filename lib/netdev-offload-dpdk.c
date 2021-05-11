@@ -448,6 +448,20 @@ dump_vxlan_encap(struct ds *s, const struct rte_flow_item *items)
 }
 
 static void
+dump_port_id(struct ds *s, const void *conf)
+{
+    const struct rte_flow_action_port_id *port_id = conf;
+
+    ds_put_cstr(s, "port_id ");
+    if (port_id) {
+        ds_put_format(s, "original %d id %d ", port_id->original,
+                      port_id->id);
+        }
+        ds_put_cstr(s, "/ ");
+}
+
+
+static void
 dump_flow_action(struct ds *s, struct ds *s_extra,
                  struct flow_actions *flow_actions, int act_index)
 {
@@ -474,14 +488,7 @@ dump_flow_action(struct ds *s, struct ds *s_extra,
     } else if (actions->type == RTE_FLOW_ACTION_TYPE_COUNT) {
         ds_put_cstr(s, "count / ");
     } else if (actions->type == RTE_FLOW_ACTION_TYPE_PORT_ID) {
-        const struct rte_flow_action_port_id *port_id = actions->conf;
-
-        ds_put_cstr(s, "port_id ");
-        if (port_id) {
-            ds_put_format(s, "original %d id %d ",
-                          port_id->original, port_id->id);
-        }
-        ds_put_cstr(s, "/ ");
+        dump_port_id(s, actions->conf);
     } else if (actions->type == RTE_FLOW_ACTION_TYPE_DROP) {
         ds_put_cstr(s, "drop / ");
     } else if (actions->type == RTE_FLOW_ACTION_TYPE_SET_MAC_SRC ||
