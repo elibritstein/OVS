@@ -5374,9 +5374,7 @@ netdev_dpdk_get_port_id(struct netdev *netdev)
     }
 
     dev = netdev_dpdk_cast(netdev);
-    ovs_mutex_lock(&dev->mutex);
     ret = dev->port_id;
-    ovs_mutex_unlock(&dev->mutex);
 out:
     return ret;
 }
@@ -5400,12 +5398,10 @@ netdev_dpdk_flow_api_supported(struct netdev *netdev)
     }
 
     dev = netdev_dpdk_cast(netdev);
-    ovs_mutex_lock(&dev->mutex);
     if (dev->type == DPDK_DEV_ETH) {
         /* TODO: Check if we able to offload some minimal flow. */
         ret = true;
     }
-    ovs_mutex_unlock(&dev->mutex);
 out:
     return ret;
 }
