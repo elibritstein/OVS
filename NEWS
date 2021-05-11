@@ -12,7 +12,7 @@ Post-v2.15.0
    - DPDK:
      * OVS validated with DPDK 20.11.1. It is recommended to use this version
        until further releases.
-
+     * Add support for offloading multiple local destinations actions.
 
 v2.15.0 - 15 Feb 2021
 ---------------------

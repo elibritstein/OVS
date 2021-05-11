@@ -617,6 +617,29 @@ dump_flow_action(struct ds *s, struct ds *s_extra,
             ds_put_format(s, "group %"PRIu32" ", jump->group);
         }
         ds_put_cstr(s, "/ ");
+    } else if (actions->type == RTE_FLOW_ACTION_TYPE_SAMPLE) {
+        const struct rte_flow_action_sample *sample = actions->conf;
+
+        if (sample) {
+            const struct rte_flow_action *rte_actions;
+
+            rte_actions = sample->actions;
+            ds_put_format(s_extra, "set sample_actions %d ", act_index);
+
+            while (rte_actions &&
+                   rte_actions->type != RTE_FLOW_ACTION_TYPE_END) {
+                if (rte_actions->type == RTE_FLOW_ACTION_TYPE_PORT_ID) {
+                    dump_port_id(s_extra, rte_actions->conf);
+                } else {
+                    ds_put_format(s, "unknown rte flow action (%d)\n",
+                                  rte_actions->type);
+                }
+                rte_actions++;
+            }
+            ds_put_cstr(s_extra, "end; ");
+            ds_put_format(s, "sample ratio %d index %d / ", sample->ratio,
+                          act_index);
+        }
     } else {
         ds_put_format(s, "unknown rte flow action (%d)\n", actions->type);
     }
@@ -1705,6 +1728,47 @@ parse_clone_actions(struct netdev *netdev,
     return 0;
 }
 
+/* Maximum number of actions in multiple local destinations.
+ * PORT_ID / END
+ */
+#define SAMPLE_EMBEDDED_ACTIONS_NUM 2
+
+static int
+add_sample_embedded_output_action(struct netdev *netdev,
+                                  struct flow_actions *actions,
+                                  const struct nlattr *nla)
+{
+    struct netdev *outdev;
+    struct sample_conf {
+        struct rte_flow_action_sample sample;
+        struct rte_flow_action_port_id port_id;
+        struct rte_flow_action sample_actions[SAMPLE_EMBEDDED_ACTIONS_NUM];
+    } *sample_conf;
+    BUILD_ASSERT_DECL(offsetof(struct sample_conf, sample) == 0);
+    struct rte_flow_action *sample_itr;
+    int port_id;
+
+    if (get_netdev_by_port(netdev, nla, &port_id, &outdev)) {
+        return -1;
+    }
+    netdev_close(outdev);
+
+    sample_conf = xzalloc(sizeof *sample_conf);
+    sample_itr = sample_conf->sample_actions;
+    /* Initialize sample struct */
+    sample_conf->sample.ratio = 1;
+    sample_conf->sample.actions = sample_conf->sample_actions;
+    sample_conf->port_id.id = port_id;
+
+    sample_itr->conf = &sample_conf->port_id;
+    sample_itr->type = RTE_FLOW_ACTION_TYPE_PORT_ID;
+    sample_itr++;
+    sample_itr->type = RTE_FLOW_ACTION_TYPE_END;
+
+    add_flow_action(actions, RTE_FLOW_ACTION_TYPE_SAMPLE, sample_conf);
+    return 0;
+}
+
 static void
 add_jump_action(struct flow_actions *actions, uint32_t group)
 {
@@ -1770,8 +1834,17 @@ parse_flow_actions(struct netdev *netdev,
     add_count_action(actions);
     NL_ATTR_FOR_EACH_UNSAFE (nla, left, nl_actions, nl_actions_len) {
         if (nl_attr_type(nla) == OVS_ACTION_ATTR_OUTPUT) {
-            if (add_output_action(netdev, actions, nla)) {
-                return -1;
+            /* The last output should use port-id action, while previous
+             * outputs should embed the port-id action inside a sample action.
+             */
+            if (left <= NLA_ALIGN(nla->nla_len)) {
+                if (add_output_action(netdev, actions, nla)) {
+                   return -1;
+                }
+            } else {
+                if (add_sample_embedded_output_action(netdev, actions, nla)) {
+                    return -1;
+                }
             }
         } else if (nl_attr_type(nla) == OVS_ACTION_ATTR_DROP) {
             add_flow_action(actions, RTE_FLOW_ACTION_TYPE_DROP, NULL);
