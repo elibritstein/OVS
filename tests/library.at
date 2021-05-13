@@ -278,3 +278,7 @@ AT_CLEANUP
 AT_SETUP([id-fpool module])
 AT_CHECK([ovstest test-id-fpool check], [0], [])
 AT_CLEANUP
+
+AT_SETUP([salloc])
+AT_CHECK([ovstest test-salloc], [0], [])
+AT_CLEANUP
