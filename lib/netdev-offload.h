@@ -105,6 +105,7 @@ struct offload_info {
     odp_port_t orig_in_port; /* Originating in_port for tnl flows. */
     /* Indicates if flow is for e2e cache*/
     bool is_e2e_cache_flow;
+    bool is_ct_conn;
 
     uintptr_t ct_counter_key;
     struct flows_counter_key flows_counter_key;

@@ -3150,7 +3150,9 @@ dp_netdev_flow_offload_put(struct dp_offload_thread_item *item)
     bool modification = offload->op == DP_NETDEV_FLOW_OFFLOAD_OP_MOD
                         && flow->mark != INVALID_FLOW_MARK;
     bool is_e2e_cache_flow = offload->is_e2e_cache_flow;
-    struct offload_info info;
+    struct offload_info info = {
+        .is_ct_conn = false,
+    };
     struct netdev *port;
     uint32_t mark;
     int ret;
@@ -3495,6 +3497,7 @@ dp_netdev_ct_offload_add_cb(struct ct_flow_offload_item *ct_offload,
 
         ds_destroy(&ds);
     }
+    info.is_ct_conn = true;
     ret = netdev_flow_put(port, &match, actions, actions_len, &ct_offload->ufid,
                           &info, NULL);
     if (ct_offload->status) {

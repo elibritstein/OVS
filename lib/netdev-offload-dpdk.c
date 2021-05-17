@@ -2636,6 +2636,7 @@ struct act_vars {
     enum tnl_type tnl_type;
     bool is_outer_ipv4;
     uint8_t gnv_opts_cnt;
+    bool is_ct_conn;
 };
 
 static struct rte_flow *
@@ -3831,7 +3832,10 @@ parse_flow_match(struct netdev *netdev,
 
     add_flow_pattern(patterns, RTE_FLOW_ITEM_TYPE_END, NULL, NULL, NULL);
 
-    if (!is_all_zeros(consumed_masks, sizeof *consumed_masks)) {
+    /* A CT conn offload is assured to be fully matched.
+     * Verify full match only for other offloads. */
+    if (!act_vars->is_ct_conn &&
+        !is_all_zeros(consumed_masks, sizeof *consumed_masks)) {
         return -1;
     }
     return 0;
@@ -5097,6 +5101,7 @@ netdev_offload_dpdk_add_flow(struct netdev *netdev,
     int ret;
 
     act_vars.is_e2e_cache = info->is_e2e_cache_flow;
+    act_vars.is_ct_conn = info->is_ct_conn;
     act_vars.ct_counter_key = info->ct_counter_key;
     memcpy(&act_vars.flows_counter_key, &info->flows_counter_key,
            sizeof info->flows_counter_key);
