@@ -652,6 +652,9 @@ struct dp_netdev_pmd_thread_ctx {
     uint32_t emc_insert_min;
 };
 
+/* Size of netdev's cache. */
+#define DP_PMD_NETDEV_CACHE_SIZE 1024
+
 /* PMD: Poll modes drivers.  PMD accesses devices via polling to eliminate
  * the performance overhead of interrupt processing.  Therefore netdev can
  * not implement rx-wait for these devices.  dpif-netdev needs to poll
@@ -788,6 +791,7 @@ struct dp_netdev_pmd_thread {
      * other instance will only be accessed by its own pmd thread. */
     struct hmap tnl_port_cache;
     struct hmap send_port_cache;
+    struct netdev *send_netdev_cache[DP_PMD_NETDEV_CACHE_SIZE];
 
     /* Keep track of detailed PMD performance statistics. */
     struct pmd_perf_stats perf_stats;
@@ -5912,6 +5916,12 @@ pmd_free_cached_ports(struct dp_netdev_pmd_thread *pmd)
         free(tx_port_cached);
     }
     HMAP_FOR_EACH_POP (tx_port_cached, node, &pmd->send_port_cache) {
+        uint32_t port_no_ind;
+
+        port_no_ind = odp_to_u32(tx_port_cached->port->port_no);
+        if (port_no_ind < ARRAY_SIZE(pmd->send_netdev_cache)) {
+            pmd->send_netdev_cache[port_no_ind] = NULL;
+        }
         free(tx_port_cached);
     }
 }
@@ -5938,9 +5948,16 @@ pmd_load_cached_ports(struct dp_netdev_pmd_thread *pmd)
         }
 
         if (netdev_n_txq(tx_port->port->netdev)) {
+            uint32_t port_no_ind;
+
             tx_port_cached = xmemdup(tx_port, sizeof *tx_port_cached);
             hmap_insert(&pmd->send_port_cache, &tx_port_cached->node,
                         hash_port_no(tx_port_cached->port->port_no));
+            port_no_ind = odp_to_u32(tx_port_cached->port->port_no);
+            if (port_no_ind < ARRAY_SIZE(pmd->send_netdev_cache)) {
+                pmd->send_netdev_cache[port_no_ind] =
+                    tx_port_cached->port->netdev;
+            }
         }
     }
 }
@@ -6587,6 +6604,7 @@ dp_netdev_configure_pmd(struct dp_netdev_pmd_thread *pmd, struct dp_netdev *dp,
     hmap_init(&pmd->tx_ports);
     hmap_init(&pmd->tnl_port_cache);
     hmap_init(&pmd->send_port_cache);
+    memset(pmd->send_netdev_cache, 0, sizeof pmd->send_netdev_cache);
     cmap_init(&pmd->tx_bonds);
     /* init the 'flow_cache' since there is no
      * actual thread created for NON_PMD_CORE_ID. */
@@ -6605,6 +6623,7 @@ dp_netdev_destroy_pmd(struct dp_netdev_pmd_thread *pmd)
     struct dpcls *cls;
 
     dp_netdev_pmd_flow_flush(pmd);
+    memset(pmd->send_netdev_cache, 0, sizeof pmd->send_netdev_cache);
     hmap_destroy(&pmd->send_port_cache);
     hmap_destroy(&pmd->tnl_port_cache);
     hmap_destroy(&pmd->tx_ports);
@@ -7092,20 +7111,40 @@ smc_lookup_batch(struct dp_netdev_pmd_thread *pmd,
 static struct tx_port * pmd_send_port_cache_lookup(
     const struct dp_netdev_pmd_thread *pmd, odp_port_t port_no);
 
+OVS_UNUSED
+static inline struct netdev *
+pmd_netdev_cache_lookup(const struct dp_netdev_pmd_thread *pmd,
+                        odp_port_t port_no)
+{
+    uint32_t port_no_ind;
+    struct tx_port *p;
+
+    port_no_ind = odp_to_u32(port_no);
+    if (port_no_ind < ARRAY_SIZE(pmd->send_netdev_cache)) {
+        return pmd->send_netdev_cache[port_no_ind];
+    }
+
+    p = pmd_send_port_cache_lookup(pmd, port_no);
+    if (p) {
+        return p->port->netdev;
+    }
+    return NULL;
+}
+
 static inline int
 dp_netdev_hw_flow(const struct dp_netdev_pmd_thread *pmd,
                   odp_port_t port_no OVS_UNUSED,
                   struct dp_packet *packet,
                   struct dp_netdev_flow **flow)
 {
-    struct tx_port *p OVS_UNUSED;
+    struct netdev *netdev OVS_UNUSED;
     uint32_t mark;
 
 #ifdef ALLOW_EXPERIMENTAL_API /* Packet restoration API required. */
     /* Restore the packet if HW processing was terminated before completion. */
-    p = pmd_send_port_cache_lookup(pmd, port_no);
-    if (OVS_LIKELY(p)) {
-        int err = netdev_hw_miss_packet_recover(p->port->netdev, packet);
+    netdev = pmd_netdev_cache_lookup(pmd, port_no);
+    if (OVS_LIKELY(netdev)) {
+        int err = netdev_hw_miss_packet_recover(netdev, packet);
 
         if (err && err != EOPNOTSUPP) {
             COVERAGE_INC(datapath_drop_hw_miss_recover);
