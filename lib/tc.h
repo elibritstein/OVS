@@ -177,6 +177,7 @@ enum tc_action_type {
     TC_ACT_GOTO,
     TC_ACT_CT,
     TC_ACT_POLICE,
+    TC_ACT_SAMPLE,
 };
 
 enum nat_type {
@@ -269,6 +270,11 @@ struct tc_action {
             uint32_t index;
             uint32_t meter_id;
         } police;
+
+        struct {
+            uint32_t rate;
+            uint32_t group_id;
+        } sample;
      };
 
      enum tc_action_type type;
@@ -314,12 +320,14 @@ tc_make_tcf_id(int ifindex, uint32_t block_id, uint16_t prio,
 }
 
 static inline struct tcf_id
-tc_make_tcf_id_chain(int ifindex, uint32_t block_id, uint32_t chain,
-                     uint16_t prio, enum tc_qdisc_hook hook)
+tc_make_tcf_id_all(int ifindex, uint32_t block_id, uint32_t chain,
+                     uint16_t prio, enum tc_qdisc_hook hook,
+                     uint32_t sample_group_id)
 {
     struct tcf_id id = tc_make_tcf_id(ifindex, block_id, prio, hook);
 
     id.chain = chain;
+    id.sample_group_id = sample_group_id;
 
     return id;
 }
@@ -333,7 +341,8 @@ is_tcf_id_eq(struct tcf_id *id1, struct tcf_id *id2)
            && id1->hook == id2->hook
            && id1->block_id == id2->block_id
            && id1->ifindex == id2->ifindex
-           && id1->chain == id2->chain;
+           && id1->chain == id2->chain
+           && id1->sample_group_id == id2->sample_group_id;
 }
 
 enum tc_offload_policy {
