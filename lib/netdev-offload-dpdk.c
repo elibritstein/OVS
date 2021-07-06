@@ -568,8 +568,12 @@ dump_flow_action(struct ds *s, struct ds *s_extra,
 
         ds_put_format(s, "set_ipv6_%s ", dirstr);
         if (set_ipv6) {
+            BUILD_ASSERT_DECL(
+                offsetof(struct rte_flow_action_set_ipv6, ipv6_addr) %
+                sizeof(struct in6_addr) == 0);
             ds_put_cstr(s, "ipv6_addr ");
-            ipv6_format_addr((struct in6_addr *) &set_ipv6->ipv6_addr, s);
+            ipv6_format_addr(ALIGNED_CAST(struct in6_addr *,
+                                          &set_ipv6->ipv6_addr), s);
             ds_put_cstr(s, " ");
         }
         ds_put_cstr(s, "/ ");
