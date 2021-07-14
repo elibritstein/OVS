@@ -50,6 +50,9 @@ struct dp_netdev_pmd_thread_ctx {
     bool smc_enable_db;
 };
 
+/* Size of netdev's cache. */
+#define DP_PMD_NETDEV_CACHE_SIZE 1024
+
 /* PMD: Poll modes drivers.  PMD accesses devices via polling to eliminate
  * the performance overhead of interrupt processing.  Therefore netdev can
  * not implement rx-wait for these devices.  dpif-netdev needs to poll
@@ -192,6 +195,7 @@ struct dp_netdev_pmd_thread {
      * other instance will only be accessed by its own pmd thread. */
     struct hmap tnl_port_cache;
     struct hmap send_port_cache;
+    struct netdev *send_netdev_cache[DP_PMD_NETDEV_CACHE_SIZE];
 
     /* Keep track of detailed PMD performance statistics. */
     struct pmd_perf_stats perf_stats;
