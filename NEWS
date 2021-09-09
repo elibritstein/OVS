@@ -29,6 +29,8 @@ v2.17.0 - xx xxx xxxx
      * Add support for DPDK 21.11.
      * Forbid use of DPDK multiprocess feature.
      * Add support for running threads on cores >= RTE_MAX_LCORE.
+     * Add hardware offload support for GENEVE flows (experimental).
+       Available only if DPDK experimantal APIs enabled during the build.
    - Python:
      * For SSL support, the use of the pyOpenSSL library has been replaced
        with the native 'ssl' module.
