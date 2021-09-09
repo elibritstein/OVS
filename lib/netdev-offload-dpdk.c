@@ -1109,6 +1109,17 @@ vport_to_rte_tunnel(struct netdev *vport,
             ds_put_format(s_tnl, "flow tunnel create %d type gre; ",
                           netdev_dpdk_get_port_id(netdev));
         }
+    } else if (!strcmp(netdev_get_type(vport), "geneve")) {
+        tunnel->type = RTE_FLOW_ITEM_TYPE_GENEVE;
+        tnl_cfg = netdev_get_tunnel_config(vport);
+        if (!tnl_cfg) {
+            return -1;
+        }
+        tunnel->tp_dst = tnl_cfg->dst_port;
+        if (!VLOG_DROP_DBG(&rl)) {
+            ds_put_format(s_tnl, "flow tunnel create %d type geneve; ",
+                          netdev_dpdk_get_port_id(netdev));
+        }
     } else {
         VLOG_DBG_RL(&rl, "vport type '%s' is not supported",
                     netdev_get_type(vport));
@@ -2582,6 +2593,8 @@ get_vport_netdev(const char *dpif_type,
         aux.type = "vxlan";
     } else if (tunnel->type == RTE_FLOW_ITEM_TYPE_GRE) {
         aux.type = "gre";
+    } else if (tunnel->type == RTE_FLOW_ITEM_TYPE_GENEVE) {
+        aux.type = "geneve";
     }
     netdev_ports_traverse(dpif_type, get_vport_netdev_cb, &aux);
 
