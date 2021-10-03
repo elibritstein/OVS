@@ -2520,6 +2520,8 @@ dump_flow_action(struct ds *s, struct ds *s_extra,
         ds_put_cstr(s, "/ ");
     } else if (actions->type == RTE_FLOW_ACTION_TYPE_VXLAN_DECAP) {
         ds_put_cstr(s, "vxlan_decap / ");
+    } else if (actions->type == RTE_FLOW_ACTION_TYPE_NVGRE_DECAP) {
+        ds_put_cstr(s, "nvgre_decap / ");
     } else if (actions->type == RTE_FLOW_ACTION_TYPE_SET_TAG) {
         const struct rte_flow_action_set_tag *set_tag = actions->conf;
 
@@ -4500,6 +4502,13 @@ add_geneve_decap_action(struct flow_actions *actions,
 }
 
 static int
+add_gre_decap_action(struct flow_actions *actions)
+{
+    add_flow_action(actions, RTE_FLOW_ACTION_TYPE_NVGRE_DECAP, NULL);
+    return 0;
+}
+
+static int
 add_tnl_decap_action(struct flow_actions *actions,
                      struct act_vars *act_vars)
 {
@@ -4508,6 +4517,9 @@ add_tnl_decap_action(struct flow_actions *actions,
     }
     if (act_vars->tnl_type == TNL_TYPE_GENEVE) {
         return add_geneve_decap_action(actions, act_vars);
+    }
+    if (act_vars->tnl_type == TNL_TYPE_GRE) {
+        return add_gre_decap_action(actions);
     }
     return -1;
 }
@@ -4798,6 +4810,7 @@ split_pre_post_ct_actions(const struct rte_flow_action *actions,
 {
     while (actions && actions->type != RTE_FLOW_ACTION_TYPE_END) {
         if (actions->type == RTE_FLOW_ACTION_TYPE_VXLAN_DECAP ||
+            actions->type == RTE_FLOW_ACTION_TYPE_NVGRE_DECAP ||
             actions->type == RTE_FLOW_ACTION_TYPE_SET_TAG ||
             actions->type == RTE_FLOW_ACTION_TYPE_SET_META ||
             actions->type == RTE_FLOW_ACTION_TYPE_RAW_DECAP ||
