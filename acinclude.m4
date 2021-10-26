@@ -89,8 +89,8 @@ dnl OVS_ENABLE_WERROR
 AC_DEFUN([OVS_ENABLE_WERROR],
   [AC_ARG_ENABLE(
      [Werror],
-     [AC_HELP_STRING([--enable-Werror], [Add -Werror to CFLAGS])],
-     [], [enable_Werror=no])
+     [AC_HELP_STRING([--disable-Werror], [Remove -Werror from CFLAGS])],
+     [], [enable_Werror=yes])
    AC_CONFIG_COMMANDS_PRE(
      [if test "X$enable_Werror" = Xyes; then
         OVS_CFLAGS="$OVS_CFLAGS -Werror"

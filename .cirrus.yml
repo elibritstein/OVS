@@ -23,7 +23,7 @@ freebsd_build_task:
   configure_script:
     - ./boot.sh
     - ./configure CC=${COMPILER} CFLAGS="-g -O2 -Wall"
-                  MAKE=gmake --enable-Werror
+                  MAKE=gmake
                   || { cat config.log; exit 1; }
 
   build_script:

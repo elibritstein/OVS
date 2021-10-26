@@ -5,7 +5,6 @@ set -x
 
 CFLAGS_FOR_OVS="-g -O2"
 SPARSE_FLAGS=""
-EXTRA_OPTS="--enable-Werror"
 
 [ -z "$DPDK_EXPERIMENTAL" ] || DPDK=1
 [ -z "$DPDK_SHARED" ] || DPDK=1
