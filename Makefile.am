@@ -34,6 +34,9 @@ AM_CFLAGS = -Wstrict-prototypes
 AM_CFLAGS += $(WARNING_FLAGS)
 AM_CFLAGS += $(OVS_CFLAGS)
 
+GIT_SHA = $(shell if [ -z `git rev-parse --short HEAD` ]; then cat $(top_srcdir)/boot_git_sha.txt; else git rev-parse --short HEAD; fi)
+AM_CFLAGS += -DGIT_SHA_STR=\"$(GIT_SHA)\"
+
 if DPDK_NETDEV
 AM_CFLAGS += -D_FILE_OFFSET_BITS=64
 DPDKSTRIP_FLAGS = --dpdk
