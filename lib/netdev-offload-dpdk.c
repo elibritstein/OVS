@@ -3268,7 +3268,8 @@ parse_flow_tnl_match(struct netdev *tnldev,
         act_vars->tnl_type = TNL_TYPE_VXLAN;
         ret = parse_vxlan_match(patterns, match);
     }
-    else if (!strcmp(netdev_get_type(tnldev), "gre")) {
+    else if (!strcmp(netdev_get_type(tnldev), "gre") ||
+             !strcmp(netdev_get_type(tnldev), "ip6gre")) {
         act_vars->tnl_type = TNL_TYPE_GRE;
         ret = parse_gre_match(patterns, match);
     }
