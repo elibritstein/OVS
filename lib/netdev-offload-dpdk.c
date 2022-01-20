@@ -2372,6 +2372,19 @@ dump_flow_pattern(struct ds *s,
             }
         }
         ds_put_cstr(s, "/ ");
+    } else if (item->type == RTE_FLOW_ITEM_TYPE_PORT_ID) {
+        const struct rte_flow_item_port_id *port_id_spec = item->spec;
+        const struct rte_flow_item_port_id *port_id_mask = item->mask;
+
+        ds_put_cstr(s, "port_id ");
+        if (port_id_spec) {
+            if (!port_id_mask) {
+                port_id_mask = &rte_flow_item_port_id_mask;
+            }
+            DUMP_PATTERN_ITEM(port_id_mask->id, false, "id", "%"PRIu32,
+                              port_id_spec->id, port_id_mask->id, 0);
+        }
+        ds_put_cstr(s, "/ ");
     } else {
         ds_put_format(s, "unknown rte flow pattern (%d)\n", item->type);
     }
@@ -3548,6 +3561,7 @@ parse_flow_match(struct netdev *netdev,
                  struct act_vars *act_vars)
 {
     struct rte_flow_item_eth *eth_spec = NULL, *eth_mask = NULL;
+    struct rte_flow_item_port_id *port_id_spec;
     struct flow *consumed_masks;
     uint8_t proto = 0;
 
@@ -3600,6 +3614,11 @@ parse_flow_match(struct netdev *netdev,
         act_vars->tnl_type = TNL_TYPE_NONE;
     }
 #endif
+
+    port_id_spec = per_thread_xzalloc(sizeof *port_id_spec);
+    port_id_spec->id = netdev_dpdk_get_port_id(patterns->physdev);
+    add_flow_pattern(patterns, RTE_FLOW_ITEM_TYPE_PORT_ID, port_id_spec, NULL,
+                     NULL);
 
     if (get_table_id(act_vars->vport, match->flow.recirc_id,
                      patterns->physdev, act_vars->is_e2e_cache,
@@ -4665,12 +4684,14 @@ add_miss_flow(struct netdev *netdev,
 {
     struct rte_flow_attr miss_attr = { .ingress = 1, .transfer = 1,
                                        .priority = 1, };
+    struct rte_flow_item_port_id port_id;
     struct flow_patterns miss_patterns = {
         .items = (struct rte_flow_item []) {
+            { .type = RTE_FLOW_ITEM_TYPE_PORT_ID, .spec = &port_id, },
             { .type = RTE_FLOW_ITEM_TYPE_ETH, },
             { .type = RTE_FLOW_ITEM_TYPE_END, },
         },
-        .cnt = 2,
+        .cnt = 3,
     };
     struct rte_flow_action_jump miss_jump = { .group = dst_table_id, };
     struct rte_flow_action_mark miss_mark;
@@ -4691,6 +4712,7 @@ add_miss_flow(struct netdev *netdev,
         miss_actions.cnt--;
     }
 
+    port_id.id = netdev_dpdk_get_port_id(netdev);
     return create_rte_flow(netdev, &miss_attr, &miss_patterns, &miss_actions,
                            &error);
 }
@@ -5165,13 +5187,15 @@ create_pre_post_ct(struct netdev *netdev,
 {
     struct flow_actions post_ct_actions = { .actions = NULL, .cnt = 0 };
     struct flow_actions pre_ct_actions = { .actions = NULL, .cnt = 0 };
+    struct rte_flow_item_port_id port_id;
     struct rte_flow_item_mark post_ct_mark;
     struct flow_patterns post_ct_patterns = {
         .items = (struct rte_flow_item []) {
+            { .type = RTE_FLOW_ITEM_TYPE_PORT_ID, .spec = &port_id, },
             { .type = RTE_FLOW_ITEM_TYPE_MARK, .spec = &post_ct_mark, },
             { .type = RTE_FLOW_ITEM_TYPE_END, },
         },
-        .cnt = 2,
+        .cnt = 3,
     };
     struct rte_flow_action_mark pre_ct_mark;
     struct rte_flow_action_jump pre_ct_jump;
@@ -5179,6 +5203,8 @@ create_pre_post_ct(struct netdev *netdev,
     struct rte_flow_attr post_ct_attr;
     uint32_t ct_table_id;
     int ret;
+
+    port_id.id = netdev_dpdk_get_port_id(netdev);
 
     /* post-ct */
     post_ct_mark.id = act_resources->flow_id;
