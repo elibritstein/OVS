@@ -424,6 +424,7 @@ enum dpdk_hw_ol_features {
 struct netdev_dpdk {
     PADDED_MEMBERS_CACHELINE_MARKER(CACHE_LINE_SIZE, cacheline0,
         dpdk_port_t port_id;
+        dpdk_port_t esw_mgr_port_id;
 
         /* If true, device was attached by rte_eth_dev_attach(). */
         bool attached;
@@ -1268,6 +1269,7 @@ common_construct(struct netdev *netdev, dpdk_port_t port_no,
     dev->socket_id = socket_id < 0 ? SOCKET0 : socket_id;
     dev->requested_socket_id = dev->socket_id;
     dev->port_id = port_no;
+    dev->esw_mgr_port_id = port_no;
     dev->type = type;
     dev->flags = 0;
     dev->requested_mtu = RTE_ETHER_MTU;
@@ -2012,6 +2014,7 @@ netdev_dpdk_set_config(struct netdev *netdev, const struct smap *args,
                     dev->requested_socket_id = sid < 0 ? SOCKET0 : sid;
                     dev->devargs = xstrdup(new_devargs);
                     dev->port_id = new_port_id;
+                    dev->esw_mgr_port_id = new_port_id;
                     netdev_request_reconfigure(&dev->up);
                     err = 0;
                 }
@@ -5389,6 +5392,22 @@ unlock:
 }
 
 int
+netdev_dpdk_get_esw_mgr_port_id(struct netdev *netdev)
+{
+    struct netdev_dpdk *dev;
+    int ret = -1;
+
+    if (!is_dpdk_class(netdev->netdev_class)) {
+        goto out;
+    }
+
+    dev = netdev_dpdk_cast(netdev);
+    ret = dev->esw_mgr_port_id;
+out:
+    return ret;
+}
+
+int
 netdev_dpdk_get_port_id(struct netdev *netdev)
 {
     struct netdev_dpdk *dev;
@@ -5440,7 +5459,7 @@ netdev_dpdk_rte_flow_destroy(struct netdev *netdev,
     struct netdev_dpdk *dev = netdev_dpdk_cast(netdev);
     int ret;
 
-    ret = rte_flow_destroy(dev->port_id, rte_flow, error);
+    ret = rte_flow_destroy(dev->esw_mgr_port_id, rte_flow, error);
     return ret;
 }
 
@@ -5454,7 +5473,7 @@ netdev_dpdk_rte_flow_create(struct netdev *netdev,
     struct rte_flow *flow;
     struct netdev_dpdk *dev = netdev_dpdk_cast(netdev);
 
-    flow = rte_flow_create(dev->port_id, attr, items, actions, error);
+    flow = rte_flow_create(dev->esw_mgr_port_id, attr, items, actions, error);
     return flow;
 }
 
@@ -5482,7 +5501,8 @@ netdev_dpdk_rte_flow_query_count(struct netdev *netdev,
     }
 
     dev = netdev_dpdk_cast(netdev);
-    ret = rte_flow_query(dev->port_id, rte_flow, actions, query, error);
+    ret = rte_flow_query(dev->esw_mgr_port_id, rte_flow, actions, query,
+                         error);
     return ret;
 }
 
@@ -5613,7 +5633,8 @@ netdev_dpdk_indirect_action_create(struct netdev *netdev,
 
     dev = netdev_dpdk_cast(netdev);
     ovs_mutex_lock(&dev->mutex);
-    act_hdl = rte_flow_action_handle_create(dev->port_id, &conf, action, error);
+    act_hdl = rte_flow_action_handle_create(dev->esw_mgr_port_id, &conf,
+                                            action, error);
     ovs_mutex_unlock(&dev->mutex);
     return act_hdl;
 }
@@ -5632,7 +5653,7 @@ netdev_dpdk_indirect_action_destroy(struct netdev *netdev,
 
     dev = netdev_dpdk_cast(netdev);
     ovs_mutex_lock(&dev->mutex);
-    ret = rte_flow_action_handle_destroy(dev->port_id, act_hdl, error);
+    ret = rte_flow_action_handle_destroy(dev->esw_mgr_port_id, act_hdl, error);
     ovs_mutex_unlock(&dev->mutex);
     return ret;
 }
@@ -5652,7 +5673,8 @@ netdev_dpdk_indirect_action_query(struct netdev *netdev,
 
     dev = netdev_dpdk_cast(netdev);
     ovs_mutex_lock(&dev->mutex);
-    ret = rte_flow_action_handle_query(dev->port_id, act_hdl, data, error);
+    ret = rte_flow_action_handle_query(dev->esw_mgr_port_id, act_hdl, data,
+                                       error);
     ovs_mutex_unlock(&dev->mutex);
     return ret;
 }

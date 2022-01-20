@@ -164,6 +164,9 @@ netdev_dpdk_indirect_action_query(struct netdev *,
                                   struct rte_flow_error *);
 
 int
+netdev_dpdk_get_esw_mgr_port_id(struct netdev *netdev);
+
+int
 netdev_dpdk_meter_set(ofproto_meter_id meter_id,
                       struct ofputil_meter_config *config);
 int
