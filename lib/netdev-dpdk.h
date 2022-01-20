@@ -18,8 +18,10 @@
 #define NETDEV_DPDK_H
 
 #include <config.h>
+#include <errno.h>
 
 #include "openvswitch/compiler.h"
+#include "openvswitch/ofp-meter.h"
 
 struct dp_packet;
 struct netdev;
@@ -161,6 +163,16 @@ netdev_dpdk_indirect_action_query(struct netdev *,
                                   void *,
                                   struct rte_flow_error *);
 
+int
+netdev_dpdk_meter_set(ofproto_meter_id meter_id,
+                      struct ofputil_meter_config *config);
+int
+netdev_dpdk_meter_get(ofproto_meter_id meter_id,
+                      struct ofputil_meter_stats *stats, uint16_t n_bands);
+int
+netdev_dpdk_meter_del(ofproto_meter_id meter_id,
+                      struct ofputil_meter_stats *stats, uint16_t n_bands);
+
 #else
 
 static inline void
@@ -172,6 +184,29 @@ static inline void
 free_dpdk_buf(struct dp_packet *buf OVS_UNUSED)
 {
     /* Nothing */
+}
+
+static inline int
+netdev_dpdk_meter_set(ofproto_meter_id meter_id OVS_UNUSED,
+                      struct ofputil_meter_config *config OVS_UNUSED)
+{
+    return EOPNOTSUPP;
+}
+
+static inline int
+netdev_dpdk_meter_get(ofproto_meter_id meter_id OVS_UNUSED,
+                      struct ofputil_meter_stats *stats OVS_UNUSED,
+                      uint16_t n_bands OVS_UNUSED)
+{
+    return EOPNOTSUPP;
+}
+
+static inline int
+netdev_dpdk_meter_del(ofproto_meter_id meter_id OVS_UNUSED,
+                      struct ofputil_meter_stats *stats OVS_UNUSED,
+                      uint16_t n_bands OVS_UNUSED)
+{
+    return EOPNOTSUPP;
 }
 
 #endif
