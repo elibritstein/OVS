@@ -8478,6 +8478,10 @@ dpif_netdev_meter_set(struct dpif *dpif, ofproto_meter_id meter_id,
         }
     }
 
+    if (netdev_is_flow_api_enabled()) {
+        dpif_offload_meter_set(dpif, meter_id, config);
+    }
+
     ovs_mutex_lock(&dp->meters_lock);
 
     dp_meter_detach_free(&dp->meters, mid); /* Free existing meter, if any. */
@@ -8496,6 +8500,7 @@ dpif_netdev_meter_get(const struct dpif *dpif,
     struct dp_netdev *dp = get_dp_netdev(dpif);
     uint32_t meter_id = meter_id_.uint32;
     const struct dp_meter *meter;
+    int retval = 0;
 
     if (meter_id >= MAX_METERS) {
         return EFBIG;
@@ -8519,11 +8524,16 @@ dpif_netdev_meter_get(const struct dpif *dpif,
             stats->bands[i].byte_count = meter->bands[i].byte_count;
         }
 
-        ovs_mutex_unlock(&meter->lock);
         stats->n_bands = i;
+        if (netdev_is_flow_api_enabled()) {
+            retval = dpif_offload_meter_get(dpif, meter_id_,
+                                            stats, stats->n_bands);
+        }
+
+        ovs_mutex_unlock(&meter->lock);
     }
 
-    return 0;
+    return retval;
 }
 
 static int
@@ -8539,6 +8549,9 @@ dpif_netdev_meter_del(struct dpif *dpif,
         uint32_t meter_id = meter_id_.uint32;
 
         ovs_mutex_lock(&dp->meters_lock);
+        if (netdev_is_flow_api_enabled()) {
+            error = dpif_offload_meter_del(dpif, meter_id_, stats, n_bands);
+        }
         dp_meter_detach_free(&dp->meters, meter_id);
         ovs_mutex_unlock(&dp->meters_lock);
     }
