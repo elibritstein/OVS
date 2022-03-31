@@ -3340,7 +3340,7 @@ dp_netdev_fill_ct_match(struct match *match, const struct ct_match *ct_match)
     match->wc.masks.dl_type = OVS_BE16_MAX;
     match->wc.masks.nw_proto = UINT8_MAX;
     if (match->flow.nw_proto == IPPROTO_TCP) {
-        match->wc.masks.tcp_flags = htons(TCP_RST | TCP_FIN);
+        match->wc.masks.tcp_flags = htons(TCP_SYN | TCP_RST | TCP_FIN);
     }
     if (match->flow.nw_proto == IPPROTO_TCP ||
         match->flow.nw_proto == IPPROTO_UDP) {
