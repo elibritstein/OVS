@@ -98,7 +98,8 @@ VLOG_DEFINE_THIS_MODULE(dpif_netdev);
 
 #define FLOW_DUMP_MAX_BATCH 50
 /* Use per thread recirc_depth to prevent recirculation loop. */
-#define MAX_RECIRC_DEPTH 6
+#define DEFAULT_MAX_RECIRC_DEPTH 6
+static unsigned int max_recirc_depth = DEFAULT_MAX_RECIRC_DEPTH;
 DEFINE_STATIC_PER_THREAD_DATA(uint32_t, recirc_depth, 0)
 
 /* Use instant packet send by default. */
@@ -6157,6 +6158,29 @@ dpif_netdev_set_config(struct dpif *dpif, const struct smap *other_config)
     bool autolb_state = smap_get_bool(other_config, "pmd-auto-lb", false);
 
     set_pmd_auto_lb(dp, autolb_state, log_autolb);
+
+    if (smap_get_node(other_config, "max-recirc-depth")) {
+        unsigned int read_depth;
+
+        read_depth = smap_get_uint(other_config, "max-recirc-depth",
+                                   DEFAULT_MAX_RECIRC_DEPTH);
+        if (read_depth < DEFAULT_MAX_RECIRC_DEPTH) {
+            read_depth = DEFAULT_MAX_RECIRC_DEPTH;
+        }
+#ifdef E2E_CACHE_ENABLED
+        if (netdev_is_e2e_cache_enabled()
+            && read_depth > E2E_CACHE_MAX_TRACE) {
+            VLOG_INFO("max recirc depth is %d if e2e-cache is enabled",
+                      E2E_CACHE_MAX_TRACE);
+            read_depth = E2E_CACHE_MAX_TRACE;
+        }
+#endif
+        if (max_recirc_depth != read_depth) {
+            max_recirc_depth = read_depth;
+            VLOG_INFO("max recirc depth set to %u", read_depth);
+        }
+    }
+
     offload_queue_size = smap_get_ullong(other_config, "hw-offload-queue-size",
                                          HW_OFFLOAD_DEFAULT_QUEUE_SIZE);
     return 0;
@@ -11757,7 +11781,7 @@ dp_execute_cb(void *aux_, struct dp_packet_batch *packets_,
         return;
 
     case OVS_ACTION_ATTR_TUNNEL_POP:
-        if (*depth < MAX_RECIRC_DEPTH) {
+        if (*depth < max_recirc_depth) {
             struct dp_packet_batch *orig_packets_ = packets_;
             odp_port_t portno = nl_attr_get_odp_port(a);
 
@@ -11852,7 +11876,7 @@ dp_execute_cb(void *aux_, struct dp_packet_batch *packets_,
         break;
 
     case OVS_ACTION_ATTR_RECIRC:
-        if (*depth < MAX_RECIRC_DEPTH) {
+        if (*depth < max_recirc_depth) {
             struct dp_packet_batch recirc_pkts;
 
             if (!should_steal) {
