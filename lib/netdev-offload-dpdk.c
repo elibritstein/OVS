@@ -201,12 +201,16 @@ struct fixed_rule {
     unsigned int creation_tid;
 };
 
+#define MIN_ZONE_ID     1
+#define MAX_ZONE_ID     0x000000FF
+
 struct netdev_offload_dpdk_data {
     struct cmap ufid_to_rte_flow;
     uint64_t *rte_flow_counters;
     struct ovs_mutex map_lock;
     struct ovsthread_once ct_tables_once;
     struct fixed_rule ct_nat_miss;
+    struct fixed_rule zone_flows[2][2][MAX_ZONE_ID + 1];
 };
 
 static int
@@ -1042,9 +1046,6 @@ dump_zone_id(struct ds *s, void *data)
     ds_put_format(s, "zone = %d", not_mapped_ct_zone);
     return s;
 }
-
-#define MIN_ZONE_ID     1
-#define MAX_ZONE_ID     reg_fields[REG_FIELD_CT_ZONE].mask
 
 static struct id_fpool *zone_id_pool = NULL;
 
@@ -2384,6 +2385,8 @@ dump_flow_pattern(struct ds *s,
                               port_id_spec->id, port_id_mask->id, 0);
         }
         ds_put_cstr(s, "/ ");
+    } else if (item->type == RTE_FLOW_ITEM_TYPE_VOID) {
+        ds_put_cstr(s, "void / ");
     } else {
         ds_put_format(s, "unknown rte flow pattern (%d)\n", item->type);
     }
@@ -2713,6 +2716,8 @@ dump_flow_action(struct ds *s, struct ds *s_extra,
             ds_put_format(s, "mtr_id %d ", meter->mtr_id);
         }
         ds_put_cstr(s, "/ ");
+    } else if (actions->type == RTE_FLOW_ACTION_TYPE_VOID) {
+        ds_put_cstr(s, "void / ");
     } else {
         ds_put_format(s, "unknown rte flow action (%d)\n", actions->type);
     }
@@ -4860,14 +4865,9 @@ parse_ct_actions(struct flow_actions *actions,
     act_vars->ct_mode = CT_MODE_CT;
     NL_ATTR_FOR_EACH_UNSAFE (cta, ctleft, ct_actions, ct_actions_len) {
         if (nl_attr_type(cta) == OVS_CT_ATTR_ZONE) {
-            const uint32_t ct_zone_mask = reg_fields[REG_FIELD_CT_ZONE].mask;
-
             if (act_resources->flow_id != INVALID_FLOW_MARK &&
-                (get_zone_id(nl_attr_get_u16(cta),
-                             &act_resources->ct_action_zone_id) ||
-                 add_action_set_reg_field(actions, REG_FIELD_CT_ZONE,
-                                          act_resources->ct_action_zone_id,
-                                          ct_zone_mask))) {
+                get_zone_id(nl_attr_get_u16(cta),
+                            &act_resources->ct_action_zone_id)) {
                 VLOG_DBG_RL(&rl, "Could not create zone id");
                 return -1;
             }
@@ -5233,6 +5233,7 @@ create_pre_post_ct(struct netdev *netdev,
     } else {
         ct_table_id = CTNAT_TABLE_ID;
     }
+    ct_table_id += act_resources->ct_action_zone_id;
     pre_ct_miss_ctx.vport = act_vars->vport;
     pre_ct_miss_ctx.recirc_id = act_vars->recirc_id;
     if (act_vars->vport != ODPP_NONE) {
@@ -6023,8 +6024,8 @@ netdev_offload_dpdk_ct_counter_query(struct netdev *netdev,
 }
 
 static void
-ct_nat_miss_uninit(struct netdev *netdev, unsigned int tid,
-                   struct fixed_rule *fr)
+fixed_rule_uninit(struct netdev *netdev, unsigned int tid,
+                  struct fixed_rule *fr)
 {
     if (fr->creation_tid != tid || !fr->flow) {
         return;
@@ -6032,6 +6033,13 @@ ct_nat_miss_uninit(struct netdev *netdev, unsigned int tid,
 
     netdev_offload_dpdk_destroy_flow(netdev, fr->flow, NULL);
     fr->flow = NULL;
+}
+
+static void
+ct_nat_miss_uninit(struct netdev *netdev, unsigned int tid,
+                   struct fixed_rule *fr)
+{
+    fixed_rule_uninit(netdev, tid, fr);
 }
 
 static int
@@ -6048,6 +6056,147 @@ ct_nat_miss_init(struct netdev *netdev, unsigned int tid,
 }
 
 static void
+ct_zones_uninit(struct netdev *netdev, unsigned int tid,
+                struct netdev_offload_dpdk_data *data)
+{
+    struct fixed_rule *fr;
+    uint32_t zone_id;
+    int nat, i;
+
+    for (nat = 0; nat < 2; nat++) {
+        for (i = 0; i < 2; i++) {
+            for (zone_id = MIN_ZONE_ID; zone_id <= MAX_ZONE_ID; zone_id++) {
+                fr = &data->zone_flows[nat][i][zone_id];
+
+                fixed_rule_uninit(netdev, tid, fr);
+            }
+        }
+    }
+}
+
+static int
+ct_zones_init(struct netdev *netdev, unsigned int tid,
+              struct netdev_offload_dpdk_data *data)
+{
+    struct rte_flow_action_set_tag set_tag;
+    struct rte_flow_item_port_id port_id;
+    struct rte_flow_item_tag tag_spec;
+    struct rte_flow_item_tag tag_mask;
+    struct rte_flow_action_jump jump;
+    struct rte_flow_attr attr = {
+        .transfer = 1,
+        .ingress = 1,
+    };
+    struct flow_patterns patterns = {
+        .items = (struct rte_flow_item []) {
+            { .type = RTE_FLOW_ITEM_TYPE_PORT_ID, .spec = &port_id, },
+            { .type = RTE_FLOW_ITEM_TYPE_ETH, },
+            { .type = RTE_FLOW_ITEM_TYPE_TAG, .spec = &tag_spec,
+              .mask = &tag_mask },
+            { .type = RTE_FLOW_ITEM_TYPE_END, },
+        },
+        .cnt = 5,
+    };
+    struct flow_actions actions = {
+        .actions = (struct rte_flow_action []) {
+            { .type = RTE_FLOW_ACTION_TYPE_SET_TAG, .conf = &set_tag, },
+            { .type = RTE_FLOW_ACTION_TYPE_JUMP, .conf = &jump, },
+            { .type = RTE_FLOW_ACTION_TYPE_END, .conf = NULL, },
+        },
+        .cnt = 3,
+    };
+    struct reg_field *reg_field;
+    struct rte_flow_error error;
+    struct fixed_rule *fr;
+    uint32_t base_group;
+    uint32_t zone_id;
+    int nat;
+
+    memset(&set_tag, 0, sizeof(set_tag));
+    memset(&jump, 0, sizeof(jump));
+    memset(&port_id, 0, sizeof(port_id));
+    memset(&tag_spec, 0, sizeof(tag_spec));
+    memset(&tag_mask, 0, sizeof(tag_mask));
+
+    port_id.id = netdev_dpdk_get_port_id(netdev);
+
+    /* Merge the tag match for zone and state only if they are
+     * at the same index. */
+    ovs_assert(reg_fields[REG_FIELD_CT_ZONE].index == reg_fields[REG_FIELD_CT_STATE].index);
+
+    for (nat = 0; nat < 2; nat++) {
+        base_group = nat ? CTNAT_TABLE_ID : CT_TABLE_ID;
+
+        for (zone_id = MIN_ZONE_ID; zone_id <= MAX_ZONE_ID; zone_id++) {
+            uint32_t ct_zone_spec, ct_zone_mask;
+            uint32_t ct_state_spec, ct_state_mask;
+
+            attr.group = base_group + zone_id;
+            jump.group = base_group;
+
+            fr = &data->zone_flows[nat][0][zone_id];
+            attr.priority = 0;
+            /* If the zone is the same, and already visited ct/ct-nat, skip
+             * ct/ct-nat and jump directly to post-ct.
+             */
+            reg_field = &reg_fields[REG_FIELD_CT_ZONE];
+            ct_zone_spec = zone_id << reg_field->offset;
+            ct_zone_mask = reg_field->mask << reg_field->offset;
+            reg_field = &reg_fields[REG_FIELD_CT_STATE];
+            ct_state_spec = OVS_CS_F_TRACKED;
+            if (nat) {
+                ct_state_spec |= OVS_CS_F_NAT_MASK;
+            }
+            ct_state_spec <<= reg_field->offset;
+            ct_state_mask = ct_state_spec;
+
+            /* Merge ct_zone and ct_state matches in a single item. */
+            tag_spec.index = reg_field->index;
+            tag_spec.data = ct_zone_spec | ct_state_spec;
+            tag_mask.index = 0xFF;
+            tag_mask.data = ct_zone_mask | ct_state_mask;
+            patterns.items[2].type = RTE_FLOW_ITEM_TYPE_TAG;
+            actions.actions[0].type = RTE_FLOW_ACTION_TYPE_VOID;
+            jump.group = POSTCT_TABLE_ID;
+            fr->flow = create_rte_flow(netdev, &attr, &patterns, &actions,
+                                       &error);
+            fr->creation_tid = tid;
+            if (fr->flow == NULL) {
+                goto err;
+            }
+
+            fr = &data->zone_flows[nat][1][zone_id];
+            attr.priority = 1;
+            /* Otherwise, set the zone and go to CT/CT-NAT. */
+            reg_field = &reg_fields[REG_FIELD_CT_STATE];
+            tag_spec.index = reg_field->index;
+            tag_spec.data = 0;
+            tag_mask.index = 0xFF;
+            tag_mask.data = reg_field->mask << reg_field->offset;
+            patterns.items[2].type = RTE_FLOW_ITEM_TYPE_VOID;
+            reg_field = &reg_fields[REG_FIELD_CT_ZONE];
+            set_tag.index = reg_field->index;
+            set_tag.data = zone_id << reg_field->offset;
+            set_tag.mask = reg_field->mask << reg_field->offset;
+            actions.actions[0].type = RTE_FLOW_ACTION_TYPE_SET_TAG;
+            jump.group = base_group;
+            fr->flow = create_rte_flow(netdev, &attr, &patterns, &actions,
+                                       &error);
+            fr->creation_tid = tid;
+            if (fr->flow == NULL) {
+                goto err;
+            }
+        }
+    }
+
+    return 0;
+
+err:
+    ct_zones_uninit(netdev, tid, data);
+    return -1;
+}
+
+static void
 ct_tables_uninit(struct netdev *netdev, unsigned int tid)
 {
     struct netdev_offload_dpdk_data *data;
@@ -6060,6 +6209,7 @@ ct_tables_uninit(struct netdev *netdev, unsigned int tid)
         ovsrcu_get(void *, &netdev->hw_info.offload_data);
 
     ct_nat_miss_uninit(netdev, tid, &data->ct_nat_miss);
+    ct_zones_uninit(netdev, tid, data);
 }
 
 static int
@@ -6076,6 +6226,7 @@ ct_tables_init(struct netdev *netdev, unsigned int tid)
 
     if (ovsthread_once_start(&data->ct_tables_once)) {
         ct_nat_miss_init(netdev, tid, &data->ct_nat_miss);
+        ct_zones_init(netdev, tid, data);
         ovsthread_once_done(&data->ct_tables_once);
     }
 
