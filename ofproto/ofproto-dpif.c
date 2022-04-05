@@ -5598,6 +5598,7 @@ ct_set_zone_timeout_policy(const char *datapath_type, uint16_t zone_id,
             ct_timeout_policy_unref(backer, ct_zone->ct_tp);
             ct_zone->ct_tp = ct_tp;
             ct_tp->ref_count++;
+            backer->need_revalidate = REV_RECONFIGURE;
         }
     } else {
         struct ct_zone *new_ct_zone = ct_zone_alloc(zone_id);
@@ -5605,6 +5606,7 @@ ct_set_zone_timeout_policy(const char *datapath_type, uint16_t zone_id,
         cmap_insert(&backer->ct_zones, &new_ct_zone->node,
                     hash_int(zone_id, 0));
         ct_tp->ref_count++;
+        backer->need_revalidate = REV_RECONFIGURE;
     }
 }
 
@@ -5621,6 +5623,7 @@ ct_del_zone_timeout_policy(const char *datapath_type, uint16_t zone_id)
     if (ct_zone) {
         ct_timeout_policy_unref(backer, ct_zone->ct_tp);
         ct_zone_remove_and_destroy(backer, ct_zone);
+        backer->need_revalidate = REV_RECONFIGURE;
     }
 }
 
