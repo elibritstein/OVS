@@ -3927,7 +3927,8 @@ parse_flow_match(struct netdev *netdev,
     /* ct-state */
     if (match->wc.masks.ct_state &&
         !((match->wc.masks.ct_state & CS_NEW) &&
-          (match->flow.ct_state & CS_NEW))) {
+          (match->flow.ct_state & CS_NEW)) &&
+        !(match->wc.masks.ct_state & OVS_CS_F_NAT_MASK)) {
         if ((!match->flow.recirc_id &&
              !(match->wc.masks.ct_state & match->flow.ct_state)) ||
             !add_pattern_match_reg_field(patterns, REG_FIELD_CT_STATE,
@@ -5035,24 +5036,59 @@ err:
 }
 
 static void
+set_ct_ctnat_conf(const struct rte_flow_action *actions,
+                  struct rte_flow_action_set_tag *ct_state,
+                  struct rte_flow_action_set_tag *ctnat_state,
+                  const void **ct_conf, const void **ctnat_conf)
+{
+    const struct rte_flow_action_set_tag *set_tag = actions->conf;
+    struct reg_field *rf = &reg_fields[REG_FIELD_CT_STATE];
+
+    *ct_conf = actions->conf;
+    *ctnat_conf = actions->conf;
+
+    /* In case this is not a ct-state set, no need for further changes. */
+    if (actions->type != RTE_FLOW_ACTION_TYPE_SET_TAG ||
+        set_tag->index != rf->index ||
+        set_tag->mask != (rf->mask << rf->offset)) {
+        return;
+    }
+
+    /* For ct-state set, clear NAT bits in ct_conf, and set in ctnat_conf.
+     * Hops following this one will then be able to know that a CT-NAT action
+     * has been executed in the past.
+     */
+    *ct_state = *(const struct rte_flow_action_set_tag *) *ct_conf;
+    *ctnat_state =
+        *(const struct rte_flow_action_set_tag *) *ctnat_conf;
+    ct_state->data &= ((~(uint32_t) OVS_CS_F_NAT_MASK) << rf->offset);
+
+    ctnat_state->data |= OVS_CS_F_NAT_MASK << rf->offset;
+    *ct_conf = ct_state;
+    *ctnat_conf = ctnat_state;
+}
+
+static void
 split_ct_conn_actions(const struct rte_flow_action *actions,
                       struct flow_actions *ct_actions,
                       struct flow_actions *nat_actions,
+                      struct rte_flow_action_set_tag *ct_state,
+                      struct rte_flow_action_set_tag *ctnat_state,
                       uint32_t ctid)
 {
+    const void *ct_conf, *ctnat_conf;
+
     for (; actions && actions->type != RTE_FLOW_ACTION_TYPE_END; actions++) {
-        if (actions->type == RTE_FLOW_ACTION_TYPE_VXLAN_DECAP) {
-            continue;
-        }
+        set_ct_ctnat_conf(actions, ct_state, ctnat_state, &ct_conf, &ctnat_conf);
         if (actions->type != RTE_FLOW_ACTION_TYPE_SET_IPV4_SRC &&
             actions->type != RTE_FLOW_ACTION_TYPE_SET_IPV4_DST &&
             actions->type != RTE_FLOW_ACTION_TYPE_SET_IPV6_SRC &&
             actions->type != RTE_FLOW_ACTION_TYPE_SET_IPV6_DST &&
             actions->type != RTE_FLOW_ACTION_TYPE_SET_TP_SRC &&
             actions->type != RTE_FLOW_ACTION_TYPE_SET_TP_DST) {
-            add_flow_action(ct_actions, actions->type, actions->conf);
+            add_flow_action(ct_actions, actions->type, ct_conf);
         }
-        add_flow_action(nat_actions, actions->type, actions->conf);
+        add_flow_action(nat_actions, actions->type, ctnat_conf);
         if (ctid && actions->type == RTE_FLOW_ACTION_TYPE_COUNT) {
             struct rte_flow_action_count *count;
 
@@ -5076,6 +5112,7 @@ create_ct_conn(struct netdev *netdev,
     struct flow_actions nat_actions = { .actions = NULL, .cnt = 0 };
     struct flow_actions ct_actions = { .actions = NULL, .cnt = 0 };
     struct rte_flow_attr attr = { .ingress = 1, .transfer = 1 };
+    struct rte_flow_action_set_tag ct_state, ctnat_state;
     int ret = -1;
     int pos = 0;
     bool is_ct;
@@ -5084,7 +5121,7 @@ create_ct_conn(struct netdev *netdev,
     fi->has_count[0] = fi->has_count[1] = false;
 
     split_ct_conn_actions(flow_actions->actions, &ct_actions, &nat_actions,
-                          act_resources->ctid);
+                          &ct_state, &ctnat_state, act_resources->ctid);
     is_ct = ct_actions.cnt == nat_actions.cnt;
 
     fi->has_count[0] = true;
