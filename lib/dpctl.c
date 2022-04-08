@@ -44,6 +44,7 @@
 #include "packets.h"
 #include "openvswitch/shash.h"
 #include "simap.h"
+#include "skiplist.h"
 #include "smap.h"
 #include "sset.h"
 #include "timeval.h"
@@ -1010,6 +1011,139 @@ dpctl_free_portno_names(struct hmap *portno_names)
     }
 }
 
+/* Extract the keys listed in 'sort_list' into a ds.
+ * i.e. if 'sort_list' == 'in_port,recirc_id' and 'flow_desc' contains
+ * 'recirc_id(0),in_port(3),eth_type(0x0800), used:never, actions:1'
+ * 'vlist' will return with '3,0'.
+ */
+static void
+dpctl_sorted_flow_key_extract(const char *sort_list, const char *flow_desc,
+                              struct ds *vlist)
+{
+    char *sort_cpy = xstrdup(sort_list);
+    char *key, value[100];
+    char *savep;
+
+    ds_init(vlist);
+    for (key = strtok_r(sort_cpy, ",", &savep); key != NULL;
+         key = strtok_r(NULL, ",", &savep)) {
+        int pcount = 0;
+        int num, mask;
+        size_t i, d;
+        char *s;
+
+        /* ovs_scan does not deal well with parenthesis pairs, so we must
+         * scan manually.
+         *
+         * Extract 'key(%s)' into value.
+         */
+
+        s = strstr(flow_desc, key);
+        if (s == NULL) {
+            continue;
+        }
+        i = strlen(key);
+        if (s[i] != '(') {
+            continue;
+        }
+        for (i += 1, d = 0, pcount = 1;
+             s[i] && pcount != 0 && d < sizeof value; i++) {
+            if (s[i] == '(') {
+                pcount += 1;
+            } else if (s[i] == ')') {
+                pcount -= 1;
+            }
+            if (pcount > 0) {
+                value[d++] = s[i];
+            }
+        }
+        value[d] = '\0';
+
+        /* Attempt to parse some possibly masked values. */
+        num = 0;
+        if (ovs_scan(value, "0x%x/0x%x", &num, &mask) ||
+            ovs_scan(value, "0/0x%x", &mask) ||
+            ovs_scan(value, "%d/%d", &num, &mask)) {
+            num &= mask;
+            /* Writing the masked value in decimal with preceding
+             * zeroes makes it sortable using ascii comparison.
+             */
+            snprintf(value, sizeof value, "%010d", num);
+        }
+
+        /* Append the value to the value list. */
+        if (vlist->length > 0) {
+            ds_put_cstr(vlist, ",");
+        }
+        ds_put_cstr(vlist, value);
+    }
+    free(sort_cpy);
+}
+
+struct sorted_flow_node {
+    char *key;
+    char *flow_desc;
+    int pmd_id;
+};
+
+static int
+dpctl_sorted_flow_cmp(const void *a, const void *b,
+                 const void *conf OVS_UNUSED)
+{
+    const struct sorted_flow_node *node1 = a;
+    const struct sorted_flow_node *node2 = b;
+
+    return strcmp(node1->key, node2->key);
+}
+
+static void
+dpctl_sorted_flow_free(void *_node)
+{
+    struct sorted_flow_node *node = _node;
+
+    if (node != NULL) {
+        free(node->key);
+        free(node->flow_desc);
+        free(node);
+    }
+}
+
+static void
+dpctl_sorted_flow_insert(const char *sort_list,
+                         struct skiplist *sl,
+                         int pmd_id,
+                         const char *flow_desc)
+{
+    struct ds vlist = DS_EMPTY_INITIALIZER;
+    struct sorted_flow_node *node;
+
+    node = xzalloc(sizeof *node);
+    dpctl_sorted_flow_key_extract(sort_list, flow_desc, &vlist);
+    node->key = xstrdup(ds_cstr(&vlist));
+    node->flow_desc = xstrdup(flow_desc);
+    node->pmd_id = pmd_id;
+
+    skiplist_insert(sl, node);
+
+    ds_destroy(&vlist);
+}
+
+static int
+dpctl_validate_sort_list(const char *s)
+{
+    size_t i;
+
+    /* Only accept possible key descriptions: [a-z,_]+
+     * Later parsing expects keys to be separated by commas. */
+    for (i = 0; s[i] != '\0'; i++) {
+        if (!(islower(s[i]) || isdigit(s[i]) ||
+              s[i] == ',' || s[i] == '_')) {
+            return EINVAL;
+        }
+    }
+    return 0;
+}
+
 static int
 dpctl_dump_flows(int argc, const char *argv[], struct dpctl_params *dpctl_p)
 {
@@ -1026,6 +1160,8 @@ dpctl_dump_flows(int argc, const char *argv[], struct dpctl_params *dpctl_p)
     struct dpif_flow_dump_thread *flow_dump_thread;
     struct dpif_flow_dump *flow_dump;
     struct dpif_flow f;
+    struct skiplist *sorted_flows = NULL;
+    char *sort_list = NULL;
     int pmd_id = PMD_ID_NULL;
     bool pmd_id_filter = false;
     int lastargc = 0;
@@ -1054,6 +1190,21 @@ dpctl_dump_flows(int argc, const char *argv[], struct dpctl_params *dpctl_p)
                 pmd_id = NON_PMD_CORE_ID;
             }
             pmd_id_filter = true;
+        } else if (!strncmp(argv[argc - 1], "sort=", 5)) {
+            if (!dpctl_p->is_appctl) {
+                dpctl_error(dpctl_p, 0,
+                            "Invalid argument 'sort'. "
+                            "Use 'ovs-appctl dpctl/dump-flows' instead.");
+                error = EINVAL;
+                goto out_free;
+            }
+            sort_list = xstrdup(argv[--argc] + 5);
+            error = dpctl_validate_sort_list(sort_list);
+            if (error) {
+                dpctl_error(dpctl_p, 0,
+                            "Invalid sort list '%s'.", sort_list);
+                goto out_free;
+            }
         }
     }
 
@@ -1084,6 +1235,10 @@ dpctl_dump_flows(int argc, const char *argv[], struct dpctl_params *dpctl_p)
             error = EINVAL;
             goto out_dpifclose;
         }
+    }
+
+    if (sort_list) {
+        sorted_flows = skiplist_create(dpctl_sorted_flow_cmp, NULL, true);
     }
 
     memset(&dump_types, 0, sizeof dump_types);
@@ -1129,18 +1284,25 @@ dpctl_dump_flows(int argc, const char *argv[], struct dpctl_params *dpctl_p)
          * different pmd threads.  So, separates dumps from different pmds
          * by printing a title line. */
         if (!pmd_id_filter && pmd_id != f.pmd_id) {
-            if (f.pmd_id == NON_PMD_CORE_ID) {
-                ds_put_format(&ds, "flow-dump from the main thread:\n");
-            } else {
-                ds_put_format(&ds, "flow-dump from pmd on cpu core: %d\n",
-                              f.pmd_id);
+            if (!sorted_flows) {
+                if (f.pmd_id == NON_PMD_CORE_ID) {
+                    ds_put_format(&ds, "flow-dump from the main thread:\n");
+                } else {
+                    ds_put_format(&ds, "flow-dump from pmd on cpu core: %d\n",
+                                  f.pmd_id);
+                }
             }
             pmd_id = f.pmd_id;
         }
         if (pmd_id == f.pmd_id &&
             flow_passes_type_filter(&f, &dump_types)) {
             format_dpif_flow(&ds, &f, portno_names, dpctl_p);
-            dpctl_print(dpctl_p, "%s\n", ds_cstr(&ds));
+            if (sorted_flows) {
+                dpctl_sorted_flow_insert(sort_list, sorted_flows,
+                                         f.pmd_id, ds_cstr(&ds));
+            } else {
+                dpctl_print(dpctl_p, "%s\n", ds_cstr(&ds));
+            }
         }
     }
     dpif_flow_dump_thread_destroy(flow_dump_thread);
@@ -1151,12 +1313,41 @@ dpctl_dump_flows(int argc, const char *argv[], struct dpctl_params *dpctl_p)
     }
     ds_destroy(&ds);
 
+    if (sorted_flows) {
+        struct skiplist_node *sl_node;
+
+        pmd_id = PMD_ID_NULL;
+
+        SKIPLIST_FOR_EACH (sl_node, sorted_flows) {
+            struct sorted_flow_node *node;
+            int n_pmd_id;
+
+            node = skiplist_get_data(sl_node);
+            n_pmd_id = node->pmd_id;
+            if (!pmd_id_filter && pmd_id != n_pmd_id) {
+                if (n_pmd_id == NON_PMD_CORE_ID) {
+                    dpctl_print(dpctl_p, "flow-dump from the main thread:\n");
+                } else {
+                    dpctl_print(dpctl_p,
+                                "flow-dump from pmd on cpu core: %d\n",
+                                n_pmd_id);
+                }
+                pmd_id = n_pmd_id;
+            }
+            dpctl_print(dpctl_p, "%s\n", node->flow_desc);
+        }
+    }
+
 out_dpifclose:
+    if (sorted_flows) {
+        skiplist_destroy(sorted_flows, dpctl_sorted_flow_free);
+    }
     dpctl_free_portno_names(portno_names);
     dpif_close(dpif);
 out_free:
     free(filter);
     free(types_list);
+    free(sort_list);
     return error;
 }
 
@@ -2889,8 +3080,8 @@ static const struct dpctl_command all_commands[] = {
     { "set-if", "dp iface...", 2, INT_MAX, dpctl_set_if, DP_RW },
     { "dump-dps", "", 0, 0, dpctl_dump_dps, DP_RO },
     { "show", "[-s] [dp...]", 0, INT_MAX, dpctl_show, DP_RO },
-    { "dump-flows", "[-m] [--names] [dp] [filter=..] [type=..] [pmd=..]",
-      0, 6, dpctl_dump_flows, DP_RO },
+    { "dump-flows", "[-m] [--names] [dp] [filter=..] [type=..] [pmd=..] [sort=..]",
+      0, 7, dpctl_dump_flows, DP_RO },
     { "add-flow", "[dp] flow actions", 2, 3, dpctl_add_flow, DP_RW },
     { "mod-flow", "[dp] flow actions", 2, 3, dpctl_mod_flow, DP_RW },
     { "get-flow", "[dp] ufid", 1, 2, dpctl_get_flow, DP_RO },
