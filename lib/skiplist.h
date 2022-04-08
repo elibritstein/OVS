@@ -28,7 +28,7 @@ struct skiplist_node;
 
 struct skiplist;
 
-#define SKIPLIST_FOR_EACH (SKIPLIST_NODE, SKIPLIST) \
+#define SKIPLIST_FOR_EACH(SKIPLIST_NODE, SKIPLIST) \
     for (SKIPLIST_NODE = skiplist_first(SKIPLIST); \
          SKIPLIST_NODE; \
          SKIPLIST_NODE = skiplist_next(SKIPLIST_NODE))
