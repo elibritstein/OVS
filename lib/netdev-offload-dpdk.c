@@ -4865,6 +4865,10 @@ parse_ct_actions(struct flow_actions *actions,
     act_vars->ct_mode = CT_MODE_CT;
     NL_ATTR_FOR_EACH_UNSAFE (cta, ctleft, ct_actions, ct_actions_len) {
         if (nl_attr_type(cta) == OVS_CT_ATTR_ZONE) {
+            if (act_resources->ct_action_zone_id) {
+                put_zone_id(act_resources->ct_action_zone_id);
+                act_resources->ct_action_zone_id = 0;
+            }
             if (act_resources->flow_id != INVALID_FLOW_MARK &&
                 get_zone_id(nl_attr_get_u16(cta),
                             &act_resources->ct_action_zone_id)) {
@@ -5434,6 +5438,27 @@ parse_flow_actions(struct netdev *netdev,
             if (add_meter_action(actions, nla, act_resources)) {
                 return -1;
             }
+        } else if (nl_attr_type(nla) == OVS_ACTION_ATTR_CT_CLEAR) {
+            if (act_resources->ct_action_label_id) {
+                put_zone_id(act_resources->ct_action_label_id);
+                act_resources->ct_action_label_id = 0;
+            }
+            if (act_resources->ct_action_zone_id) {
+                put_zone_id(act_resources->ct_action_zone_id);
+                act_resources->ct_action_zone_id = 0;
+            }
+            if (get_zone_id(0, &act_resources->ct_action_zone_id)) {
+                return -1;
+            }
+            add_action_set_reg_field(actions, REG_FIELD_CT_STATE, 0,
+                                     reg_fields[REG_FIELD_CT_STATE].mask);
+            add_action_set_reg_field(actions, REG_FIELD_CT_ZONE,
+                                     act_resources->ct_action_zone_id,
+                                     reg_fields[REG_FIELD_CT_ZONE].mask);
+            add_action_set_reg_field(actions, REG_FIELD_CT_MARK, 0,
+                                     reg_fields[REG_FIELD_CT_MARK].mask);
+            add_action_set_reg_field(actions, REG_FIELD_CT_LABEL_ID, 0,
+                                     reg_fields[REG_FIELD_CT_LABEL_ID].mask);
         } else {
             VLOG_DBG_RL(&rl, "Unsupported action type %d", nl_attr_type(nla));
             return -1;
