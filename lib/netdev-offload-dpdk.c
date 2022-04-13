@@ -541,7 +541,6 @@ put_flow_miss_ctx_id(uint32_t flow_ctx_id)
     put_context_data_by_id(&flow_miss_ctx_md, flow_ctx_id);
 }
 
-OVS_UNUSED
 static int
 find_flow_miss_ctx(int flow_ctx_id, struct flow_miss_ctx *ctx)
 {
@@ -2834,6 +2833,7 @@ out:
     return true;
 }
 
+OVS_UNUSED
 static struct netdev *
 get_vport_netdev(const char *dpif_type,
                  struct rte_flow_tunnel *tunnel,
@@ -2860,91 +2860,33 @@ static int
 netdev_offload_dpdk_hw_miss_packet_recover(struct netdev *netdev,
                                            struct dp_packet *packet)
 {
-    struct rte_flow_restore_info rte_restore_info;
-    struct rte_flow_tunnel *rte_tnl;
+    struct flow_miss_ctx flow_miss_ctx;
+    uint32_t flow_miss_ctx_id;
     struct netdev *vport_netdev;
-    struct pkt_metadata *md;
-    struct flow_tnl *md_tnl;
-    odp_port_t vport_odp;
-    int ret = 0;
 
-    ret = netdev_dpdk_rte_flow_get_restore_info(netdev, packet,
-                                                &rte_restore_info, NULL);
-    if (ret) {
-        if (ret == -EOPNOTSUPP) {
-            return -ret;
-        }
-        /* This function is called for every packet, and in most cases there
-         * will be no restore info from the HW, thus error is expected.
-         */
+    if (!dp_packet_has_flow_mark(packet, &flow_miss_ctx_id) ||
+        find_flow_miss_ctx(flow_miss_ctx_id, &flow_miss_ctx)) {
         return 0;
     }
 
-    if (!(rte_restore_info.flags & RTE_FLOW_RESTORE_INFO_TUNNEL)) {
-        return EOPNOTSUPP;
+    if (flow_miss_ctx.vport != ODPP_NONE) {
+        vport_netdev = netdev_ports_get(flow_miss_ctx.vport,
+                                        netdev->dpif_type);
+        if (vport_netdev) {
+            parse_tcp_flags(packet, NULL, NULL, NULL);
+            if (vport_netdev->netdev_class->pop_header) {
+                vport_netdev->netdev_class->pop_header(packet);
+                dp_packet_reset_offload(packet);
+                packet->md.in_port.odp_port = flow_miss_ctx.vport;
+            } else {
+                VLOG_ERR("vport nedtdev=%s with no pop_header method",
+                         netdev_get_name(vport_netdev));
+            }
+            netdev_close(vport_netdev);
+        }
     }
 
-    rte_tnl = &rte_restore_info.tunnel;
-    vport_netdev = get_vport_netdev(netdev->dpif_type, rte_tnl,
-                                    &vport_odp);
-    if (!vport_netdev) {
-        VLOG_WARN_RL(&rl, "Could not find vport netdev");
-        return EOPNOTSUPP;
-    }
-
-    md = &packet->md;
-    /* For tunnel recovery (RTE_FLOW_RESTORE_INFO_TUNNEL), it is possible
-     * to have the packet to still be encapsulated, or not.  This is reflected
-     * by the RTE_FLOW_RESTORE_INFO_ENCAPSULATED flag.
-     * In the case it is on, the packet is still encapsulated, and we do
-     * the pop in SW.
-     * In the case it is off, the packet is already decapsulated by HW, and
-     * the tunnel info is provided in the tunnel struct.  For this case we
-     * take it to OVS metadata.
-     */
-    if (rte_restore_info.flags & RTE_FLOW_RESTORE_INFO_ENCAPSULATED) {
-        if (!vport_netdev->netdev_class ||
-            !vport_netdev->netdev_class->pop_header) {
-            VLOG_ERR_RL(&rl, "vport nedtdev=%s with no pop_header method",
-                        netdev_get_name(vport_netdev));
-            ret = EOPNOTSUPP;
-            goto close_vport_netdev;
-        }
-        parse_tcp_flags(packet, NULL, NULL, NULL);
-        if (vport_netdev->netdev_class->pop_header(packet) == NULL) {
-            /* If there is an error with popping the header, the packet is
-             * freed. In this case it should not continue SW processing.
-             */
-            ret = EINVAL;
-            goto close_vport_netdev;
-        }
-    } else {
-        md_tnl = &md->tunnel;
-        if (rte_tnl->is_ipv6) {
-            memcpy(&md_tnl->ipv6_src, &rte_tnl->ipv6.src_addr,
-                   sizeof md_tnl->ipv6_src);
-            memcpy(&md_tnl->ipv6_dst, &rte_tnl->ipv6.dst_addr,
-                   sizeof md_tnl->ipv6_dst);
-        } else {
-            md_tnl->ip_src = rte_tnl->ipv4.src_addr;
-            md_tnl->ip_dst = rte_tnl->ipv4.dst_addr;
-        }
-        md_tnl->tun_id = htonll(rte_tnl->tun_id);
-        md_tnl->flags = rte_tnl->tun_flags;
-        md_tnl->ip_tos = rte_tnl->tos;
-        md_tnl->ip_ttl = rte_tnl->ttl;
-        md_tnl->tp_src = rte_tnl->tp_src;
-    }
-    /* Change the in_port to the vport's one, in order to continue packet
-     * processing in SW.
-     */
-    md->in_port.odp_port = vport_odp;
-    dp_packet_reset_offload(packet);
-
-close_vport_netdev:
-    netdev_close(vport_netdev);
-
-    return ret;
+    return 0;
 }
 
 static int
