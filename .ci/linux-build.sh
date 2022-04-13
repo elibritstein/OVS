@@ -159,10 +159,6 @@ function install_dpdk()
     # Disable building DPDK unit tests. Not needed for OVS build or tests.
     DPDK_OPTS="$DPDK_OPTS -Dtests=false"
 
-    # Disable DPDK developer mode, this results in less build checks and less
-    # meson verbose outputs.
-    DPDK_OPTS="$DPDK_OPTS -Ddeveloper_mode=disabled"
-
     # Install DPDK using prefix.
     DPDK_OPTS="$DPDK_OPTS --prefix=$(pwd)/build"
 
@@ -220,7 +216,7 @@ fi
 
 if [ "$DPDK" ] || [ "$DPDK_SHARED" ]; then
     if [ -z "$DPDK_VER" ]; then
-        DPDK_VER="21.11"
+        DPDK_VER="20.11.1"
     fi
     install_dpdk $DPDK_VER
 fi
