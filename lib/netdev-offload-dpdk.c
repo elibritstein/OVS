@@ -58,6 +58,7 @@ static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(600, 600);
 
 struct act_resources {
     uint32_t next_table_id;
+    uint32_t self_table_id;
     uint32_t flow_miss_ctx_id;
 };
 
@@ -548,6 +549,7 @@ put_flow_miss_ctx_id(uint32_t flow_ctx_id)
 static void
 put_action_resources(struct act_resources *act_resources)
 {
+    put_table_id(act_resources->self_table_id);
     put_table_id(act_resources->next_table_id);
     put_flow_miss_ctx_id(act_resources->flow_miss_ctx_id);
 }
@@ -1136,6 +1138,8 @@ dump_flow_action(struct ds *s, struct ds *s_extra,
             ds_put_format(s, "group %"PRIu32" ", jump->group);
         }
         ds_put_cstr(s, "/ ");
+    } else if (actions->type == RTE_FLOW_ACTION_TYPE_VXLAN_DECAP) {
+        ds_put_cstr(s, "vxlan_decap / ");
     } else {
         ds_put_format(s, "unknown rte flow action (%d)\n", actions->type);
     }
@@ -1362,6 +1366,7 @@ free_flow_actions(struct flow_actions *actions)
     ds_destroy(&actions->s_tnl);
 }
 
+OVS_UNUSED
 static int
 vport_to_rte_tunnel(struct netdev *vport,
                     struct rte_flow_tunnel *tunnel,
@@ -1402,35 +1407,17 @@ add_vport_match(struct flow_patterns *patterns,
                 odp_port_t orig_in_port,
                 struct netdev *tnldev)
 {
-    struct rte_flow_item *tnl_pmd_items;
-    struct rte_flow_tunnel tunnel;
-    struct rte_flow_error error;
-    uint32_t tnl_pmd_items_cnt;
     struct netdev *physdev;
-    int ret;
 
     physdev = netdev_ports_get(orig_in_port, tnldev->dpif_type);
     if (physdev == NULL) {
         return -1;
     }
 
-    ret = vport_to_rte_tunnel(tnldev, &tunnel, physdev, &patterns->s_tnl);
-    if (ret) {
-        goto out;
-    }
-    ret = netdev_dpdk_rte_flow_tunnel_match(physdev, &tunnel, &tnl_pmd_items,
-                                            &tnl_pmd_items_cnt, &error);
-    if (ret) {
-        VLOG_DBG_RL(&rl, "%s: netdev_dpdk_rte_flow_tunnel_match failed: "
-                    "%d (%s).", netdev_get_name(physdev), error.type,
-                    error.message);
-        goto out;
-    }
-    add_flow_tnl_items(patterns, physdev, tnl_pmd_items, tnl_pmd_items_cnt);
+    add_flow_tnl_items(patterns, physdev, NULL, 0);
 
-out:
     netdev_close(physdev);
-    return ret;
+    return 0;
 }
 
 static int
@@ -1646,7 +1633,8 @@ static int
 parse_flow_match(struct netdev *netdev,
                  odp_port_t orig_in_port OVS_UNUSED,
                  struct flow_patterns *patterns,
-                 struct match *match)
+                 struct match *match,
+                 struct act_resources *act_resources)
 {
     struct flow *consumed_masks;
     uint8_t proto = 0;
@@ -1660,7 +1648,9 @@ parse_flow_match(struct netdev *netdev,
     patterns->physdev = netdev;
 #ifdef ALLOW_EXPERIMENTAL_API /* Packet restoration API required. */
     if (netdev_vport_is_vport_class(netdev->netdev_class) &&
-        parse_flow_tnl_match(netdev, patterns, orig_in_port, match)) {
+        (parse_flow_tnl_match(netdev, patterns, orig_in_port, match) ||
+         get_table_id(match->flow.in_port.odp_port,
+                      &act_resources->self_table_id))) {
         return -1;
     }
 #endif
@@ -2402,16 +2392,26 @@ add_tnl_pop_action(struct flow_actions *actions,
     return 0;
 }
 
+static void
+add_vxlan_decap_action(struct flow_actions *actions)
+{
+    add_flow_action(actions, RTE_FLOW_ACTION_TYPE_VXLAN_DECAP, NULL);
+}
+
 static int
 parse_flow_actions(struct netdev *netdev,
                    struct flow_actions *actions,
                    struct nlattr *nl_actions,
                    size_t nl_actions_len,
-                   struct act_resources *act_resources)
+                   struct act_resources *act_resources,
+                   struct netdev *tnldev)
 {
     struct nlattr *nla;
     size_t left;
 
+    if (nl_actions_len != 0 && !strcmp(netdev_get_type(tnldev), "vxlan")) {
+        add_vxlan_decap_action(actions);
+    }
     add_count_action(actions);
     NL_ATTR_FOR_EACH_UNSAFE (nla, left, nl_actions, nl_actions_len) {
         if (nl_attr_type(nla) == OVS_ACTION_ATTR_OUTPUT) {
@@ -2473,9 +2473,10 @@ netdev_offload_dpdk_actions(struct netdev *netdev,
                             struct flow_patterns *patterns,
                             struct nlattr *nl_actions,
                             size_t actions_len,
-                            struct act_resources *act_resources)
+                            struct act_resources *act_resources,
+                            struct netdev *tnldev)
 {
-    const struct rte_flow_attr flow_attr = { .ingress = 1, .transfer = 1 };
+    struct rte_flow_attr flow_attr = { .ingress = 1, .transfer = 1 };
     struct flow_actions actions = {
         .actions = NULL,
         .cnt = 0,
@@ -2486,10 +2487,11 @@ netdev_offload_dpdk_actions(struct netdev *netdev,
     int ret;
 
     ret = parse_flow_actions(netdev, &actions, nl_actions, actions_len,
-                             act_resources);
+                             act_resources, tnldev);
     if (ret) {
         goto out;
     }
+    flow_attr.group = act_resources->self_table_id;
     flow = netdev_offload_dpdk_flow_create(netdev, &flow_attr, patterns,
                                            &actions, &error);
 out:
@@ -2518,7 +2520,8 @@ netdev_offload_dpdk_add_flow(struct netdev *netdev,
 
     memset(&act_resources, 0, sizeof act_resources);
 
-    ret = parse_flow_match(netdev, info->orig_in_port, &patterns, match);
+    ret = parse_flow_match(netdev, info->orig_in_port, &patterns, match,
+                           &act_resources);
     if (ret) {
         VLOG_DBG_RL(&rl, "%s: matches of ufid "UUID_FMT" are not supported",
                     netdev_get_name(netdev), UUID_ARGS((struct uuid *) ufid));
@@ -2526,7 +2529,7 @@ netdev_offload_dpdk_add_flow(struct netdev *netdev,
     }
 
     flow = netdev_offload_dpdk_actions(patterns.physdev, &patterns, nl_actions,
-                                       actions_len, &act_resources);
+                                       actions_len, &act_resources, netdev);
     if (!flow && !netdev_vport_is_vport_class(netdev->netdev_class)) {
         /* If we failed to offload the rule actions fallback to MARK+RSS
          * actions.
