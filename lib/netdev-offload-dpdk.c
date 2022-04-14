@@ -5474,8 +5474,15 @@ netdev_offload_dpdk_add_flow(struct netdev *netdev,
     ret = parse_flow_match(netdev, info->orig_in_port, &patterns, match,
                            &act_resources, &act_vars);
     if (ret) {
-        VLOG_DBG_RL(&rl, "%s: matches of ufid "UUID_FMT" are not supported",
-                    netdev_get_name(netdev), UUID_ARGS((struct uuid *) ufid));
+        if (OVS_UNLIKELY(!VLOG_DROP_DBG((&rl)))) {
+            struct ds match_ds = DS_EMPTY_INITIALIZER;
+
+            match_format(match, NULL, &match_ds, OFP_DEFAULT_PRIORITY);
+            VLOG_DBG("%s: some matches of ufid "UUID_FMT" are not supported: %s",
+                     netdev_get_name(netdev), UUID_ARGS((struct uuid *) ufid),
+                     ds_cstr(&match_ds));
+            ds_destroy(&match_ds);
+        }
         goto out;
     }
 
