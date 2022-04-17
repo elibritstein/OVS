@@ -3219,16 +3219,71 @@ parse_ct_actions(struct flow_actions *actions,
     return 0;
 }
 
-static int
-create_ct_conn(struct netdev *netdev OVS_UNUSED,
-               struct flow_patterns *flow_patterns OVS_UNUSED,
-               struct flow_actions *flow_actions OVS_UNUSED,
-               struct rte_flow_error *error OVS_UNUSED,
-               struct act_resources *act_resources OVS_UNUSED,
-               struct flow_item *fi OVS_UNUSED)
+static void
+split_ct_conn_actions(const struct rte_flow_action *actions,
+                      struct flow_actions *ct_actions,
+                      struct flow_actions *nat_actions)
 {
-    VLOG_DBG_RL(&rl, "create CT conn is not supported");
-    return -1;
+    for (; actions && actions->type != RTE_FLOW_ACTION_TYPE_END; actions++) {
+        if (actions->type == RTE_FLOW_ACTION_TYPE_VXLAN_DECAP) {
+            continue;
+        }
+        if (actions->type != RTE_FLOW_ACTION_TYPE_SET_IPV4_SRC &&
+            actions->type != RTE_FLOW_ACTION_TYPE_SET_IPV4_DST &&
+            actions->type != RTE_FLOW_ACTION_TYPE_SET_IPV6_SRC &&
+            actions->type != RTE_FLOW_ACTION_TYPE_SET_IPV6_DST &&
+            actions->type != RTE_FLOW_ACTION_TYPE_SET_TP_SRC &&
+            actions->type != RTE_FLOW_ACTION_TYPE_SET_TP_DST) {
+            add_flow_action(ct_actions, actions->type, actions->conf);
+        }
+        add_flow_action(nat_actions, actions->type, actions->conf);
+    }
+    add_flow_action(ct_actions, RTE_FLOW_ACTION_TYPE_END, NULL);
+    add_flow_action(nat_actions, RTE_FLOW_ACTION_TYPE_END, NULL);
+}
+
+static int
+create_ct_conn(struct netdev *netdev,
+               struct flow_patterns *flow_patterns,
+               struct flow_actions *flow_actions,
+               struct rte_flow_error *error,
+               struct act_resources *act_resources,
+               struct flow_item *fi)
+{
+    struct flow_actions nat_actions = { .actions = NULL, .cnt = 0 };
+    struct flow_actions ct_actions = { .actions = NULL, .cnt = 0 };
+    struct rte_flow_attr attr = { .ingress = 1, .transfer = 1 };
+    int ret = -1;
+
+    split_ct_conn_actions(flow_actions->actions, &ct_actions, &nat_actions);
+    attr.group = CTNAT_TABLE_ID;
+    fi->has_count[0] = true;
+    fi->rte_flow[1] = create_rte_flow(netdev, &attr, flow_patterns,
+                                      &nat_actions, error);
+    ret = fi->rte_flow[1] == NULL ? -1 : 0;
+    if (ret) {
+        goto out;
+    }
+
+    put_table_id(act_resources->self_table_id);
+    act_resources->self_table_id = 0;
+    attr.group = CT_TABLE_ID;
+    fi->has_count[1] = true;
+
+    fi->rte_flow[0] = create_rte_flow(netdev, &attr, flow_patterns,
+                                      &ct_actions, error);
+    ret = fi->rte_flow[0] == NULL ? -1 : 0;
+    if (ret) {
+        goto ct_err;
+    }
+    goto out;
+
+ct_err:
+    netdev_offload_dpdk_destroy_flow(netdev, fi->rte_flow[1], NULL);
+out:
+    free_flow_actions(&ct_actions, false);
+    free_flow_actions(&nat_actions, false);
+    return ret;
 }
 
 static void
