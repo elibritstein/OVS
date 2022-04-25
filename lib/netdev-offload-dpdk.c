@@ -1009,6 +1009,16 @@ table_id_alloc(void)
     return 0;
 }
 
+static struct rte_flow *
+add_miss_flow(struct netdev *netdev,
+              uint32_t table_id,
+              uint32_t mark_id);
+
+static int
+netdev_offload_dpdk_destroy_flow(struct netdev *netdev,
+                                 struct rte_flow *rte_flow,
+                                 const ovs_u128 *ufid);
+
 static void
 table_id_free(uint32_t id)
 {
@@ -1259,6 +1269,47 @@ dump_flow_ctx_id(struct ds *s, void *data)
     return s;
 }
 
+struct flow_miss_ctx_priv_arg {
+    struct netdev *netdev;
+    uint32_t table_id;
+};
+
+struct flow_miss_ctx_priv {
+    struct netdev *netdev;
+    struct rte_flow *miss_flow;
+};
+
+static int
+flow_miss_ctx_ref(void *priv_, void *priv_arg_, uint32_t mark_id)
+{
+    struct flow_miss_ctx_priv_arg *priv_arg = priv_arg_;
+    struct flow_miss_ctx_priv *priv = priv_;
+
+    priv->netdev = netdev_ref(priv_arg->netdev);
+    priv->miss_flow = add_miss_flow(priv->netdev, priv_arg->table_id, mark_id);
+
+    if (priv->miss_flow == NULL) {
+        netdev_close(priv->netdev);
+        priv->netdev = NULL;
+        return -1;
+    }
+
+    return 0;
+}
+
+static void
+flow_miss_ctx_unref(void *priv_)
+{
+    struct flow_miss_ctx_priv *priv = priv_;
+
+    if (!priv->netdev) {
+       return;
+    }
+
+    netdev_offload_dpdk_destroy_flow(priv->netdev, priv->miss_flow, NULL);
+    netdev_close(priv->netdev);
+}
+
 static struct context_metadata flow_miss_ctx_md = {
     .name = "flow_miss_ctx",
     .dump_context_data = dump_flow_ctx_id,
@@ -1271,17 +1322,26 @@ static struct context_metadata flow_miss_ctx_md = {
     .id_free = netdev_offload_flow_mark_free,
     .data_size = sizeof(struct flow_miss_ctx),
     .delayed_release = true,
+    .priv_size = sizeof(struct flow_miss_ctx_priv),
+    .priv_ref = flow_miss_ctx_ref,
+    .priv_unref = flow_miss_ctx_unref,
 };
 
 static int
 get_flow_miss_ctx_id(struct flow_miss_ctx *flow_ctx_data,
+                     struct netdev *netdev,
+                     uint32_t table_id,
                      uint32_t *miss_ctx_id)
 {
+    struct flow_miss_ctx_priv_arg priv_arg = {
+        .netdev = netdev,
+        .table_id = table_id,
+    };
     struct context_data flow_ctx = {
         .data = flow_ctx_data,
     };
 
-    return get_context_data_id_by_data(&flow_miss_ctx_md, &flow_ctx, NULL,
+    return get_context_data_id_by_data(&flow_miss_ctx_md, &flow_ctx, &priv_arg,
                                        miss_ctx_id);
 }
 
@@ -3454,16 +3514,6 @@ parse_clone_actions(struct netdev *netdev,
 }
 
 static void
-add_mark_action(struct flow_actions *actions,
-                uint32_t mark_id)
-{
-    struct rte_flow_action_mark *mark = xzalloc(sizeof *mark);
-
-    mark->id = mark_id;
-    add_flow_action(actions, RTE_FLOW_ACTION_TYPE_MARK, mark);
-}
-
-static void
 add_jump_action(struct flow_actions *actions, uint32_t group)
 {
     struct rte_flow_action_jump *jump = xzalloc (sizeof *jump);
@@ -3472,7 +3522,6 @@ add_jump_action(struct flow_actions *actions, uint32_t group)
     add_flow_action(actions, RTE_FLOW_ACTION_TYPE_JUMP, jump);
 }
 
-OVS_UNUSED
 static struct rte_flow *
 add_miss_flow(struct netdev *netdev,
               uint32_t table_id,
@@ -3506,7 +3555,8 @@ add_miss_flow(struct netdev *netdev,
 }
 
 static int OVS_UNUSED
-add_tnl_pop_action(struct flow_actions *actions,
+add_tnl_pop_action(struct netdev *netdev,
+                   struct flow_actions *actions,
                    const struct nlattr *nla,
                    struct act_resources *act_resources)
 {
@@ -3517,11 +3567,11 @@ add_tnl_pop_action(struct flow_actions *actions,
     miss_ctx.vport = port;
     miss_ctx.recirc_id = 0;
     memset(&miss_ctx.tnl, 0, sizeof miss_ctx.tnl);
-    if (get_flow_miss_ctx_id(&miss_ctx, &act_resources->flow_miss_ctx_id)) {
+    if (get_table_id(port, 0, &act_resources->next_table_id)) {
         return -1;
     }
-    add_mark_action(actions, act_resources->flow_miss_ctx_id);
-    if (get_table_id(port, 0, &act_resources->next_table_id)) {
+    if (get_flow_miss_ctx_id(&miss_ctx, netdev, act_resources->next_table_id,
+                             &act_resources->flow_miss_ctx_id)) {
         return -1;
     }
     add_jump_action(actions, act_resources->next_table_id);
@@ -3529,7 +3579,8 @@ add_tnl_pop_action(struct flow_actions *actions,
 }
 
 static int
-add_recirc_action(struct flow_actions *actions,
+add_recirc_action(struct netdev *netdev,
+                  struct flow_actions *actions,
                   const struct nlattr *nla,
                   struct act_resources *act_resources,
                   struct act_vars *act_vars)
@@ -3544,12 +3595,12 @@ add_recirc_action(struct flow_actions *actions,
     } else {
         memset(&miss_ctx.tnl, 0, sizeof miss_ctx.tnl);
     }
-    if (get_flow_miss_ctx_id(&miss_ctx, &act_resources->flow_miss_ctx_id)) {
-        return -1;
-    }
-    add_mark_action(actions, act_resources->flow_miss_ctx_id);
     if (get_table_id(act_vars->vport, miss_ctx.recirc_id,
         &act_resources->next_table_id)) {
+        return -1;
+    }
+    if (get_flow_miss_ctx_id(&miss_ctx, netdev, act_resources->next_table_id,
+                             &act_resources->flow_miss_ctx_id)) {
         return -1;
     }
     if (act_vars->vport != ODPP_NONE && act_vars->recirc_id == 0) {
@@ -3929,12 +3980,13 @@ parse_flow_actions(struct netdev *netdev,
             }
 #ifdef ALLOW_EXPERIMENTAL_API /* Packet restoration API required. */
         } else if (nl_attr_type(nla) == OVS_ACTION_ATTR_TUNNEL_POP) {
-            if (add_tnl_pop_action(actions, nla, act_resources)) {
+            if (add_tnl_pop_action(netdev, actions, nla, act_resources)) {
                 return -1;
             }
 #endif
         } else if (nl_attr_type(nla) == OVS_ACTION_ATTR_RECIRC) {
-            if (add_recirc_action(actions, nla, act_resources, act_vars)) {
+            if (add_recirc_action(netdev, actions, nla, act_resources,
+                                  act_vars)) {
                 return -1;
             }
         } else if (nl_attr_type(nla) == OVS_ACTION_ATTR_CT) {
