@@ -3926,7 +3926,8 @@ parse_flow_match(struct netdev *netdev,
 
     /* ct-state */
     if (match->wc.masks.ct_state &&
-        !(match->wc.masks.ct_state & match->flow.ct_state & CS_NEW)) {
+        !((match->wc.masks.ct_state & CS_NEW) &&
+          (match->flow.ct_state & CS_NEW))) {
         if ((!match->flow.recirc_id &&
              !(match->wc.masks.ct_state & match->flow.ct_state)) ||
             !add_pattern_match_reg_field(patterns, REG_FIELD_CT_STATE,
