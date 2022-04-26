@@ -1017,7 +1017,8 @@ table_id_alloc(void)
 
 static struct rte_flow *
 add_miss_flow(struct netdev *netdev,
-              uint32_t table_id,
+              uint32_t src_table_id,
+              uint32_t dst_table_id,
               uint32_t mark_id);
 
 static int
@@ -1292,7 +1293,8 @@ flow_miss_ctx_ref(void *priv_, void *priv_arg_, uint32_t mark_id)
     struct flow_miss_ctx_priv *priv = priv_;
 
     priv->netdev = netdev_ref(priv_arg->netdev);
-    priv->miss_flow = add_miss_flow(priv->netdev, priv_arg->table_id, mark_id);
+    priv->miss_flow = add_miss_flow(priv->netdev, priv_arg->table_id,
+                                    MISS_TABLE_ID, mark_id);
 
     if (priv->miss_flow == NULL) {
         netdev_close(priv->netdev);
@@ -3530,7 +3532,8 @@ add_jump_action(struct flow_actions *actions, uint32_t group)
 
 static struct rte_flow *
 add_miss_flow(struct netdev *netdev,
-              uint32_t table_id,
+              uint32_t src_table_id,
+              uint32_t dst_table_id,
               uint32_t mark_id)
 {
     struct rte_flow_attr miss_attr = { .ingress = 1, .transfer = 1,
@@ -3542,7 +3545,7 @@ add_miss_flow(struct netdev *netdev,
         },
         .cnt = 2,
     };
-    struct rte_flow_action_jump miss_jump = { .group = MISS_TABLE_ID, };
+    struct rte_flow_action_jump miss_jump = { .group = dst_table_id, };
     struct rte_flow_action_mark miss_mark;
     struct flow_actions miss_actions = {
         .actions = (struct rte_flow_action []) {
@@ -3554,8 +3557,13 @@ add_miss_flow(struct netdev *netdev,
     };
     struct rte_flow_error error;
 
-    miss_attr.group = table_id;
+    miss_attr.group = src_table_id;
     miss_mark.id = mark_id;
+    if (mark_id == INVALID_FLOW_MARK) {
+        miss_actions.actions++;
+        miss_actions.cnt--;
+    }
+
     return create_rte_flow(netdev, &miss_attr, &miss_patterns, &miss_actions,
                            &error);
 }
