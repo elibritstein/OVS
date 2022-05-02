@@ -57,6 +57,11 @@ static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(600, 600);
  * A mapping from ufid to dpdk rte_flow.
  */
 
+struct shared_age_ctx {
+    struct rte_flow_action_handle *act_hdl;
+    struct netdev *netdev;
+};
+
 struct act_resources {
     uint32_t next_table_id;
     uint32_t self_table_id;
@@ -1449,6 +1454,130 @@ static int
 disassociate_flow_id(uint32_t flow_id)
 {
     return disassociate_id_data(&flow_miss_ctx_md, flow_id);
+}
+
+static struct context_metadata shared_age_md = {
+    .name = "shared-age",
+    .maps_lock = OVS_MUTEX_INITIALIZER,
+    .d2i_map = CMAP_INITIALIZER,
+    .data_size = sizeof(uintptr_t),
+    .priv_size = sizeof(struct shared_age_ctx),
+};
+
+OVS_UNUSED
+static struct shared_age_ctx **
+get_shared_age_ctx(struct netdev *netdev,
+                   uintptr_t app_counter_id,
+                   bool create)
+{
+    struct context_metadata *md = &shared_age_md;
+    struct rte_flow_action_age age_conf = {
+        .timeout = 0xFFFFFF,
+    };
+    struct rte_flow_action action = {
+        .type = RTE_FLOW_ACTION_TYPE_AGE,
+        .conf = &age_conf,
+    };
+    struct context_data *data_cur;
+    struct rte_flow_error error;
+    struct shared_age_ctx *ctx;
+    size_t data_size;
+    size_t dhash;
+
+    dhash = hash_bytes(&app_counter_id, sizeof app_counter_id, 0);
+    CMAP_FOR_EACH_WITH_HASH (data_cur, d2i_node, dhash, &md->d2i_map) {
+        if (app_counter_id == *((uintptr_t *) data_cur->data)) {
+            if (!context_data_ref(md, data_cur, dhash)) {
+                /* If a reference could not be taken, it means that
+                 * while the data has been found within the map, it has
+                 * since been removed and related ID freed. At this point,
+                 * allocate a new data node altogether. */
+                break;
+            }
+            return (struct shared_age_ctx **) &data_cur->priv;
+        }
+    }
+
+    if (!create) {
+        return NULL;
+    }
+
+    data_cur = xzalloc(sizeof *data_cur);
+    if (!data_cur) {
+        return NULL;
+    }
+    data_size = ROUND_UP(md->data_size, 8);
+    data_cur->data = xmalloc(data_size + md->priv_size);
+    if (!data_cur->data) {
+        goto err_data_alloc;
+    }
+    data_cur->priv = (uint8_t *) data_cur->data + data_size;
+    ctx = data_cur->priv;
+    ctx->act_hdl = netdev_dpdk_indirect_action_create(netdev, &action, &error);
+    if (ctx->act_hdl == NULL) {
+        goto err_indir;
+    }
+    ctx->netdev = netdev;
+
+    *((uintptr_t *) data_cur->data) = app_counter_id;
+    ovs_refcount_init(&data_cur->refcount);
+    ovs_mutex_lock(&md->maps_lock);
+    data_cur->d2i_hash = dhash;
+    cmap_insert(&md->d2i_map, &data_cur->d2i_node, dhash);
+    ovs_mutex_unlock(&md->maps_lock);
+
+    return (struct shared_age_ctx **) &data_cur->priv;
+
+err_indir:
+    free(data_cur->data);
+err_data_alloc:
+    free(data_cur);
+    return NULL;
+}
+
+static void
+context_data_unref(struct context_data *data)
+{
+    free(data->data);
+    free(data);
+}
+
+OVS_UNUSED
+static void
+put_shared_age_ctx(struct shared_age_ctx **pctx)
+{
+    struct context_metadata *md = &shared_age_md;
+    struct rte_flow_error error;
+    struct shared_age_ctx *ctx;
+    struct context_data *data;
+
+    if (pctx == NULL) {
+        return;
+    }
+
+    data = CONTAINER_OF(pctx, struct context_data, priv);
+    ctx = *pctx;
+
+    ovs_mutex_lock(&md->maps_lock);
+
+    if (ovs_refcount_unref(&data->refcount) > 1) {
+        /* Data has been referenced again since delayed release request. */
+        goto out;
+    }
+
+    cmap_remove(&md->d2i_map, &data->d2i_node, data->d2i_hash);
+    if (ctx->netdev == NULL || ctx->act_hdl == NULL) {
+        goto err;
+    }
+
+    netdev_dpdk_indirect_action_destroy(ctx->netdev, ctx->act_hdl, &error);
+    ctx->netdev = NULL;
+    ctx->act_hdl = NULL;
+
+err:
+    ovsrcu_postpone(context_data_unref, data);
+out:
+    ovs_mutex_unlock(&md->maps_lock);
 }
 
 static void
