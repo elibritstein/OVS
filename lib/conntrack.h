@@ -234,5 +234,8 @@ int zone_limit_update(struct conntrack *ct, int32_t zone, uint32_t limit);
 int zone_limit_delete(struct conntrack *ct, uint16_t zone);
 void conntrack_set_offload_class(struct conntrack *,
                                  struct conntrack_offload_class *);
+void
+conntrack_offload_del_conn(struct conntrack *ct,
+                           struct conn *conn);
 
 #endif /* conntrack.h */

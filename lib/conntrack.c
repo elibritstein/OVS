@@ -320,7 +320,7 @@ conntrack_offload_fill_item_common(struct ct_flow_offload_item *item,
            : !!(conn->offloads.flags & CT_OFFLOAD_INIT);
 }
 
-static void
+void
 conntrack_offload_del_conn(struct conntrack *ct,
                            struct conn *conn)
     OVS_REQUIRES(conn->lock, ct->ct_lock)
