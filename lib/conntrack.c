@@ -357,6 +357,11 @@ conntrack_offload_del_conn(struct conntrack *ct,
             dp = conn_dir->offloads.dir_info[dir].dp;
             offload_class->conn_e2e_del(&item[dir].ufid, dp);
         }
+        /* Set conn_dir->offloads.dir_info[CT_DIR_INIT].status = false
+         * to indicate that the offload of the connection is deleted.
+         */
+        conn_dir->offloads.dir_info[CT_DIR_INIT].status = false;
+        conn_dir->offloads.dir_info[CT_DIR_REP].status = false;
     }
     item[CT_DIR_INIT].refcnt = conn->offloads.refcnt;
     item[CT_DIR_REP].refcnt = NULL;
