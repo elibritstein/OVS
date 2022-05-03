@@ -3469,7 +3469,12 @@ dp_netdev_offload_ct_enqueue(struct dp_offload_thread_item *item)
 
     ovs_assert(item->type == DP_OFFLOAD_CT);
 
-    tid = netdev_offload_ufid_to_thread_id(ct_offload->ufid);
+    /* Use a symmetrical ufid hash for the two CT directions,
+     * to force-match thread-id on reverse direction. */
+    tid = netdev_offload_ufid_to_thread_id(
+                                    ovs_u128_xor(ct_offload[CT_DIR_INIT].ufid,
+                                                 ct_offload[CT_DIR_REP].ufid));
+
     dp_netdev_append_offload(item, tid);
 }
 
