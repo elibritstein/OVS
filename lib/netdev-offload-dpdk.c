@@ -40,6 +40,8 @@
 VLOG_DEFINE_THIS_MODULE(netdev_offload_dpdk);
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(600, 600);
 
+static bool netdev_offload_dpdk_ct_labels_mapping = false;
+
 /* Thread-safety
  * =============
  *
@@ -3966,22 +3968,35 @@ parse_flow_match(struct netdev *netdev,
     if (!act_vars->is_ct_conn &&
         !is_all_zeros(&match->wc.masks.ct_label,
                       sizeof match->wc.masks.ct_label)) {
-        ovs_u128 tmp_u128;
-        uint32_t mask;
+        uint32_t value, mask;
 
-        tmp_u128.u64.lo = match->flow.ct_label.u64.lo &
-                          match->wc.masks.ct_label.u64.lo;
-        tmp_u128.u64.hi = match->flow.ct_label.u64.hi &
-                          match->wc.masks.ct_label.u64.hi;
-        if (get_label_id(&tmp_u128, &act_resources->ct_match_label_id)) {
-            return -1;
+        if (netdev_offload_dpdk_ct_labels_mapping) {
+            ovs_u128 tmp_u128;
+
+            tmp_u128.u64.lo = match->flow.ct_label.u64.lo &
+                              match->wc.masks.ct_label.u64.lo;
+            tmp_u128.u64.hi = match->flow.ct_label.u64.hi &
+                              match->wc.masks.ct_label.u64.hi;
+            if (get_label_id(&tmp_u128, &act_resources->ct_match_label_id)) {
+                return -1;
+            }
+            value = act_resources->ct_match_label_id;
+            mask = reg_fields[REG_FIELD_CT_LABEL_ID].mask;
+        } else {
+            if (match->wc.masks.ct_label.u32[1] ||
+                match->wc.masks.ct_label.u32[2] ||
+                match->wc.masks.ct_label.u32[3]) {
+                return -1;
+            }
+
+            value = match->flow.ct_label.u32[0];
+            mask = match->wc.masks.ct_label.u32[0];
         }
-        mask = reg_fields[REG_FIELD_CT_LABEL_ID].mask;
+
         if (!add_pattern_match_reg_field(patterns, REG_FIELD_CT_LABEL_ID,
-                                         act_resources->ct_match_label_id,
-                                         mask)) {
-            memset(&consumed_masks->ct_label,
-                   0, sizeof consumed_masks->ct_label);
+                                         value, mask)) {
+            memset(&consumed_masks->ct_label, 0,
+                   sizeof consumed_masks->ct_label);
         }
     }
 
@@ -4886,28 +4901,40 @@ parse_ct_actions(struct flow_actions *actions,
         } else if (nl_attr_type(cta) == OVS_CT_ATTR_LABELS) {
             const ovs_32aligned_u128 *key = nl_attr_get(cta);
             const ovs_32aligned_u128 *mask = key + 1;
-            ovs_u128 tmp_key, tmp_mask;
-            uint32_t set_mask;
+            uint32_t set_value, set_mask;
 
-            tmp_key.u32[0] = key->u32[0];
-            tmp_key.u32[1] = key->u32[1];
-            tmp_key.u32[2] = key->u32[2];
-            tmp_key.u32[3] = key->u32[3];
+            if (netdev_offload_dpdk_ct_labels_mapping) {
+                ovs_u128 tmp_key, tmp_mask;
 
-            tmp_mask.u32[0] = mask->u32[0];
-            tmp_mask.u32[1] = mask->u32[1];
-            tmp_mask.u32[2] = mask->u32[2];
-            tmp_mask.u32[3] = mask->u32[3];
+                tmp_key.u32[0] = key->u32[0];
+                tmp_key.u32[1] = key->u32[1];
+                tmp_key.u32[2] = key->u32[2];
+                tmp_key.u32[3] = key->u32[3];
 
-            tmp_key.u64.lo &= tmp_mask.u64.lo;
-            tmp_key.u64.hi &= tmp_mask.u64.hi;
-            if (get_label_id(&tmp_key, &act_resources->ct_action_label_id)) {
-                return -1;
+                tmp_mask.u32[0] = mask->u32[0];
+                tmp_mask.u32[1] = mask->u32[1];
+                tmp_mask.u32[2] = mask->u32[2];
+                tmp_mask.u32[3] = mask->u32[3];
+
+                tmp_key.u64.lo &= tmp_mask.u64.lo;
+                tmp_key.u64.hi &= tmp_mask.u64.hi;
+                if (get_label_id(&tmp_key, &act_resources->ct_action_label_id)) {
+                    return -1;
+                }
+                set_value = act_resources->ct_action_label_id;
+                set_mask = reg_fields[REG_FIELD_CT_LABEL_ID].mask;
+            } else {
+                if (key->u32[1] & mask->u32[1] ||
+                    key->u32[2] & mask->u32[2] ||
+                    key->u32[3] & mask->u32[3]) {
+                    return -1;
+                }
+                set_value = key->u32[0] & mask->u32[0];
+                set_mask = mask->u32[0];
             }
-            set_mask = reg_fields[REG_FIELD_CT_LABEL_ID].mask;
+
             if (add_action_set_reg_field(actions, REG_FIELD_CT_LABEL_ID,
-                                         act_resources->ct_action_label_id,
-                                         set_mask)) {
+                                         set_value, set_mask)) {
                 VLOG_DBG_RL(&rl, "Could not create label id");
                 return -1;
             }
@@ -5750,6 +5777,8 @@ netdev_offload_dpdk_init_flow_api(struct netdev *netdev)
     if (netdev_dpdk_flow_api_supported(netdev)) {
         ret = offload_data_init(netdev);
     }
+
+    netdev_offload_dpdk_ct_labels_mapping = netdev_is_ct_labels_mapping_enabled();
 
     return ret;
 }
