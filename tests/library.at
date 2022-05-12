@@ -65,6 +65,7 @@ skiplist delete
 skiplist find
 skiplist forward_to
 skiplist random
+skiplist multiple entries
 
 ])
 AT_CLEANUP

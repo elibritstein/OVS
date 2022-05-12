@@ -34,7 +34,8 @@ struct skiplist;
          SKIPLIST_NODE = skiplist_next(SKIPLIST_NODE))
 
 struct skiplist *skiplist_create(skiplist_comparator *object_comparator,
-                                 void *configuration);
+                                 void *configuration,
+                                 bool allow_multiple);
 void skiplist_insert(struct skiplist *sl, const void *object);
 void *skiplist_delete(struct skiplist *sl, const void *object);
 struct skiplist_node *skiplist_find(struct skiplist *sl, const void *value);

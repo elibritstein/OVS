@@ -21,6 +21,7 @@
 #undef NDEBUG
 #include <stdio.h>
 #include <string.h>
+#include "openvswitch/util.h"
 #include "ovstest.h"
 #include "skiplist.h"
 #include "random.h"
@@ -49,7 +50,7 @@ test_skiplist_cmp(const void *a, const void *b,
 static void
 test_skiplist_insert(void)
 {
-    struct skiplist *sl = skiplist_create(test_skiplist_cmp, NULL);
+    struct skiplist *sl = skiplist_create(test_skiplist_cmp, NULL, false);
     int i;
     int *integer;
 
@@ -75,7 +76,7 @@ test_skiplist_insert(void)
 static void
 test_skiplist_delete(void)
 {
-    struct skiplist *sl = skiplist_create(test_skiplist_cmp, NULL);
+    struct skiplist *sl = skiplist_create(test_skiplist_cmp, NULL, false);
     int a, b, c;
     a = 1;
     b = 2;
@@ -104,7 +105,7 @@ test_skiplist_delete(void)
 static void
 test_skiplist_find(void)
 {
-    struct skiplist *sl = skiplist_create(test_skiplist_cmp, NULL);
+    struct skiplist *sl = skiplist_create(test_skiplist_cmp, NULL, false);
 
     int i;
     int *integer;
@@ -127,7 +128,7 @@ test_skiplist_find(void)
 static void
 test_skiplist_forward_to(void)
 {
-    struct skiplist *sl = skiplist_create(test_skiplist_cmp, NULL);
+    struct skiplist *sl = skiplist_create(test_skiplist_cmp, NULL, false);
     int a, b, c, d, x;
     a = 1;
     b = 3;
@@ -162,7 +163,7 @@ test_skiplist_forward_to(void)
 static void
 test_skiplist_random(void)
 {
-    struct skiplist *sl = skiplist_create(test_skiplist_cmp, NULL);
+    struct skiplist *sl = skiplist_create(test_skiplist_cmp, NULL, false);
     int total_numbers = 50;
     int expected_count = 0;
     int *numbers = xmalloc(sizeof(int) * total_numbers);
@@ -193,6 +194,35 @@ test_skiplist_random(void)
 }
 
 static void
+test_skiplist_multiple_entries(void)
+{
+    struct skiplist *sl = skiplist_create(test_skiplist_cmp, NULL, true);
+    int keys[10] = {
+        0, 0, 1, 2, 2, 2, 3, 4, 5, 5,
+    };
+    int i, x;
+
+    for (i = 0; i < ARRAY_SIZE(keys); i++) {
+        skiplist_insert(sl, &keys[i]);
+    }
+
+    for (i = 0; i < ARRAY_SIZE(keys); i++) {
+        x = keys[i];
+        int *v = skiplist_get_data(skiplist_forward_to(sl, &x));
+        /* A failure on this assert means that multiple insertions of the same
+         * value did not work. */
+        ovs_assert(keys[i] == *v);
+        /* Delete the found node from the list.
+         * If multiple entries were properly inserted and keys[i] == keys[i+1],
+         * next lookup will again find an entry.
+         * Otherwise, the assert above will fail.*/
+        skiplist_delete(sl, &x);
+    }
+
+    skiplist_destroy(sl, NULL);
+}
+
+static void
 test_skiplist_main(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
 {
     printf("skiplist insert\n");
@@ -205,6 +235,8 @@ test_skiplist_main(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
     test_skiplist_forward_to();
     printf("skiplist random\n");
     test_skiplist_random();
+    printf("skiplist multiple entries\n");
+    test_skiplist_multiple_entries();
     printf("\n");
 }
 

@@ -1874,7 +1874,8 @@ ovsdb_idl_index_create(struct ovsdb_idl *idl,
 
     index->columns = xmemdup(columns, n * sizeof *columns);
     index->n_columns = n;
-    index->skiplist = skiplist_create(ovsdb_idl_index_generic_comparer, index);
+    index->skiplist = skiplist_create(ovsdb_idl_index_generic_comparer, index,
+                                      false);
 
     ovs_list_push_back(&index->table->indexes, &index->node);
 

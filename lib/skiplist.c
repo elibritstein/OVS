@@ -53,6 +53,7 @@ struct skiplist {
                                    * configuration, used by the comparator. */
     int level;                    /* Maximum level currently in use. */
     uint32_t size;                /* Current number of nodes in skiplist. */
+    bool allow_multiple;          /* Allow inserting multiple equal entries. */
 };
 
 /* Create a new skiplist_node with given level and data. */
@@ -76,7 +77,8 @@ skiplist_create_node(int level, const void *object)
  * and configuration.
  */
 struct skiplist *
-skiplist_create(skiplist_comparator object_comparator, void *configuration)
+skiplist_create(skiplist_comparator object_comparator, void *configuration,
+                bool allow_multiple)
 {
     random_init();
     struct skiplist *sl;
@@ -87,6 +89,7 @@ skiplist_create(skiplist_comparator object_comparator, void *configuration)
     sl->level = 0;
     sl->cmp = object_comparator;
     sl->header = skiplist_create_node(SKIPLIST_MAX_LEVELS, NULL);
+    sl->allow_multiple = allow_multiple;
 
     return sl;
 }
@@ -148,30 +151,43 @@ skiplist_determine_level(struct skiplist *sl)
     return MIN(lvl, sl->level + 1);
 }
 
+static void
+skiplist_insert_node(struct skiplist *sl, const void *value,
+                     struct skiplist_node *update[SKIPLIST_MAX_LEVELS + 1])
+{
+    struct skiplist_node *new_node;
+    int i, lvl;
+
+    lvl = skiplist_determine_level(sl);
+    if (lvl > sl->level) {
+        for (i = sl->level + 1; i <= lvl; i++) {
+            update[i] = sl->header;
+        }
+        sl->level = lvl;
+    }
+    new_node = skiplist_create_node(lvl, value);
+    for (i = 0; i <= lvl; i++) {
+        new_node->forward[i] = update[i]->forward[i];
+        update[i]->forward[i] = new_node;
+    }
+    sl->size++;
+}
+
 /* Insert data into a skiplist. */
 void
 skiplist_insert(struct skiplist *list, const void *value)
 {
     struct skiplist_node *update[SKIPLIST_MAX_LEVELS + 1];
     struct skiplist_node *x = skiplist_forward_to_(list, value, update);
-    int i, lvl;
 
     if (x && list->cmp(x->data, value, list->cfg) == 0) {
-        x->data = value;
+        if (list->allow_multiple) {
+            skiplist_insert_node(list, value, update);
+        } else {
+            x->data = value;
+        }
     } else {
-        lvl = skiplist_determine_level(list);
-        if (lvl > list->level) {
-            for (i = list->level + 1; i <= lvl; i++) {
-                update[i] = list->header;
-            }
-            list->level = lvl;
-        }
-        x = skiplist_create_node(lvl, value);
-        for (i = 0; i <= lvl; i++) {
-            x->forward[i] = update[i]->forward[i];
-            update[i]->forward[i] = x;
-        }
-        list->size++;
+        skiplist_insert_node(list, value, update);
     }
 }
 
