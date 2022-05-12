@@ -1622,9 +1622,7 @@ conntrack_swap_conn_key(const struct conn_key *key,
 static void
 conntrack_offload_fill_item_add(struct ct_flow_offload_item *item,
                                 struct conn *conn,
-                                int dir,
-                                uint32_t mark,
-                                ovs_u128 label)
+                                int dir)
 {
     /* nat_conn has opposite directions. */
     bool reply = !!conn->master_conn ^ dir;
@@ -1655,11 +1653,10 @@ conntrack_offload_fill_item_add(struct ct_flow_offload_item *item,
 
     conntrack_offload_fill_item_common(item, conn, dir);
     item->ct_state = conn->offloads.dir_info[dir].pkt_ct_state;
-    item->mark_key = conn->mark;
-    item->mark_mask = mark ^ conn->mark;
-    item->label_key = conn->label;
-    item->label_mask.u64.hi = label.u64.hi ^ conn->label.u64.hi;
-    item->label_mask.u64.lo = label.u64.lo ^ conn->label.u64.lo;
+    item->mark_key = conn->offloads.dir_info[dir].pkt_ct_mark[0];
+    item->mark_mask = conn->offloads.dir_info[dir].pkt_ct_mark[1];
+    item->label_key = conn->offloads.dir_info[dir].pkt_ct_label[0];
+    item->label_mask = conn->offloads.dir_info[dir].pkt_ct_label[1];
     item->status = &conn->offloads.dir_info[dir].status;
 }
 
@@ -1681,9 +1678,7 @@ static inline void
 e2e_cache_trace_add_ct(struct conntrack *ct,
                        struct dp_packet *p,
                        struct conn *conn,
-                       bool reply,
-                       uint32_t mark,
-                       ovs_u128 label)
+                       bool reply)
 {
     struct conntrack_offload_class *offload_class;
     uint32_t e2e_trace_size = p->e2e_trace_size;
@@ -1712,7 +1707,7 @@ e2e_cache_trace_add_ct(struct conntrack *ct,
                conn->master_conn->offloads.dir_info[dir].dp) {
         conn = conn->master_conn;
     }
-    conntrack_offload_fill_item_add(&item, conn, dir, mark, label);
+    conntrack_offload_fill_item_add(&item, conn, dir);
     item.ct_match.odp_port = p->md.in_port.odp_port;
 
     dir_info = &conn->offloads.dir_info[dir];
@@ -1754,15 +1749,13 @@ e2e_cache_trace_add_ct(struct conntrack *ct,
     p->e2e_trace_size = e2e_trace_size + 1;
 }
 #else
-#define e2e_cache_trace_add_ct(ct, p, conn, r, m, l) do { } while (0)
+#define e2e_cache_trace_add_ct(ct, p, conn, r) do { } while (0)
 #endif
 
 static void
 conntrack_offload_add_conn(struct conntrack *ct,
                            struct dp_packet *packet,
                            struct conn *conn,
-                           uint32_t mark,
-                           ovs_u128 label,
                            bool reply)
 {
     struct conntrack_offload_class *offload_class;
@@ -1813,8 +1806,7 @@ conntrack_offload_add_conn(struct conntrack *ct,
                        conn->master_conn->offloads.dir_info[dir].dp) {
                 conn = conn->master_conn;
             }
-            conntrack_offload_fill_item_add(&item[dir], conn, dir, mark,
-                                            label);
+            conntrack_offload_fill_item_add(&item[dir], conn, dir);
             ufid[dir] = &conn->offloads.dir_info[dir].ufid;
         }
         offload_class->conn_get_ufid(&item[CT_DIR_INIT],
@@ -1865,13 +1857,12 @@ conntrack_execute(struct conntrack *ct, struct dp_packet_batch *pkt_batch,
 
     struct dp_packet *packet;
     struct conn_lookup_ctx ctx;
-    uint32_t mark;
-    ovs_u128 label;
 
     DP_PACKET_BATCH_FOR_EACH (i, packet, pkt_batch) {
         struct conn *conn = packet->md.conn;
-        mark = conn ? conn->mark : 0;
-        label = conn ? conn->label : OVS_U128_ZERO;
+        uint32_t orig_mark = packet->md.ct_mark;
+        ovs_u128 orig_label = packet->md.ct_label;
+
         ctx.conn = NULL;
         if (OVS_UNLIKELY(packet->md.ct_state == CS_INVALID)) {
             write_ct_md_alg_exp(packet, zone, NULL, NULL);
@@ -1892,12 +1883,34 @@ conntrack_execute(struct conntrack *ct, struct dp_packet_batch *pkt_batch,
         if ((packet->md.ct_state & CS_ESTABLISHED) && conn) {
             if (netdev_is_flow_api_enabled() &&
                 !(conn->offloads.flags & CT_OFFLOAD_SKIP)) {
-                conntrack_offload_add_conn(ct, packet, conn, mark, label,
-                                           ctx.reply);
+                ovs_u128 updated_label_bits = ovs_u128_xor(packet->md.ct_label,
+                                                           orig_label);
+                uint32_t updated_mark_bits = packet->md.ct_mark ^ orig_mark;
+                int dir = ctx.reply ? CT_DIR_REP : CT_DIR_INIT;
+                struct conn *actual_conn = conn;
+
+                if (conn->nat_conn &&
+                    conn->nat_conn->offloads.dir_info[dir].dp) {
+                    actual_conn = conn->nat_conn;
+                } else if (conn->master_conn &&
+                           conn->master_conn->offloads.dir_info[dir].dp) {
+                    actual_conn = conn->master_conn;
+                }
+
+                actual_conn->offloads.dir_info[dir].pkt_ct_mark[0] =
+                    packet->md.ct_mark;
+                actual_conn->offloads.dir_info[dir].pkt_ct_mark[1] =
+                    updated_mark_bits;
+
+                actual_conn->offloads.dir_info[dir].pkt_ct_label[0] =
+                    packet->md.ct_label;
+                actual_conn->offloads.dir_info[dir].pkt_ct_label[1] =
+                    updated_label_bits;
+
+                conntrack_offload_add_conn(ct, packet, conn, ctx.reply);
             }
             if (ct_e2e_cache_enabled) {
-                e2e_cache_trace_add_ct(ct, packet, conn, ctx.reply, mark,
-                                       label);
+                e2e_cache_trace_add_ct(ct, packet, conn, ctx.reply);
             }
         }
     }

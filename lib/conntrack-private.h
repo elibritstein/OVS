@@ -133,6 +133,8 @@ struct ct_dir_info {
     void *dp;
     int status;
     uint8_t pkt_ct_state;
+    uint32_t pkt_ct_mark[2];
+    ovs_u128 pkt_ct_label[2];
     bool e2e_flow;
     uint8_t e2e_seen_pkts;
 };
