@@ -5317,13 +5317,17 @@ netdev_offload_dpdk_hw_miss_packet_recover(struct netdev *netdev,
             if (vport_netdev) {
                 parse_tcp_flags(packet, NULL, NULL, NULL);
                 if (vport_netdev->netdev_class->pop_header) {
-                    vport_netdev->netdev_class->pop_header(packet);
+                    if (!vport_netdev->netdev_class->pop_header(packet)) {
+                        netdev_close(vport_netdev);
+                        return -1;
+                    }
                     packet->md.in_port.odp_port = flow_miss_ctx.vport;
                 } else {
                     VLOG_ERR("vport nedtdev=%s with no pop_header method",
                              netdev_get_name(vport_netdev));
+                    netdev_close(vport_netdev);
+                    return EOPNOTSUPP;
                 }
-                netdev_close(vport_netdev);
             }
         } else {
             memcpy(&packet->md.tunnel, &flow_miss_ctx.tnl,
@@ -5334,7 +5338,7 @@ netdev_offload_dpdk_hw_miss_packet_recover(struct netdev *netdev,
     if (!get_packet_reg_field(packet, REG_FIELD_CT_CTX, &ct_ctx_id)) {
         if (find_ct_miss_ctx(ct_ctx_id, &ct_miss_ctx)) {
             VLOG_ERR("ct ctx id %d is not found", ct_ctx_id);
-            return -1;
+            return 0;
         }
         packet->md.ct_state = ct_miss_ctx.state;
         packet->md.ct_zone = ct_miss_ctx.zone;
