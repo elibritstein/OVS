@@ -897,6 +897,8 @@ struct reg_field {
     uint32_t mask;
 };
 
+#define REG_TAG_INDEX_NUM 3
+
 static struct reg_field reg_fields[] = {
     [REG_FIELD_CT_STATE] = {
         .type = REG_TYPE_TAG,
@@ -1927,6 +1929,10 @@ struct flow_patterns {
     struct rte_flow_item *tnl_pmd_items;
     uint32_t tnl_pmd_items_cnt;
     struct ds s_tnl;
+    /* Tag matches must be merged per-index. Keep track of
+     * each index and use a single item for each. */
+    struct rte_flow_item_tag *tag_spec[REG_TAG_INDEX_NUM];
+    struct rte_flow_item_tag *tag_mask[REG_TAG_INDEX_NUM];
 };
 
 struct flow_actions {
@@ -3482,6 +3488,7 @@ add_pattern_match_reg_field(struct flow_patterns *patterns,
     struct rte_flow_item_tag *tag_spec, *tag_mask;
     struct reg_field *reg_field;
     uint32_t reg_spec, reg_mask;
+    uint8_t reg_index;
 
     if (reg_field_id >= REG_FIELD_NUM) {
         VLOG_ERR("unkonwn reg id %d", reg_field_id);
@@ -3496,18 +3503,27 @@ add_pattern_match_reg_field(struct flow_patterns *patterns,
 
     reg_spec = (val & reg_field->mask) << reg_field->offset;
     reg_mask = (mask & reg_field->mask) << reg_field->offset;
+    reg_index = reg_field->index;
+    ovs_assert(reg_index < REG_TAG_INDEX_NUM);
     switch (reg_field->type) {
     case REG_TYPE_TAG:
-        tag_spec = per_thread_xzalloc(sizeof *tag_spec);
-        tag_spec->index = reg_field->index;
-        tag_spec->data = reg_spec;
+        if (patterns->tag_spec[reg_index] == NULL) {
+            tag_spec = per_thread_xzalloc(sizeof *tag_spec);
+            tag_spec->index = reg_index;
+            patterns->tag_spec[reg_index] = tag_spec;
 
-        tag_mask = per_thread_xzalloc(sizeof *tag_mask);
-        tag_mask->index = 0xFF;
-        tag_mask->data = reg_mask;
+            tag_mask = per_thread_xzalloc(sizeof *tag_mask);
+            tag_mask->index = 0xFF;
+            patterns->tag_mask[reg_index] = tag_mask;
 
-        add_flow_pattern(patterns, RTE_FLOW_ITEM_TYPE_TAG, tag_spec, tag_mask,
-                         NULL);
+            add_flow_pattern(patterns, RTE_FLOW_ITEM_TYPE_TAG,
+                             tag_spec, tag_mask, NULL);
+        } else {
+            tag_spec = patterns->tag_spec[reg_index];
+            tag_mask = patterns->tag_mask[reg_index];
+        }
+        tag_spec->data |= reg_spec;
+        tag_mask->data |= reg_mask;
         break;
     case REG_TYPE_META:
         meta_spec = per_thread_xzalloc(sizeof *meta_spec);
