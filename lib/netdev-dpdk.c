@@ -120,6 +120,7 @@ BUILD_ASSERT_DECL((MAX_NB_MBUF / ROUND_DOWN_POW2(MAX_NB_MBUF / MIN_NB_MBUF))
 
 #define SOCKET0              0
 
+#define NR_HAIRPINQ 1
 /* Default size of Physical NIC RXQ */
 #define NIC_PORT_DEFAULT_RXQ_SIZE 2048
 /* Default size of Physical NIC TXQ */
@@ -974,6 +975,9 @@ dpdk_eth_dev_port_config(struct netdev_dpdk *dev, int n_rxq, int n_txq)
     struct rte_eth_conf conf = port_conf;
     struct rte_eth_dev_info info;
     uint16_t conf_mtu;
+    struct rte_eth_hairpin_conf hairpin_conf = {
+        .peer_count = 1,
+    };
 
     rte_eth_dev_info_get(dev->port_id, &info);
 
@@ -1021,10 +1025,12 @@ dpdk_eth_dev_port_config(struct netdev_dpdk *dev, int n_rxq, int n_txq)
      * and request less queues */
     while (n_rxq && n_txq) {
         if (diag) {
-            VLOG_INFO("Retrying setup with (rxq:%d txq:%d)", n_rxq, n_txq);
+            VLOG_INFO("Retrying setup with (rxq:%d txq:%d hairpinq:%d)", n_rxq,
+                      n_txq, NR_HAIRPINQ);
         }
 
-        diag = rte_eth_dev_configure(dev->port_id, n_rxq, n_txq, &conf);
+        diag = rte_eth_dev_configure(dev->port_id, n_rxq + NR_HAIRPINQ,
+                                     n_txq + NR_HAIRPINQ, &conf);
         if (diag) {
             VLOG_WARN("Interface %s eth_dev setup error %s\n",
                       dev->up.name, rte_strerror(-diag));
@@ -1079,6 +1085,28 @@ dpdk_eth_dev_port_config(struct netdev_dpdk *dev, int n_rxq, int n_txq)
             /* Retry with less rx queues */
             n_rxq = i;
             continue;
+        }
+
+        /* setup hairpin queues */
+        for (i = 0; i < NR_HAIRPINQ; i++) {
+             hairpin_conf.peers[0].port = dev->port_id;
+             hairpin_conf.peers[0].queue = i + n_txq;
+             diag = rte_eth_rx_hairpin_queue_setup
+                       (dev->port_id, n_rxq + i, dev->rxq_size, &hairpin_conf);
+             if (diag) {
+                 VLOG_INFO("Interface %s unable to setup rx hairpinq(%d): %s",
+                          dev->up.name, n_rxq + i, rte_strerror(-diag));
+                 return diag;
+             }
+
+             hairpin_conf.peers[0].queue = i + n_rxq;
+             diag = rte_eth_tx_hairpin_queue_setup
+                       (dev->port_id, n_txq + i, dev->txq_size, &hairpin_conf);
+             if (diag) {
+                 VLOG_INFO("Interface %s unable to setup tx hairpinq(%d): %s",
+                          dev->up.name, n_txq + i, rte_strerror(-diag));
+                 return diag;
+             }
         }
 
         dev->up.n_rxq = n_rxq;
