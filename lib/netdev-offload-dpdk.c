@@ -1150,7 +1150,7 @@ add_miss_flow(struct netdev *netdev,
 static int
 netdev_offload_dpdk_destroy_flow(struct netdev *netdev,
                                  struct rte_flow *rte_flow,
-                                 const ovs_u128 *ufid);
+                                 const ovs_u128 *ufid, bool is_esw);
 
 static void
 table_id_free(uint32_t id)
@@ -1209,7 +1209,7 @@ table_id_ctx_unref(void *priv_)
        return;
     }
 
-    netdev_offload_dpdk_destroy_flow(priv->netdev, priv->miss_flow, NULL);
+    netdev_offload_dpdk_destroy_flow(priv->netdev, priv->miss_flow, NULL, true);
     netdev_close(priv->netdev);
 }
 
@@ -1598,7 +1598,7 @@ flow_miss_ctx_unref(void *priv_)
        return;
     }
 
-    netdev_offload_dpdk_destroy_flow(priv->netdev, priv->miss_flow, NULL);
+    netdev_offload_dpdk_destroy_flow(priv->netdev, priv->miss_flow, NULL, true);
     netdev_close(priv->netdev);
 }
 
@@ -3083,13 +3083,13 @@ add_vport_match(struct flow_patterns *patterns,
 static int
 netdev_offload_dpdk_destroy_flow(struct netdev *netdev,
                                  struct rte_flow *rte_flow,
-                                 const ovs_u128 *ufid)
+                                 const ovs_u128 *ufid, bool is_esw)
 {
     struct uuid ufid0 = UUID_ZERO;
     struct rte_flow_error error;
     int ret;
 
-    ret = netdev_dpdk_rte_flow_destroy(netdev, rte_flow, &error);
+    ret = netdev_dpdk_rte_flow_destroy(netdev, rte_flow, &error, is_esw);
     if (!ret) {
         VLOG_DBG_RL(&rl, "%s: removed rte flow %p associated with ufid "
                     UUID_FMT, netdev_get_name(netdev), rte_flow,
@@ -5100,7 +5100,7 @@ create_ct_conn(struct netdev *netdev,
 
 ct_err:
     if (netdev_offload_ct_on_ct_nat) {
-        netdev_offload_dpdk_destroy_flow(netdev, fi->rte_flow[1], NULL);
+        netdev_offload_dpdk_destroy_flow(netdev, fi->rte_flow[1], NULL, true);
     }
 out:
     free_flow_actions(&ct_actions, false);
@@ -5211,7 +5211,7 @@ create_pre_post_ct(struct netdev *netdev,
     goto out;
 
 pre_ct_err:
-    netdev_offload_dpdk_destroy_flow(netdev, fi->rte_flow[1], NULL);
+    netdev_offload_dpdk_destroy_flow(netdev, fi->rte_flow[1], NULL, true);
 out:
     free_flow_actions(&pre_ct_actions, false);
     free_flow_actions(&post_ct_actions, false);
@@ -5605,7 +5605,7 @@ netdev_offload_dpdk_remove_flows(struct ufid_to_rte_flow_data *rte_flow_data)
             continue;
         }
 
-        ret = netdev_offload_dpdk_destroy_flow(physdev, rte_flow, ufid);
+        ret = netdev_offload_dpdk_destroy_flow(physdev, rte_flow, ufid, true);
         if (ret == 0) {
             data->rte_flow_counters[tid]--;
         } else {
@@ -6052,7 +6052,7 @@ fixed_rule_uninit(struct netdev *netdev, unsigned int tid,
         return;
     }
 
-    netdev_offload_dpdk_destroy_flow(netdev, fr->flow, NULL);
+    netdev_offload_dpdk_destroy_flow(netdev, fr->flow, NULL, true);
     fr->flow = NULL;
 }
 

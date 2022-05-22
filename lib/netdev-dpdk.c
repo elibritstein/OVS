@@ -5516,12 +5516,14 @@ out:
 int
 netdev_dpdk_rte_flow_destroy(struct netdev *netdev,
                              struct rte_flow *rte_flow,
-                             struct rte_flow_error *error)
+                             struct rte_flow_error *error,
+                             bool esw_port_id)
 {
     struct netdev_dpdk *dev = netdev_dpdk_cast(netdev);
+    dpdk_port_t pid = esw_port_id ? dev->esw_mgr_port_id : dev->port_id;
     int ret;
 
-    ret = rte_flow_destroy(dev->esw_mgr_port_id, rte_flow, error);
+    ret = rte_flow_destroy(pid, rte_flow, error);
     return ret;
 }
 
