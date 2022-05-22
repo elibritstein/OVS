@@ -322,8 +322,6 @@ netdev_flow_del(struct netdev *netdev, const ovs_u128 *ufid,
            : EOPNOTSUPP;
 }
 
-#define MAX_FLOW_MARK (UINT32_MAX - 1)
-
 static struct ovs_list *mark_release_lists;
 
 struct mark_release_item {
@@ -387,7 +385,7 @@ netdev_offload_flow_mark_alloc(void)
         size_t i;
 
         /* Haven't initiated yet, do it here */
-        flow_mark_pool = id_fpool_create(nb_thread, 1, MAX_FLOW_MARK);
+        flow_mark_pool = id_fpool_create(nb_thread, MIN_FLOW_MARK, NB_FLOW_MARK);
         mark_release_lists = xcalloc(nb_thread, sizeof *mark_release_lists);
         for (i = 0; i < nb_thread; i++) {
             ovs_list_init(&mark_release_lists[i]);
