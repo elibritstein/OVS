@@ -5534,8 +5534,9 @@ netdev_dpdk_rte_flow_create(struct netdev *netdev,
 {
     struct rte_flow *flow;
     struct netdev_dpdk *dev = netdev_dpdk_cast(netdev);
+    dpdk_port_t pid = attr->transfer ? dev->esw_mgr_port_id : dev->port_id;
 
-    flow = rte_flow_create(dev->esw_mgr_port_id, attr, items, actions, error);
+    flow = rte_flow_create(pid, attr, items, actions, error);
     return flow;
 }
 
