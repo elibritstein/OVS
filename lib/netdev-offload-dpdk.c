@@ -213,6 +213,7 @@ struct netdev_offload_dpdk_data {
     struct ovsthread_once ct_tables_once;
     struct fixed_rule ct_nat_miss;
     struct fixed_rule zone_flows[2][2][MAX_ZONE_ID + 1];
+    struct fixed_rule hairpin;
 };
 
 static int
@@ -2733,6 +2734,14 @@ dump_flow_action(struct ds *s, struct ds *s_extra,
         ds_put_cstr(s, "/ ");
     } else if (actions->type == RTE_FLOW_ACTION_TYPE_VOID) {
         ds_put_cstr(s, "void / ");
+    } else if (actions->type == RTE_FLOW_ACTION_TYPE_QUEUE) {
+        const struct rte_flow_action_queue *queue = actions->conf;
+
+        ds_put_cstr(s, "queue ");
+        if (queue) {
+            ds_put_format(s, "index %d ", queue->index);
+        }
+        ds_put_cstr(s, "/ ");
     } else {
         ds_put_format(s, "unknown rte flow action (%d)\n", actions->type);
     }
@@ -4218,6 +4227,19 @@ add_port_id_action(struct flow_actions *actions,
     add_flow_action(actions, RTE_FLOW_ACTION_TYPE_PORT_ID, port_id);
 }
 
+static void
+add_hairpin_action(struct flow_actions *actions)
+{
+    struct rte_flow_action_mark *mark = per_thread_xzalloc(sizeof *mark);
+    struct rte_flow_action_jump *jump = per_thread_xzalloc (sizeof *jump);
+
+    mark->id = HAIRPIN_FLOW_MARK;
+    add_flow_action(actions, RTE_FLOW_ACTION_TYPE_MARK, mark);
+
+    jump->group = MISS_TABLE_ID;
+    add_flow_action(actions, RTE_FLOW_ACTION_TYPE_JUMP, jump);
+}
+
 static int
 get_netdev_by_port(struct netdev *netdev,
                    const struct nlattr *nla,
@@ -4259,7 +4281,11 @@ add_output_action(struct netdev *netdev,
     if (get_netdev_by_port(netdev, nla, &outdev_id, &outdev)) {
         return -1;
     }
-    add_port_id_action(actions, outdev_id);
+    if (netdev == outdev) {
+        add_hairpin_action(actions);
+    } else {
+        add_port_id_action(actions, outdev_id);
+    }
 
     netdev_close(outdev);
     return ret;
@@ -6218,6 +6244,48 @@ err:
 }
 
 static void
+hairpin_uninit(struct netdev *netdev, unsigned int tid,
+               struct fixed_rule *fr)
+{
+    fixed_rule_uninit(netdev, tid, fr);
+}
+
+static int
+hairpin_init(struct netdev *netdev, unsigned int tid,
+             struct fixed_rule *fr)
+{
+    struct rte_flow_attr attr = { .ingress = 1, };
+    struct rte_flow_item_mark hp_mark;
+    struct flow_patterns patterns = {
+        .items = (struct rte_flow_item []) {
+            { .type = RTE_FLOW_ITEM_TYPE_MARK, .spec = &hp_mark, },
+            { .type = RTE_FLOW_ITEM_TYPE_END, },
+        },
+        .cnt = 2,
+    };
+    struct rte_flow_action_queue hp_queue;
+    struct flow_actions actions = {
+        .actions = (struct rte_flow_action []) {
+            { .type = RTE_FLOW_ACTION_TYPE_QUEUE, .conf = &hp_queue, },
+            { .type = RTE_FLOW_ACTION_TYPE_END, },
+        },
+        .cnt = 2,
+    };
+    struct rte_flow_error error;
+
+    hp_mark.id = HAIRPIN_FLOW_MARK;
+    hp_queue.index = netdev->n_rxq;
+
+    fr->flow = create_rte_flow(netdev, &attr, &patterns, &actions, &error);
+    fr->creation_tid = tid;
+
+    if (fr->flow == NULL) {
+        return -1;
+    }
+    return 0;
+}
+
+static void
 ct_tables_uninit(struct netdev *netdev, unsigned int tid)
 {
     struct netdev_offload_dpdk_data *data;
@@ -6231,6 +6299,7 @@ ct_tables_uninit(struct netdev *netdev, unsigned int tid)
 
     ct_nat_miss_uninit(netdev, tid, &data->ct_nat_miss);
     ct_zones_uninit(netdev, tid, data);
+    hairpin_uninit(netdev, tid, &data->hairpin);
 }
 
 static int
@@ -6251,6 +6320,9 @@ ct_tables_init(struct netdev *netdev, unsigned int tid)
         ret = ct_nat_miss_init(netdev, tid, &data->ct_nat_miss);
         if (!ret) {
             ret = ct_zones_init(netdev, tid, data);
+        }
+        if (!ret) {
+            ret = hairpin_init(netdev, tid, &data->hairpin);
         }
         ovsthread_once_done(&data->ct_tables_once);
         if (ret) {

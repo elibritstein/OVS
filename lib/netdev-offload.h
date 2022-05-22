@@ -137,7 +137,8 @@ netdev_offload_thread_id(void)
 }
 
 #define INVALID_FLOW_MARK 0
-#define MIN_FLOW_MARK 1
+#define HAIRPIN_FLOW_MARK 1
+#define MIN_FLOW_MARK 2
 #define MAX_FLOW_MARK (UINT32_MAX - 1)
 #define NB_FLOW_MARK (MAX_FLOW_MARK - MIN_FLOW_MARK + 1)
 
