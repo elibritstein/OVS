@@ -122,7 +122,7 @@ OVS_PACKED(
 struct e2e_cache_trace_info {
     uint16_t num_elements;
     uint16_t e2e_trace_ct_ufids;
-    uint32_t pad;
+    odp_port_t orig_in_port;
     OVS_ALIGNED_VAR(sizeof(void *)) ovs_u128 ufids[E2E_CACHE_MAX_TRACE];
 });
 

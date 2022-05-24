@@ -9231,6 +9231,7 @@ e2e_cache_dispatch_trace_message(struct dp_netdev *dp,
 
         cur_trace_info->e2e_trace_ct_ufids = packet->e2e_trace_ct_ufids;
         cur_trace_info->num_elements = e2e_trace_size;
+        cur_trace_info->orig_in_port = packet->md.orig_in_port;
 
         memcpy(&cur_trace_info->ufids[0], e2e_trace,
                e2e_trace_size * sizeof *e2e_trace);
@@ -9302,6 +9303,7 @@ e2e_cache_populate_offload_item(struct dp_offload_thread_item *offload_item,
     flow_offload->flow = flow;
     flow_offload->op = op;
     flow_offload->is_e2e_cache_flow = true;
+    flow_offload->orig_in_port = flow->orig_in_port;
 }
 
 static void
@@ -9484,6 +9486,7 @@ e2e_cache_merged_flow_offload_put(struct dp_netdev *dp,
     *CONST_CAST(ovs_u128 *, &flow->mega_ufid) = mflow->ufid;
     CONST_CAST(struct flow *, &flow->flow)->in_port =
         mflow->match.flow.in_port;
+    flow->orig_in_port = trc_info->orig_in_port;
     ovs_refcount_init(&flow->ref_cnt);
     ovsrcu_set(&flow->actions, dp_netdev_actions_create(mflow->actions,
                                                         mflow->actions_size));
