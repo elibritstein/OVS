@@ -599,6 +599,8 @@ struct e2e_cache_ufid_to_flow_item {
     struct match match;
     struct nlattr *actions;
     uint16_t actions_size;
+    uint32_t flows_counter;
+    uint32_t ct_counter;
     size_t associated_flows_len;
     struct flow2flow_item associated_flows[0];
 };
@@ -9141,6 +9143,7 @@ e2e_cache_dispatch_trace_message(struct dp_netdev *dp,
             continue;
         }
 
+        cur_trace_info->e2e_trace_ct_ufids = packet->e2e_trace_ct_ufids;
         cur_trace_info->num_elements = e2e_trace_size;
 
         memcpy(&cur_trace_info->ufids[0], e2e_trace,
@@ -9235,9 +9238,34 @@ e2e_cache_merged_flow_offload_del(struct e2e_cache_ufid_to_flow_item *mflow)
     return rv;
 }
 
+static void
+e2e_cache_calc_counters(struct e2e_cache_ufid_to_flow_item *mflow,
+                        const struct e2e_cache_trace_info *trc_info)
+{
+    uint16_t mt_index, flows_index, ct_index;
+    ovs_u128 flow_ufids[E2E_CACHE_MAX_TRACE];
+    ovs_u128 ct_ufids[E2E_CACHE_MAX_TRACE];
+
+    memset(flow_ufids, 0, sizeof flow_ufids);
+    memset(ct_ufids, 0, sizeof ct_ufids);
+    for (mt_index = 0, flows_index = 0, ct_index = 0;
+         mt_index < trc_info->num_elements; mt_index++) {
+        if (trc_info->e2e_trace_ct_ufids & (1 << mt_index)) {
+            ct_ufids[ct_index++] = trc_info->ufids[mt_index];
+        } else {
+            flow_ufids[flows_index++] = trc_info->ufids[mt_index];
+        }
+    }
+    mflow->flows_counter = hash_bytes(flow_ufids, sizeof flow_ufids, 0);
+    if (trc_info->e2e_trace_ct_ufids) {
+        mflow->ct_counter = hash_bytes(ct_ufids, sizeof ct_ufids, 0);
+    }
+}
+
 static int
 e2e_cache_merged_flow_offload_put(struct dp_netdev *dp,
-                                  struct e2e_cache_ufid_to_flow_item *mflow)
+                                  struct e2e_cache_ufid_to_flow_item *mflow,
+                                  const struct e2e_cache_trace_info *trc_info)
 {
     struct dp_offload_thread_item *offload_item;
     struct dp_offload_flow_item *flow_offload;
@@ -9264,6 +9292,7 @@ e2e_cache_merged_flow_offload_put(struct dp_netdev *dp,
     e2e_cache_populate_offload_item(offload_item,
                                     DP_NETDEV_FLOW_OFFLOAD_OP_ADD, dp, flow);
 
+    e2e_cache_calc_counters(mflow, trc_info);
     flow_offload = &offload_item->data->flow;
     memcpy(&flow_offload->match, &mflow->match, sizeof mflow->match);
     flow_offload->actions = xmalloc(mflow->actions_size);
@@ -9347,7 +9376,7 @@ e2e_cache_process_trace_info(struct dp_netdev *dp,
         goto disassociate_merged_flow;
     }
 
-    err = e2e_cache_merged_flow_offload_put(dp, merged_flow);
+    err = e2e_cache_merged_flow_offload_put(dp, merged_flow, trc_info);
     if (OVS_UNLIKELY(err)) {
         goto remove_flow_from_db;
     }
