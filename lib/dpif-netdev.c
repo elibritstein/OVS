@@ -4081,6 +4081,14 @@ dp_netdev_pmd_remove_flow(struct dp_netdev_pmd_thread *pmd,
     queue_netdev_flow_del(pmd, flow);
     flow->dead = true;
 
+    if (OVS_UNLIKELY(!VLOG_DROP_DBG((&upcall_rl)))) {
+        struct ds s = DS_EMPTY_INITIALIZER;
+
+        dp_netdev_flow_format("flow_del", &s, flow);
+        VLOG_DBG("%s", ds_cstr(&s));
+        ds_destroy(&s);
+    }
+
     dp_netdev_flow_unref(flow);
 }
 
