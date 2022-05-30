@@ -1307,7 +1307,6 @@ void netdev_dpdk_vdpa_get_hw_stats(struct netdev_dpdk_vdpa_relay *relay,
                 stats_names[VDPA_CUSTOM_STATS_HW_MODE],
                 NETDEV_CUSTOM_STATS_NAME_SIZE);
     cstm_stats->counters[VDPA_CUSTOM_STATS_HW_MODE].value = 1;
-    return;
 
 err_stats:
     rte_free(stats);
