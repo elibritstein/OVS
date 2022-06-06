@@ -5724,53 +5724,53 @@ dpif_netdev_offload_stats_get(struct dpif *dpif,
             { "  Exponential Latency stddev (us)", 0 },
     }, e2e_stats[] = {
         [DP_NETDEV_E2E_STATS_GENERATED_TRCS] =
-            { "      Generated traces", 0 },
+            { "                 Generated traces", 0 },
         [DP_NETDEV_E2E_STATS_PROCESSED_TRCS] =
-            { "      Processed traces", 0 },
+            { "                 Processed traces", 0 },
         [DP_NETDEV_E2E_STATS_DISCARRDED_TRCS] =
-            { "      Discarded traces", 0 },
+            { "                 Discarded traces", 0 },
         [DP_NETDEV_E2E_STATS_ABORTED_TRCS] =
-            { "        Aborted traces", 0 },
+            { "                   Aborted traces", 0 },
         [DP_NETDEV_E2E_STATS_THROTTLED_TRCS] =
-            { "      Throttled traces", 0 },
+            { "                 Throttled traces", 0 },
         [DP_NETDEV_E2E_STATS_QUEUE_TRCS] =
-            { "          Queue traces", 0 },
+            { "                     Queue traces", 0 },
         [DP_NETDEV_E2E_STATS_OVERFLOW_TRCS] =
-            { "       Overflow traces", 0 },
+            { "                  Overflow traces", 0 },
         [DP_NETDEV_E2E_STATS_FLOW_ADDS] =
-            { "     Flow add messages", 0 },
+            { "                Flow add messages", 0 },
         [DP_NETDEV_E2E_STATS_FLOW_DELS] =
-            { "     Flow del messages", 0 },
+            { "                Flow del messages", 0 },
         [DP_NETDEV_E2E_STATS_FLOW_FLUSHS] =
-            { "   Flow flush messages", 0 },
+            { "              Flow flush messages", 0 },
         [DP_NETDEV_E2E_STATS_SUC_MERGES] =
-            { "     Successful merges", 0 },
+            { "                Successful merges", 0 },
         [DP_NETDEV_E2E_STATS_REJ_MERGES] =
-            { "       Rejected merges", 0 },
+            { "                  Rejected merges", 0 },
         [DP_NETDEV_E2E_STATS_HW_ADD_E2E_FLOWS] =
-            { "      HW add e2e flows", 0 },
+            { "                 HW add e2e flows", 0 },
         [DP_NETDEV_E2E_STATS_HW_DEL_E2E_FLOWS] =
-            { "      HW del e2e flows", 0 },
+            { "                 HW del e2e flows", 0 },
         [DP_NETDEV_E2E_STATS_MERGED_FLOWS] =
-            { "      Merged e2e flows", 0 },
+            { "                 Merged e2e flows", 0 },
         [DP_NETDEV_E2E_STATS_DB_FLOWS] =
-            { "          e2e DB flows", 0 },
+            { "                     e2e DB flows", 0 },
         [DP_NETDEV_E2E_STATS_CT_MT_ADDS] =
-            { "            CT MT Adds", 0 },
+            { "                       CT MT Adds", 0 },
         [DP_NETDEV_E2E_STATS_CT_MT_DELS] =
-            { "            CT MT Dels", 0 },
+            { "                       CT MT Dels", 0 },
         [DP_NETDEV_E2E_STATS_FAILED_CT_MT_ADDS] =
-            { "     Failed CT MT Adds", 0 },
+            { "                Failed CT MT Adds", 0 },
         [DP_NETDEV_E2E_STATS_FAILED_CT_MT_DELS] =
-            { "     Failed CT MT Dels", 0 },
+            { "                Failed CT MT Dels", 0 },
         [DP_NETDEV_E2E_STATS_SUC_CT2CT_MERGES] =
-            { " Successful CT2CT mrgs", 0 },
+            { "            Successful CT2CT mrgs", 0 },
         [DP_NETDEV_E2E_STATS_REJ_CT2CT_MERGES] =
-            { " Rejected CT2CT merges", 0 },
+            { "            Rejected CT2CT merges", 0 },
         [DP_NETDEV_E2E_STATS_CT2CT_ADDS] =
-            { "            CT2CT Adds", 0 },
+            { "                       CT2CT Adds", 0 },
         [DP_NETDEV_E2E_STATS_CT2CT_DELS] =
-            { "            CT2CT Dels", 0 },
+            { "                       CT2CT Dels", 0 },
     }, *cur_stats;
 
     struct dp_netdev *dp = get_dp_netdev(dpif);
