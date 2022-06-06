@@ -2487,8 +2487,7 @@ dump_port_id(struct ds *s, const void *conf)
     if (port_id) {
         ds_put_format(s, "original %d id %d ", port_id->original,
                       port_id->id);
-        }
-        ds_put_cstr(s, "/ ");
+    }
 }
 
 static void
@@ -2524,6 +2523,7 @@ dump_flow_action(struct ds *s, struct ds *s_extra,
         ds_put_cstr(s, "/ ");
     } else if (actions->type == RTE_FLOW_ACTION_TYPE_PORT_ID) {
         dump_port_id(s, actions->conf);
+        ds_put_cstr(s, "/ ");
     } else if (actions->type == RTE_FLOW_ACTION_TYPE_DROP) {
         ds_put_cstr(s, "drop / ");
     } else if (actions->type == RTE_FLOW_ACTION_TYPE_SET_MAC_SRC ||
@@ -2686,9 +2686,7 @@ dump_flow_action(struct ds *s, struct ds *s_extra,
             const struct rte_flow_action *rte_actions;
 
             rte_actions = sample->actions;
-            if (rte_actions->type == RTE_FLOW_ACTION_TYPE_END) {
-                ds_put_format(s_extra, "set sample_actions %d ", act_index);
-            }
+            ds_put_format(s_extra, "set sample_actions %d ", act_index);
             while (rte_actions &&
                    rte_actions->type != RTE_FLOW_ACTION_TYPE_END) {
                 if (rte_actions->type == RTE_FLOW_ACTION_TYPE_PORT_ID) {
@@ -2700,13 +2698,22 @@ dump_flow_action(struct ds *s, struct ds *s_extra,
 
                     dump_raw_encap(s, s_extra, raw_encap);
                     ds_put_format(s_extra, "raw_encap index 0 / ");
+                } else if (rte_actions->type ==
+                           RTE_FLOW_ACTION_TYPE_VXLAN_ENCAP) {
+                    const struct rte_flow_action_vxlan_encap *vxlan_encap =
+                        rte_actions->conf;
+                    const struct rte_flow_item *items =
+                        vxlan_encap->definition;
+
+                    dump_vxlan_encap(s_extra, items);
+                    ds_put_format(s_extra, "vxlan_encap index 0 / ");
                 } else {
                     ds_put_format(s, "unknown rte flow action (%d)\n",
                                   rte_actions->type);
                 }
                 rte_actions++;
             }
-            ds_put_cstr(s_extra, "end; ");
+            ds_put_cstr(s_extra, "/ end; ");
             ds_put_format(s, "sample ratio %d index %d / ", sample->ratio,
                           act_index);
         }
