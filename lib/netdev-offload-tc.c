@@ -2129,6 +2129,16 @@ parse_nl_actions(struct netdev *netdev, const struct nlattr *actions,
             if (err) {
                 goto out;
             }
+        } else if (nl_attr_type(nla) == OVS_ACTION_ATTR_CLONE) {
+            const struct nlattr *clone_actions = nl_attr_get(nla);
+            size_t clone_actions_len = nl_attr_get_size(nla);
+
+            err = parse_nl_actions(netdev, clone_actions, clone_actions_len,
+                                   ufid, info, sample_gid, n_meters, tnl,
+                                   recirc_act, flower);
+            if (err) {
+                goto out;
+            }
         } else {
             VLOG_DBG_RL(&rl, "unsupported put action type: %d",
                         nl_attr_type(nla));
