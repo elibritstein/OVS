@@ -1148,24 +1148,12 @@ packet_set_ipv4_addr(struct dp_packet *packet,
     put_16aligned_be32(addr, new_addr);
 }
 
-static bool
-packet_is_last_ipv6_frag(struct dp_packet *packet)
-{
-    const struct ovs_16aligned_ip6_frag *frag_hdr;
-    uint8_t *data = dp_packet_l3(packet);
-
-    data += sizeof (struct ovs_16aligned_ip6_hdr);
-    frag_hdr = ALIGNED_CAST(struct ovs_16aligned_ip6_frag *, data);
-    return (frag_hdr->ip6f_offlg & IP6F_OFF_MASK) &&
-           !(frag_hdr->ip6f_offlg & IP6F_MORE_FRAG);
-}
-
 /* Returns true, if packet contains at least one routing header where
  * segements_left > 0.
  *
  * This function assumes that L3 and L4 offsets are set in the packet. */
 static bool
-packet_rh_present(struct dp_packet *packet, uint8_t *nexthdr)
+packet_rh_present(struct dp_packet *packet, uint8_t *nexthdr, bool *first_frag)
 {
     const struct ovs_16aligned_ip6_hdr *nh;
     size_t len;
@@ -1215,6 +1203,8 @@ packet_rh_present(struct dp_packet *packet, uint8_t *nexthdr)
             const struct ovs_16aligned_ip6_frag *frag_hdr
                 = ALIGNED_CAST(struct ovs_16aligned_ip6_frag *, data);
 
+            *first_frag = !(frag_hdr->ip6f_offlg & IP6F_OFF_MASK) &&
+                           (frag_hdr->ip6f_offlg & IP6F_MORE_FRAG);
             *nexthdr = frag_hdr->ip6f_nxt;
             len = sizeof *frag_hdr;
         } else if (*nexthdr == IPPROTO_ROUTING) {
@@ -1345,13 +1335,11 @@ packet_set_ipv6(struct dp_packet *packet, const struct in6_addr *src,
                 uint8_t key_hl)
 {
     struct ovs_16aligned_ip6_hdr *nh = dp_packet_l3(packet);
+    bool recalc_csum = true;
     uint8_t proto = 0;
-    bool recalc_csum;
     bool rh_present;
 
-    rh_present = packet_rh_present(packet, &proto);
-    recalc_csum = nh->ip6_nxt == IPPROTO_FRAGMENT ?
-        packet_is_last_ipv6_frag(packet) : true;
+    rh_present = packet_rh_present(packet, &proto, &recalc_csum);
 
     if (memcmp(&nh->ip6_src, src, sizeof(ovs_be32[4]))) {
         packet_set_ipv6_addr(packet, proto, nh->ip6_src.be32,
