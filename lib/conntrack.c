@@ -1991,6 +1991,7 @@ conn_hw_update(struct conntrack *ct,
 
     for (dir = 0; dir < CT_DIR_NUM; dir++) {
         if (!updated &&
+            conn->offloads.dir_info[dir].dp &&
             conntrack_offload_fill_item_common(&item, conn, dir)) {
             ret = offload_class->conn_active(&item, now,
                                              conn->prev_query);
@@ -2003,6 +2004,7 @@ conn_hw_update(struct conntrack *ct,
             }
         }
         if (!updated && conn->nat_conn &&
+            conn->nat_conn->offloads.dir_info[dir].dp &&
             conntrack_offload_fill_item_common(&item, conn->nat_conn,
                                                dir)) {
             ret = offload_class->conn_active(&item, now,
