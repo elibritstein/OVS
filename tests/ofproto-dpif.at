@@ -9953,7 +9953,7 @@ AT_CHECK([ovs-ofctl add-flow br0 "vlan_tci=0x000a/0x0fff,action=output:local"])
 AT_CHECK([ovs-appctl netdev-dummy/receive p0 'in_port(1),eth(src=50:54:00:00:00:09,dst=50:54:00:00:00:0a),eth_type(0x8100),vlan(vid=10,pcp=0),encap(eth_type(0x0800),ipv4(src=10.0.0.2,dst=10.0.0.1,proto=1,tos=0,ttl=64,frag=no),icmp(type=8,code=0))'])
 
 OVS_WAIT_UNTIL([grep flow_add: ovs-vswitchd.log])
-AT_CHECK([grep 'in_port([[1]])' ovs-vswitchd.log | filter_flow_install | strip_xout], [0], [dnl
+AT_CHECK([filter_flow_install < ovs-vswitchd.log | grep 'in_port([[1]])' | strip_xout], [0], [dnl
 recirc_id(0),in_port(1),packet_type(ns=0,id=0),eth_type(0x8100),vlan(vid=10),encap(eth_type(0x0800),ipv4(frag=no)), actions: <del>
 ])
 OVS_VSWITCHD_STOP
@@ -10065,7 +10065,7 @@ recirc_id(0),in_port(1),packet_type(ns=0,id=0),eth_type(0x1234), packets:8, byte
 # Check that VLAN packets will not hit the same datapath megaflow.
 
 AT_CHECK([ovs-appctl netdev-dummy/receive p1 'in_port(1),eth(src=50:54:00:00:00:09,dst=50:54:00:00:00:0a),eth_type(0x8100),vlan(vid=99,pcp=7),encap(eth_type(0x1234))'])
-OVS_WAIT_UNTIL([grep 'flow_add:.*vlan(vid=99' ovs-vswitchd.log])
+OVS_WAIT_UNTIL([grep 'flow_add:.*dl_vlan=99' ovs-vswitchd.log])
 
 for i in 1 2; do
     ovs-appctl netdev-dummy/receive p1 'in_port(1),eth(src=50:54:00:00:00:09,dst=50:54:00:00:00:0a),eth_type(0x8100),vlan(vid=99,pcp=7),encap(eth_type(0x1234))'
@@ -10079,10 +10079,10 @@ recirc_id(0),in_port(1),packet_type(ns=0,id=0),eth_type(0x8100),vlan(vid=99,pcp=
 # Check that the new flow matches the CFI bit, while both vid and pcp
 # are wildcarded.
 AT_CHECK([grep '\(modify\)\|\(flow_add\)' ovs-vswitchd.log | strip_ufid ], [0], [dnl
-dpif_netdev|DBG|flow_add: recirc_id(0),in_port(1),packet_type(ns=0,id=0),eth_type(0x1234), actions:100
+dpif_netdev|DBG|flow_add: in_port=1,vlan_tci=0x0000,dl_src=50:54:00:00:00:09,dl_dst=50:54:00:00:00:0a,dl_type=0x1234, actions:100
 dpif|DBG|dummy@ovs-dummy: put[[modify]] skb_priority(0/0),skb_mark(0/0),ct_state(0/0),ct_zone(0/0),ct_mark(0/0),ct_label(0/0),recirc_id(0),dp_hash(0/0),in_port(1),packet_type(ns=0,id=0),eth(src=50:54:00:00:00:09/00:00:00:00:00:00,dst=50:54:00:00:00:0a/00:00:00:00:00:00),eth_type(0x1234), actions:drop
 dpif|DBG|dummy@ovs-dummy: put[[modify]] skb_priority(0/0),skb_mark(0/0),ct_state(0/0),ct_zone(0/0),ct_mark(0/0),ct_label(0/0),recirc_id(0),dp_hash(0/0),in_port(1),packet_type(ns=0,id=0),eth(src=50:54:00:00:00:09/00:00:00:00:00:00,dst=50:54:00:00:00:0a/00:00:00:00:00:00),eth_type(0x1234), actions:100
-dpif_netdev|DBG|flow_add: recirc_id(0),in_port(1),packet_type(ns=0,id=0),eth_type(0x8100),vlan(vid=99,pcp=7/0x0),encap(eth_type(0x1234)), actions:drop
+dpif_netdev|DBG|flow_add: in_port=1,dl_vlan=99,dl_vlan_pcp=7,vlan_tci1=0x0000,dl_src=50:54:00:00:00:09,dl_dst=50:54:00:00:00:0a,dl_type=0x1234, actions:drop
 ])
 OVS_VSWITCHD_STOP
 AT_CLEANUP

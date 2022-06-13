@@ -3937,12 +3937,48 @@ dp_netdev_ct_offload_e2e_add(struct ct_flow_offload_item *offload)
 }
 
 static void
+dp_netdev_flow_format(const char *prefix,
+                      struct ds *s,
+                      const struct dp_netdev_flow *dp_flow)
+{
+    struct dp_netdev_actions *dp_actions;
+
+    ds_init(s);
+    ds_put_format(s, "%s: ", prefix);
+    odp_format_ufid(&dp_flow->ufid, s);
+    ds_put_cstr(s, " mega_");
+    odp_format_ufid(&dp_flow->mega_ufid, s);
+    ds_put_cstr(s, " ");
+
+    flow_format(s, &dp_flow->flow, NULL);
+
+    dp_actions = dp_netdev_flow_get_actions(dp_flow);
+    ds_put_cstr(s, ", actions:");
+    if (dp_actions) {
+        struct nlattr *updated_actions;
+        size_t updated_actions_size;
+        int i;
+
+        /*skip the actions that were executed by the HW */
+        updated_actions = dp_actions->actions;
+        updated_actions_size = dp_actions->size;
+        for (i = 0; i < dp_flow->skip_actions; i++) {
+            updated_actions_size -= updated_actions->nla_len;
+            updated_actions = nl_attr_next(updated_actions);
+        }
+        format_odp_actions(s, updated_actions, updated_actions_size, NULL);
+    } else {
+        ds_put_cstr(s, "(nil)");
+    }
+}
+
+static void
 log_netdev_flow_change(const struct dp_netdev_flow *flow,
                        const struct match *match,
-                       const struct dp_netdev_actions *old_actions,
-                       const struct nlattr *actions,
-                       size_t actions_len)
+                       const struct dp_netdev_actions *old_actions)
 {
+    const char *prefix = old_actions ? "flow_mod" : "flow_add";
+    const struct dp_netdev_actions *dp_actions;
     struct ds ds = DS_EMPTY_INITIALIZER;
     struct ofpbuf key_buf, mask_buf;
     struct odp_flow_key_parms odp_parms = {
@@ -3955,6 +3991,21 @@ log_netdev_flow_change(const struct dp_netdev_flow *flow,
         return;
     }
 
+    dp_netdev_flow_format(prefix, &ds, flow);
+    if (old_actions) {
+        ds_put_cstr(&ds, ", old_actions:");
+        format_odp_actions(&ds, old_actions->actions, old_actions->size,
+                           NULL);
+    }
+
+    VLOG_DBG("%s", ds_cstr(&ds));
+
+    /* Add a printout of the temporary flow.
+     * It can differ from the match within the dp_netdev_flow installed.
+     */
+    ds_clear(&ds);
+    ds_put_cstr(&ds, "Transient flow: ");
+
     ofpbuf_init(&key_buf, 0);
     ofpbuf_init(&mask_buf, 0);
 
@@ -3962,39 +4013,17 @@ log_netdev_flow_change(const struct dp_netdev_flow *flow,
     odp_parms.key_buf = &key_buf;
     odp_flow_key_from_mask(&odp_parms, &mask_buf);
 
-    if (old_actions) {
-        ds_put_cstr(&ds, "flow_mod: ");
-    } else {
-        ds_put_cstr(&ds, "flow_add: ");
-    }
-    odp_format_ufid(&flow->ufid, &ds);
-    ds_put_cstr(&ds, " mega_");
-    odp_format_ufid(&flow->mega_ufid, &ds);
-    ds_put_cstr(&ds, " ");
     odp_flow_format(key_buf.data, key_buf.size,
                     mask_buf.data, mask_buf.size,
                     NULL, &ds, false);
-    if (old_actions) {
-        ds_put_cstr(&ds, ", old_actions:");
-        format_odp_actions(&ds, old_actions->actions, old_actions->size,
-                           NULL);
-    }
-    ds_put_cstr(&ds, ", actions:");
-    format_odp_actions(&ds, actions, actions_len, NULL);
-
-    VLOG_DBG("%s", ds_cstr(&ds));
 
     ofpbuf_uninit(&key_buf);
     ofpbuf_uninit(&mask_buf);
 
-    /* Add a printout of the actual match installed. */
-    struct match m;
-    ds_clear(&ds);
-    ds_put_cstr(&ds, "flow match: ");
-    miniflow_expand(&flow->cr.flow.mf, &m.flow);
-    miniflow_expand(&flow->cr.mask->mf, &m.wc.masks);
-    memset(&m.tun_md, 0, sizeof m.tun_md);
-    match_format(&m, NULL, &ds, OFP_DEFAULT_PRIORITY);
+    dp_actions = dp_netdev_flow_get_actions(flow);
+    ds_put_cstr(&ds, ", actions:");
+    format_odp_actions(&ds, dp_actions->actions, dp_actions->size,
+                       NULL);
 
     VLOG_DBG("%s", ds_cstr(&ds));
 
@@ -5153,7 +5182,7 @@ dp_netdev_flow_add(struct dp_netdev_pmd_thread *pmd,
 
     queue_netdev_flow_put(pmd, flow, match, actions, actions_len,
                           DP_NETDEV_FLOW_OFFLOAD_OP_ADD);
-    log_netdev_flow_change(flow, match, NULL, actions, actions_len);
+    log_netdev_flow_change(flow, match, NULL);
 
     return flow;
 }
@@ -5196,8 +5225,7 @@ flow_put_on_pmd(struct dp_netdev_pmd_thread *pmd,
             queue_netdev_flow_put(pmd, netdev_flow, match,
                                   put->actions, put->actions_len,
                                   DP_NETDEV_FLOW_OFFLOAD_OP_MOD);
-            log_netdev_flow_change(netdev_flow, match, old_actions,
-                                   put->actions, put->actions_len);
+            log_netdev_flow_change(netdev_flow, match, old_actions);
 
             if (stats) {
                 get_dpif_flow_status(pmd->dp, netdev_flow, stats, NULL);
