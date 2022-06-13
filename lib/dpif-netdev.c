@@ -10930,11 +10930,11 @@ inline int
 dp_netdev_hw_flow(const struct dp_netdev_pmd_thread *pmd,
                   struct dp_packet *packet,
                   struct dp_netdev_flow **flow,
-                  uint8_t *skip_actions)
+                  uint8_t *skip_actions OVS_UNUSED)
 {
     struct user_action_cookie sflow_cookie;
     struct flow_tnl sflow_tunnel_info;
-    struct dpif_sflow_attr sflow_attr = {
+    struct dpif_sflow_attr sflow_attr OVS_UNUSED = {
         .userdata = &sflow_cookie,
         .tunnel = &sflow_tunnel_info };
     uint32_t mark;
