@@ -3663,16 +3663,12 @@ dp_netdev_offload_poll_queues(struct dp_offload_thread *ofl_thread,
                               struct e2e_cache_ufid_msg **ufid_msg,
                               struct dp_offload_thread_item **offload_item,
                               struct e2e_cache_trace_message **trace_msg)
+    OVS_REQUIRES(ofl_thread->ufid_queue.read_lock,
+                 ofl_thread->offload_queue.read_lock,
+                 ofl_thread->trace_queue.read_lock)
 {
     struct mpsc_queue_node *queue_node;
-    struct mpsc_queue *offload_queue;
-    struct mpsc_queue *trace_queue;
-    struct mpsc_queue *ufid_queue;
     uint64_t backoff;
-
-    ufid_queue = &ofl_thread->ufid_queue;
-    offload_queue = &ofl_thread->offload_queue;
-    trace_queue = &ofl_thread->trace_queue;
 
     *ufid_msg = NULL;
     *offload_item = NULL;
@@ -3681,7 +3677,7 @@ dp_netdev_offload_poll_queues(struct dp_offload_thread *ofl_thread,
     backoff = DP_NETDEV_OFFLOAD_BACKOFF_MIN;
 
     while (1) {
-        queue_node = mpsc_queue_pop(ufid_queue);
+        queue_node = mpsc_queue_pop(&ofl_thread->ufid_queue);
         if (queue_node != NULL) {
             /* ufid message is high priority. if we have it we are done. */
             *ufid_msg = CONTAINER_OF(queue_node, struct e2e_cache_ufid_msg,
@@ -3689,7 +3685,7 @@ dp_netdev_offload_poll_queues(struct dp_offload_thread *ofl_thread,
             return;
         }
 
-        queue_node = mpsc_queue_pop(offload_queue);
+        queue_node = mpsc_queue_pop(&ofl_thread->offload_queue);
         if (queue_node != NULL) {
             *offload_item = CONTAINER_OF(queue_node,
                                          struct dp_offload_thread_item, node);
@@ -3697,7 +3693,7 @@ dp_netdev_offload_poll_queues(struct dp_offload_thread *ofl_thread,
             return;
         }
 
-        queue_node = mpsc_queue_pop(trace_queue);
+        queue_node = mpsc_queue_pop(&ofl_thread->trace_queue);
         if (queue_node != NULL) {
             *trace_msg = CONTAINER_OF(queue_node,
                                       struct e2e_cache_trace_message, node);
@@ -3729,9 +3725,6 @@ dp_netdev_flow_offload_main(void *arg)
     struct dp_offload_thread_item *offload;
     struct dp_offload_thread *ofl_thread;
     struct e2e_cache_ufid_msg *ufid_msg;
-    struct mpsc_queue *offload_queue;
-    struct mpsc_queue *trace_queue;
-    struct mpsc_queue *ufid_queue;
     long long int latency_us;
     long long int next_rcu;
     long long int now;
@@ -3739,12 +3732,9 @@ dp_netdev_flow_offload_main(void *arg)
     netdev_offload_thread_init(tid);
     ofl_thread = &dp_offload_threads[tid];
 
-    ufid_queue = &ofl_thread->ufid_queue;
-    offload_queue = &ofl_thread->offload_queue;
-    trace_queue = &ofl_thread->trace_queue;
-    mpsc_queue_acquire(ufid_queue);
-    mpsc_queue_acquire(offload_queue);
-    mpsc_queue_acquire(trace_queue);
+    mpsc_queue_acquire(&ofl_thread->ufid_queue);
+    mpsc_queue_acquire(&ofl_thread->offload_queue);
+    mpsc_queue_acquire(&ofl_thread->trace_queue);
 
     next_rcu = time_usec() + DP_NETDEV_OFFLOAD_QUIESCE_INTERVAL_US;
 
@@ -3809,7 +3799,9 @@ dp_netdev_flow_offload_main(void *arg)
     }
 
     OVS_NOT_REACHED();
-    mpsc_queue_release(offload_queue);
+    mpsc_queue_release(&ofl_thread->ufid_queue);
+    mpsc_queue_release(&ofl_thread->offload_queue);
+    mpsc_queue_release(&ofl_thread->trace_queue);
 
     return NULL;
 }

@@ -306,6 +306,7 @@ conn_expire_push_back(struct conntrack *ct, struct conn *conn)
 
 static inline void
 conn_expire_push_front(struct conntrack *ct, struct conn *conn)
+    OVS_REQUIRES(ct->exp_lists[conn->exp.tm].read_lock)
 {
     if (ovs_refcount_try_ref_rcu(&conn->exp.refcount)) {
         /* Do not change 'reschedule' state, if this expire node is put
