@@ -3607,6 +3607,12 @@ dp_offload_ct(struct dp_offload_thread_item *item)
     int ret;
     int dir;
 
+    ofl_thread = &dp_offload_threads[netdev_offload_thread_id()];
+
+    if (ct_offload[CT_DIR_INIT].op == DP_NETDEV_FLOW_OFFLOAD_OP_ADD) {
+        atomic_count_dec64(&ofl_thread->enqueued_offload_add);
+    }
+
     if (ct_offload[CT_DIR_INIT].op == DP_NETDEV_FLOW_OFFLOAD_OP_ADD &&
         ovs_refcount_unref(ct_offload[CT_DIR_INIT].refcnt) == 1) {
         free(ct_offload[CT_DIR_INIT].refcnt);
@@ -3646,7 +3652,6 @@ dp_offload_ct(struct dp_offload_thread_item *item)
         }
     }
 
-    ofl_thread = &dp_offload_threads[netdev_offload_thread_id()];
     if (item->data->ct_offload_item[0].op == DP_NETDEV_FLOW_OFFLOAD_OP_ADD) {
         atomic_count_inc64(&ofl_thread->ct_bi_dir_connections);
     } else {
