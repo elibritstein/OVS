@@ -2962,6 +2962,18 @@ free_flow_patterns(struct flow_patterns *patterns)
     ds_destroy(&patterns->s_tnl);
 }
 
+OVS_UNUSED
+static void
+flow_actions_create_from(struct flow_actions *flow_actions,
+                         const struct rte_flow_action *actions)
+{
+    memset(flow_actions, 0, sizeof *flow_actions);
+
+    for (; actions && actions->type != RTE_FLOW_ACTION_TYPE_END; actions++) {
+        add_flow_action(flow_actions, actions->type, actions->conf);
+    }
+}
+
 static void
 free_flow_actions(struct flow_actions *actions, bool free_confs)
 {
