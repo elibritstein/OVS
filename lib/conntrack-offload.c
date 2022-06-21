@@ -338,7 +338,9 @@ process_one_ct_offload(struct conntrack *ct,
                        uint32_t orig_mark,
                        ovs_u128 orig_label)
 {
-    if (!(packet->md.ct_state & CS_ESTABLISHED) || !conn) {
+    if (!conn || (conn->key.nw_proto != IPPROTO_UDP &&
+                  conn->key.nw_proto != IPPROTO_TCP) ||
+        !(packet->md.ct_state & CS_ESTABLISHED)) {
         return;
     }
 
