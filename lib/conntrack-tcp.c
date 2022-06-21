@@ -37,7 +37,7 @@
  */
 
 #include <config.h>
-#include "conntrack.h"
+
 #include "conntrack-private.h"
 #include "conntrack-tp.h"
 #include "coverage.h"
@@ -225,18 +225,6 @@ tcp_conn_update(struct conntrack *ct, struct conn *conn_,
             conn_update_expiration(ct, &conn->up, CT_TM_TCP_FIRST_PACKET, now);
             return CT_UPDATE_VALID_NEW;
         }
-    }
-    if (tcp_flags & TCP_FIN) {
-        conntrack_offload_del_conn(ct, conn_);
-        conn_->offloads.refcnt = NULL;
-        /* The ACK for the FIN might not be received due to a race condition
-         * between deleting the connection offload and sending the ACK. If the
-         * connection offload is not deleted the ACK will not reach SW and the
-         * connection state will not be updated. To avoid such case assume that
-         * the ACK is received and update the connection state accordingly.
-         */
-        dst->state = CT_DPIF_TCPS_FIN_WAIT_2;
-        src->state = CT_DPIF_TCPS_FIN_WAIT_2;
     }
 
     if (src->wscale & CT_WSCALE_FLAG
