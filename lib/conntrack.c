@@ -1709,6 +1709,7 @@ e2e_cache_trace_add_ct(struct conntrack *ct,
     }
     conntrack_offload_fill_item_add(&item, conn, dir);
     item.ct_match.odp_port = p->md.in_port.odp_port;
+    item.ct_match.orig_in_port = p->md.orig_in_port;
 
     dir_info = &conn->offloads.dir_info[dir];
     dir = ct_get_packet_dir(!reply);

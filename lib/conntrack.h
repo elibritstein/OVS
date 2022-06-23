@@ -120,6 +120,7 @@ enum ct_direction {
 
 struct ct_match {
     odp_port_t odp_port;
+    odp_port_t orig_in_port;
     struct conn_key key;
 };
 

@@ -3504,6 +3504,7 @@ dp_netdev_ct_offload_add_cb(struct ct_flow_offload_item *ct_offload,
         ds_destroy(&ds);
     }
     info.is_ct_conn = true;
+    info.orig_in_port = ct_match->orig_in_port;
     ret = netdev_flow_put(port, &match, actions, actions_len, &ct_offload->ufid,
                           &info, NULL);
     if (ct_offload->status) {
