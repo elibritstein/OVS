@@ -2636,13 +2636,16 @@ netdev_dpdk_vdpa_rxq_recv(struct netdev_rxq *rxq,
 {
     struct netdev_dpdk *dev = netdev_dpdk_cast(rxq->netdev);
     int fwd_rx;
-    int ret;
+    int ret = 0;
 
     fwd_rx = netdev_dpdk_vdpa_rxq_recv_impl(dev->relay, rxq->queue_id);
-    ret = netdev_dpdk_rxq_recv(rxq, batch, qfill);
-    if ((ret == EAGAIN) && fwd_rx) {
-        return 0;
+    if (dev->netdev_rep) {
+        ret = netdev_dpdk_rxq_recv(rxq, batch, qfill);
+        if ((ret == EAGAIN) && fwd_rx) {
+            return 0;
+        }
     }
+
     return ret;
 }
 
