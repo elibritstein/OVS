@@ -3362,7 +3362,8 @@ bridge_run(void)
 
             vlog_enable_async();
 
-            VLOG_INFO_ONCE("%s (Open vSwitch) %s", program_name, VERSION);
+            VLOG_INFO_ONCE("%s (Open vSwitch) %s-%s", program_name, VERSION,
+                           GIT_SHA_STR);
         }
     }
 
