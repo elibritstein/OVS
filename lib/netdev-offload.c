@@ -187,6 +187,7 @@ netdev_assign_flow_api(struct netdev *netdev)
     CMAP_FOR_EACH (rfa, cmap_node, &netdev_flow_apis) {
         if (!rfa->flow_api->init_flow_api(netdev)) {
             ovs_refcount_ref(&rfa->refcnt);
+            netdev->hw_info.miss_api_supported = true;
             ovsrcu_set(&netdev->flow_api, rfa->flow_api);
             VLOG_INFO("%s: Assigned flow API '%s'.",
                       netdev_get_name(netdev), rfa->flow_api->type);
@@ -195,6 +196,7 @@ netdev_assign_flow_api(struct netdev *netdev)
         VLOG_DBG("%s: flow API '%s' is not suitable.",
                  netdev_get_name(netdev), rfa->flow_api->type);
     }
+    netdev->hw_info.miss_api_supported = false;
     VLOG_INFO("%s: No suitable flow API found.", netdev_get_name(netdev));
 
     return -1;
@@ -270,13 +272,26 @@ netdev_hw_miss_packet_recover(struct netdev *netdev,
                               uint8_t *skip_actions,
                               struct dpif_sflow_attr *sflow_attr)
 {
-    const struct netdev_flow_api *flow_api =
-        ovsrcu_get(const struct netdev_flow_api *, &netdev->flow_api);
+    const struct netdev_flow_api *flow_api;
+    int rv;
 
-    return (flow_api && flow_api->hw_miss_packet_recover)
-            ? flow_api->hw_miss_packet_recover(netdev, packet, skip_actions,
-                                               sflow_attr)
-            : EOPNOTSUPP;
+    if (!netdev->hw_info.miss_api_supported) {
+        return EOPNOTSUPP;
+    }
+
+    flow_api = ovsrcu_get(const struct netdev_flow_api *, &netdev->flow_api);
+    if (!flow_api || !flow_api->hw_miss_packet_recover) {
+        return EOPNOTSUPP;
+    }
+
+    rv = flow_api->hw_miss_packet_recover(netdev, packet, skip_actions,
+                                          sflow_attr);
+    if (rv == EOPNOTSUPP) {
+        /* API unsupported by the port; avoid subsequent calls. */
+        netdev->hw_info.miss_api_supported = false;
+    }
+
+    return rv;
 }
 
 int
