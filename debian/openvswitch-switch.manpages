@@ -1,5 +1,6 @@
 debian/build/ovsdb/ovsdb-server.1
 debian/build/ovsdb/ovsdb-server.5
+debian/build/ovsdb/ovsdb.local-config.5
 debian/build/Documentation/_build/man/ovs-ctl.8
 debian/build/utilities/ovs-dpctl-top.8
 debian/build/utilities/ovs-dpctl.8
