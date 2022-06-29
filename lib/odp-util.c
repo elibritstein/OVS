@@ -7897,19 +7897,41 @@ commit_set_ether_action(const struct flow *flow, struct flow *base_flow,
 }
 
 static void
-commit_vlan_action(const struct flow* flow, struct flow *base,
-                   struct ofpbuf *odp_actions, struct flow_wildcards *wc)
+commit_vlan_pop_action(const struct flow *flow, struct flow *base,
+                       struct ofpbuf *odp_actions, struct flow_wildcards *wc)
 {
     int base_n = flow_count_vlan_headers(base);
     int flow_n = flow_count_vlan_headers(flow);
     flow_skip_common_vlan_headers(base, &base_n, flow, &flow_n);
 
-    /* Pop all mismatching vlan of base, push those of flow */
+    /* Pop mismatching vlans from base that are only removal,
+     * not headers meant to be modified. */
+    for (; base_n > flow_n; base_n--) {
+        nl_msg_put_flag(odp_actions, OVS_ACTION_ATTR_POP_VLAN);
+        wc->masks.vlans[base_n].qtag = OVS_BE32_MAX;
+    }
+}
+
+static void
+commit_vlan_mod_push_action(const struct flow *flow, struct flow *base,
+                            struct ofpbuf *odp_actions,
+                            struct flow_wildcards *wc)
+{
+    int base_n = flow_count_vlan_headers(base);
+    int flow_n = flow_count_vlan_headers(flow);
+    flow_skip_common_vlan_headers(base, &base_n, flow, &flow_n);
+
+    /* Pop any vlan headers meant to be modified. */
+    if (base_n > flow_n) {
+        base_n = flow_n;
+    }
     for (; base_n >= 0; base_n--) {
         nl_msg_put_flag(odp_actions, OVS_ACTION_ATTR_POP_VLAN);
         wc->masks.vlans[base_n].qtag = OVS_BE32_MAX;
     }
 
+    /* Either complete modifications, or push new vlans
+     * by pushing all vlans of flow. */
     for (; flow_n >= 0; flow_n--) {
         struct ovs_action_push_vlan vlan;
 
@@ -8718,6 +8740,7 @@ commit_odp_actions(const struct flow *flow, struct flow *base,
 
     commit_encap_decap_action(flow, base, odp_actions, wc,
                               pending_encap, pending_decap, encap_data);
+    commit_vlan_pop_action(flow, base, odp_actions, wc);
     commit_set_ether_action(flow, base, odp_actions, wc, use_masked);
     /* Make packet a non-MPLS packet before committing L3/4 actions,
      * which would otherwise do nothing. */
@@ -8732,7 +8755,7 @@ commit_odp_actions(const struct flow *flow, struct flow *base,
     if (!mpls_done) {
         commit_mpls_action(flow, base, odp_actions, false);
     }
-    commit_vlan_action(flow, base, odp_actions, wc);
+    commit_vlan_mod_push_action(flow, base, odp_actions, wc);
     commit_set_priority_action(flow, base, odp_actions, wc, use_masked);
     commit_set_pkt_mark_action(flow, base, odp_actions, wc, use_masked);
 
