@@ -6241,9 +6241,20 @@ ct_tables_init(struct netdev *netdev, unsigned int tid)
         ovsrcu_get(void *, &netdev->hw_info.offload_data);
 
     if (ovsthread_once_start(&data->ct_tables_once)) {
-        ct_nat_miss_init(netdev, tid, &data->ct_nat_miss);
-        ct_zones_init(netdev, tid, data);
+        int ret;
+
+        ret = ct_nat_miss_init(netdev, tid, &data->ct_nat_miss);
+        if (!ret) {
+            ret = ct_zones_init(netdev, tid, data);
+        }
         ovsthread_once_done(&data->ct_tables_once);
+        if (ret) {
+            VLOG_WARN("Cannot apply init flows for netdev %s",
+                      netdev_get_name(netdev));
+            ct_tables_uninit(netdev, tid);
+            data->ct_tables_once = (struct ovsthread_once) OVSTHREAD_ONCE_INITIALIZER;
+        }
+        return ret;
     }
 
     return 0;
