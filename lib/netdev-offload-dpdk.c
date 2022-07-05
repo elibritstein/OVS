@@ -6142,7 +6142,7 @@ ct_zones_init(struct netdev *netdev, unsigned int tid,
               .mask = &tag_mask },
             { .type = RTE_FLOW_ITEM_TYPE_END, },
         },
-        .cnt = 5,
+        .cnt = 4,
     };
     struct flow_actions actions = {
         .actions = (struct rte_flow_action []) {
