@@ -1908,6 +1908,11 @@ netdev_dpdk_process_devargs(struct netdev_dpdk *dev,
         VLOG_WARN_BUF(errp, "Error attaching device '%s' to DPDK", devargs);
     }
 
+    if (new_port_id == NETDEV_DPDK_METER_PORT_ID) {
+        add_meter_policy(NETDEV_DPDK_METER_PORT_ID,
+                         NETDEV_DPDK_METER_POLICY_ID);
+    }
+
     return new_port_id;
 }
 
@@ -4438,8 +4443,6 @@ netdev_dpdk_class_init(void)
                      rte_strerror(-ret));
         }
 
-        add_meter_policy(NETDEV_DPDK_METER_PORT_ID,
-                         NETDEV_DPDK_METER_POLICY_ID);
         netdev_dpdk_meters_init();
 
         ovsthread_once_done(&once);
