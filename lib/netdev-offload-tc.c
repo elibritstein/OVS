@@ -87,6 +87,7 @@ sgid_node_free(struct sgid_node *node)
 {
     free(node->sflow.tunnel);
     free(CONST_CAST(void *, node->sflow.action));
+    free(CONST_CAST(void *, node->sflow.actions));
     free(CONST_CAST(void *, node->sflow.userdata));
     free(node);
 }
@@ -134,6 +135,13 @@ dpif_sflow_attr_equal(const struct dpif_offload_sflow_attr *a,
         || memcmp(a->action, b->action, a->action->nla_len)) {
         return false;
     }
+    if (a->actions_len != b->actions_len) {
+        return false;
+    }
+    if (a->actions_len && b->actions_len
+        && memcmp(a->actions, b->actions, a->actions_len)) {
+        return false;
+    }
     if (!a->tunnel && !b->tunnel) {
         return true;
     }
@@ -177,6 +185,10 @@ dpif_sflow_attr_clone(struct dpif_offload_sflow_attr *new,
                       const struct dpif_offload_sflow_attr *old)
 {
     new->action = xmemdup(old->action, old->action->nla_len);
+    new->actions_len = old->actions_len;
+    new->actions = old->actions
+                   ? xmemdup(old->actions, old->actions_len)
+                   : NULL;
     new->userdata = xmemdup(old->userdata, old->userdata->nla_len);
     new->tunnel = old->tunnel
                   ? xmemdup(old->tunnel, sizeof *old->tunnel)
@@ -1864,6 +1876,7 @@ parse_sample_actions_attribute(const struct nlattr *actions,
 static int
 parse_sample_action(struct tc_flower *flower, struct tc_action *tc_action,
                     const struct nlattr *sample_action,
+                    const struct nlattr *actions, size_t actions_len,
                     const struct flow_tnl *tnl, uint32_t *group_id,
                     const ovs_u128 *ufid)
 {
@@ -1885,6 +1898,9 @@ parse_sample_action(struct tc_flower *flower, struct tc_action *tc_action,
 
     if (flower->tunnel) {
         sflow_attr.tunnel = CONST_CAST(struct flow_tnl *, tnl);
+    } else {
+        sflow_attr.actions = actions;
+        sflow_attr.actions_len = actions_len;
     }
 
     NL_NESTED_FOR_EACH_UNSAFE (nla, left, sample_action) {
@@ -1916,6 +1932,7 @@ parse_sample_action(struct tc_flower *flower, struct tc_action *tc_action,
 static int
 parse_userspace_action(struct tc_flower *flower, struct tc_action *tc_action,
                        const struct nlattr *userspace_action,
+                       const struct nlattr *actions, size_t actions_len,
                        const struct flow_tnl *tnl, uint32_t *group_id,
                        const ovs_u128 *ufid)
 {
@@ -1937,6 +1954,9 @@ parse_userspace_action(struct tc_flower *flower, struct tc_action *tc_action,
     sflow_attr.ufid = *ufid;
     if (flower->tunnel) {
         sflow_attr.tunnel = CONST_CAST(struct flow_tnl *, tnl);
+    } else {
+        sflow_attr.actions = actions;
+        sflow_attr.actions_len = actions_len;
     }
     err = parse_userspace_attributes(userspace_action, &sflow_attr);
     if (err) {
@@ -2345,8 +2365,8 @@ netdev_tc_flow_put(struct netdev *netdev, struct match *match,
                 err = EOPNOTSUPP;
                 goto out;
             }
-            err = parse_sample_action(&flower, action, nla, tnl, &sample_gid,
-                                      ufid);
+            err = parse_sample_action(&flower, action, nla, actions,
+                                      actions_len, tnl, &sample_gid, ufid);
             if (err) {
                 goto out;
             }
@@ -2357,8 +2377,8 @@ netdev_tc_flow_put(struct netdev *netdev, struct match *match,
                 err = EOPNOTSUPP;
                 goto out;
             }
-            err = parse_userspace_action(&flower, action, nla, tnl,
-                                         &sample_gid, ufid);
+            err = parse_userspace_action(&flower, action, nla, actions,
+                                         actions_len, tnl, &sample_gid, ufid);
             if (err) {
                 goto out;
             }

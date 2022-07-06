@@ -789,6 +789,7 @@ process_offload_sflow(struct udpif *udpif, struct dpif_offload_sflow *sflow)
     const struct user_action_cookie *cookie;
     struct dpif_sflow *dpif_sflow;
     struct ofproto_dpif *ofproto;
+    struct nlattr *nla = NULL;
     struct upcall upcall;
     struct flow flow;
 
@@ -824,6 +825,13 @@ process_offload_sflow(struct udpif *udpif, struct dpif_offload_sflow *sflow)
     }
     flow.in_port.odp_port = netdev_ifindex_to_odp_port(sflow->iifindex);
     memset(&upcall, 0, sizeof upcall);
+    if (attr->actions) {
+        nla = xmalloc(attr->actions_len + NLA_HDRLEN);
+        nullable_memcpy((char *) nla + NLA_HDRLEN, attr->actions,
+                        attr->actions_len);
+        nla->nla_len = attr->actions_len + NLA_HDRLEN;
+        upcall.actions = nla;
+    }
     upcall.flow = &flow;
     upcall.cookie = *cookie;
     upcall.packet = &sflow->packet;
@@ -831,6 +839,7 @@ process_offload_sflow(struct udpif *udpif, struct dpif_offload_sflow *sflow)
     upcall.ufid = &attr->ufid;
     upcall.type = SFLOW_UPCALL;
     process_upcall(udpif, &upcall, NULL, NULL);
+    free(nla);
 }
 
 static void

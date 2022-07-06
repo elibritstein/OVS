@@ -38,9 +38,11 @@ extern const struct dpif_offload_class dpif_offload_netdev_class;
  * sampled packet to the right sFlow monitoring host.
  */
 struct dpif_offload_sflow_attr {
-    const struct nlattr *action;    /* SFlow action. */
+    const struct nlattr *action;    /* SFlow action only. */
     const struct nlattr *userdata;  /* Struct user_action_cookie. */
-    struct flow_tnl *tunnel;        /* Tunnel info. */
+    const struct nlattr *actions;   /* All actions to get output tunnel. */
+    size_t actions_len;             /* All actions len. */
+    struct flow_tnl *tunnel;        /* Input tunnel. */
     ovs_u128 ufid;                  /* Flow ufid. */
 };
 
