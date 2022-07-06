@@ -5852,11 +5852,11 @@ static void
 ct_tables_uninit(struct netdev *netdev, unsigned int tid);
 
 static int
-netdev_offload_dpdk_flow_flush(struct netdev *netdev)
+netdev_offload_dpdk_flow_flush__(struct netdev *netdev)
 {
+    unsigned int tid = netdev_offload_thread_id();
     struct cmap *map = offload_data_map(netdev);
     struct ufid_to_rte_flow_data *data;
-    unsigned int tid = netdev_offload_thread_id();
 
     if (!map) {
         return -1;
@@ -5874,6 +5874,67 @@ netdev_offload_dpdk_flow_flush(struct netdev *netdev)
     }
 
     return 0;
+}
+
+struct flush_esw_members_aux {
+    struct netdev *esw_netdev;
+    int ret;
+};
+
+/* Upon flushing the ESW manager, its members netdevs should be flushed too,
+ * as their offloads are done on it.
+ */
+static bool
+flush_esw_members_cb(struct netdev *netdev,
+                     odp_port_t odp_port OVS_UNUSED,
+                     void *aux_)
+{
+    struct flush_esw_members_aux *aux = aux_;
+    struct netdev *esw_netdev;
+    int netdev_esw_mgr_pid;
+    int esw_mgr_pid;
+
+    esw_netdev = aux->esw_netdev;
+
+    /* Skip the ESW netdev itself. */
+    if (netdev == esw_netdev) {
+        return false;
+    }
+
+    netdev_esw_mgr_pid = netdev_dpdk_get_esw_mgr_port_id(netdev);
+    esw_mgr_pid = netdev_dpdk_get_esw_mgr_port_id(esw_netdev);
+
+    /* Skip a non-member. */
+    if (netdev_esw_mgr_pid == -1 || esw_mgr_pid == -1 ||
+        netdev_esw_mgr_pid != esw_mgr_pid) {
+        return false;
+    }
+
+    if (netdev_offload_dpdk_flow_flush__(netdev)) {
+        aux->ret = -1;
+        return true;
+    }
+
+    return false;
+}
+
+static int
+netdev_offload_dpdk_flow_flush(struct netdev *netdev)
+{
+    struct flush_esw_members_aux aux = {
+        .esw_netdev = netdev,
+        .ret = 0,
+    };
+
+    if (netdev_offload_dpdk_flow_flush__(netdev)) {
+        return -1;
+    }
+
+    if (!netdev_vport_is_vport_class(netdev->netdev_class)) {
+        netdev_ports_traverse(netdev->dpif_type, flush_esw_members_cb, &aux);
+    }
+
+    return aux.ret;
 }
 
 struct get_vport_netdev_aux {
