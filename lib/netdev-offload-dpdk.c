@@ -4971,7 +4971,8 @@ parse_ct_actions(struct flow_actions *actions,
 }
 
 static int
-parse_flow_actions(struct netdev *netdev,
+parse_flow_actions(struct netdev *flowdev,
+                   struct netdev *netdev,
                    struct flow_actions *actions,
                    struct nlattr *nl_actions,
                    size_t nl_actions_len,
@@ -4980,7 +4981,8 @@ parse_flow_actions(struct netdev *netdev,
                    uint8_t nest_level);
 
 static int
-add_sample_embedded_action(struct netdev *netdev,
+add_sample_embedded_action(struct netdev *flowdev,
+                           struct netdev *netdev,
                            struct flow_actions *actions,
                            struct nlattr *nl_actions,
                            size_t nl_actions_len,
@@ -4993,8 +4995,9 @@ add_sample_embedded_action(struct netdev *netdev,
 
     sample_actions = per_thread_xzalloc(sizeof *sample_actions);
 
-    if (parse_flow_actions(netdev, sample_actions, nl_actions, nl_actions_len,
-                           act_resources, act_vars, nest_level + 1)) {
+    if (parse_flow_actions(flowdev, netdev, sample_actions, nl_actions,
+                           nl_actions_len, act_resources, act_vars,
+                           nest_level + 1)) {
         goto err;
     }
     add_flow_action(sample_actions, RTE_FLOW_ACTION_TYPE_END, NULL);
@@ -5274,7 +5277,8 @@ netdev_offload_dpdk_flow_create(struct netdev *netdev,
 }
 
 static int
-parse_flow_actions(struct netdev *netdev,
+parse_flow_actions(struct netdev *flowdev,
+                   struct netdev *netdev,
                    struct flow_actions *actions,
                    struct nlattr *nl_actions,
                    size_t nl_actions_len,
@@ -5305,11 +5309,11 @@ parse_flow_actions(struct netdev *netdev,
              * outputs should embed the port-id action inside a sample action.
              */
             if (left <= NLA_ALIGN(nla->nla_len)) {
-                if (add_output_action(netdev, actions, nla)) {
+                if (add_output_action(flowdev, actions, nla)) {
                    return -1;
                 }
             } else {
-                if (add_sample_embedded_action(netdev, actions, nla,
+                if (add_sample_embedded_action(flowdev, netdev, actions, nla,
                                                nl_attr_get_size(nla),
                                                act_resources, act_vars,
                                                nest_level)) {
@@ -5389,13 +5393,14 @@ parse_flow_actions(struct netdev *netdev,
              * applied embedded in a sample action.
              */
             if (left <= NLA_ALIGN(nla->nla_len)) {
-                if (parse_flow_actions(netdev, actions, clone_actions,
+                if (parse_flow_actions(flowdev, netdev, actions, clone_actions,
                                        clone_actions_len, act_resources,
                                        act_vars, nest_level + 1)) {
                     return -1;
                 }
             } else {
-                if (add_sample_embedded_action(netdev, actions, clone_actions,
+                if (add_sample_embedded_action(flowdev, netdev, actions,
+                                               clone_actions,
                                                clone_actions_len,
                                                act_resources, act_vars,
                                                nest_level)) {
@@ -5499,7 +5504,8 @@ parse_flow_actions(struct netdev *netdev,
 }
 
 static int
-netdev_offload_dpdk_actions(struct netdev *netdev,
+netdev_offload_dpdk_actions(struct netdev *flowdev,
+                            struct netdev *netdev,
                             struct flow_patterns *patterns,
                             struct nlattr *nl_actions,
                             size_t actions_len,
@@ -5516,8 +5522,8 @@ netdev_offload_dpdk_actions(struct netdev *netdev,
     struct rte_flow_error error;
     int ret;
 
-    ret = parse_flow_actions(netdev, &actions, nl_actions, actions_len,
-                             act_resources, act_vars, 0);
+    ret = parse_flow_actions(flowdev, netdev, &actions, nl_actions,
+                             actions_len, act_resources, act_vars, 0);
     if (ret) {
         goto out;
     }
@@ -5571,9 +5577,9 @@ netdev_offload_dpdk_add_flow(struct netdev *netdev,
     }
 
     memset(&flow_item, 0, sizeof flow_item);
-    ret = netdev_offload_dpdk_actions(patterns.physdev, &patterns, nl_actions,
-                                      actions_len, &act_resources, &act_vars,
-                                      &flow_item);
+    ret = netdev_offload_dpdk_actions(netdev, patterns.physdev, &patterns,
+                                      nl_actions, actions_len, &act_resources,
+                                      &act_vars, &flow_item);
     if (ret) {
         goto out;
     }
