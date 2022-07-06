@@ -33,7 +33,7 @@ strip_xout_keep_actions () {
 }
 
 filter_flow_install () {
-    grep -A1 'flow_add' | grep Transient | sed 's/.*Transient flow: //' | sort | uniq
+    grep Transient | grep -v old_actions | sed 's/.*Transient flow: //' | sort | uniq
 }
 
 filter_hw_flow_install () {
