@@ -800,6 +800,13 @@ void dpif_operate(struct dpif *, struct dpif_op **ops, size_t n_ops,
 int dpif_offload_stats_get(struct dpif *dpif,
                            struct netdev_custom_stats *stats,
                            bool verbose);
+
+/* Clears the hardware offloads stats of the datapath.
+ *
+ * Reset the statistics for which it makes sense.
+ * Counters are kept as-is.
+ */
+int dpif_offload_stats_clear(struct dpif *dpif);
 
 /* Upcalls. */
 

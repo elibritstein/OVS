@@ -1849,6 +1849,29 @@ close_dpif:
 }
 
 static int
+dpctl_offload_stats_clear(int argc, const char *argv[],
+                          struct dpctl_params *dpctl_p)
+{
+    struct dpif *dpif;
+    int error;
+
+    error = opt_dpif_open(argc, argv, dpctl_p, 2, &dpif);
+    if (error) {
+        return error;
+    }
+
+    error = dpif_offload_stats_clear(dpif);
+    if (error) {
+        dpctl_error(dpctl_p, error, "clearing offload statistics");
+    } else {
+        dpctl_print(dpctl_p, "offload statistics cleared");
+    }
+
+    dpif_close(dpif);
+    return error;
+}
+
+static int
 dpctl_help(int argc OVS_UNUSED, const char *argv[] OVS_UNUSED,
            struct dpctl_params *dpctl_p)
 {
@@ -3091,6 +3114,8 @@ static const struct dpctl_command all_commands[] = {
     { "del-flows", "[dp] [file]", 0, 2, dpctl_del_flows, DP_RW },
     { "offload-stats-show", "[dp]",
       0, 1, dpctl_offload_stats_show, DP_RO },
+    { "offload-stats-clear", "[dp]",
+      0, 1, dpctl_offload_stats_clear, DP_RW },
     { "dump-conntrack", "[-m] [-s] [dp] [zone=N]",
       0, 4, dpctl_dump_conntrack, DP_RO },
     { "dump-e2e-flows", "", 0, 1, dpctl_dump_e2e_flows, DP_RO },

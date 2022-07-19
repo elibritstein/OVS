@@ -348,6 +348,10 @@ struct dpif_class {
                              struct netdev_custom_stats *stats,
                              bool verbose);
 
+    /* Instruct the dataplane to reset the hardware-offload statistics
+     * that can be, i.e. counters are not reset. */
+    int (*offload_stats_clear)(struct dpif *dpif);
+
     /* Enables or disables receiving packets with dpif_recv() for 'dpif'.
      * Turning packet receive off and then back on is allowed to change Netlink
      * PID assignments (see ->port_get_pid()).  The client is responsible for

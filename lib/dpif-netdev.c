@@ -12571,6 +12571,7 @@ const struct dpif_class dpif_netdev_class = {
     dpif_netdev_dump_e2e_flows,
     dpif_netdev_operate,
     dpif_netdev_offload_stats_get,
+    NULL,                       /* offload_stats_clear */
     NULL,                       /* recv_set */
     NULL,                       /* handlers_set */
     NULL,                       /* number_handlers_required */
