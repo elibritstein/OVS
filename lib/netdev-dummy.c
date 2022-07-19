@@ -1599,6 +1599,47 @@ exit:
     return error ? -1 : 0;
 }
 
+
+static int
+netdev_dummy_flow_get(struct netdev *netdev,
+                      struct match *m OVS_UNUSED,
+                      struct nlattr **actions OVS_UNUSED,
+                      const ovs_u128 *ufid,
+                      struct dpif_flow_stats *stats OVS_UNUSED,
+                      struct dpif_flow_attrs *attrs,
+                      struct ofpbuf *wbuffer OVS_UNUSED,
+                      long long now OVS_UNUSED)
+{
+    struct netdev_dummy *dev = netdev_dummy_cast(netdev);
+    struct offloaded_flow *off_flow;
+
+    ovs_mutex_lock(&dev->mutex);
+
+    off_flow = find_offloaded_flow(&dev->offloaded_flows, ufid);
+    if (off_flow && attrs) {
+        attrs->offloaded = true;
+        attrs->dp_layer = "dummy";
+    }
+
+    ovs_mutex_unlock(&dev->mutex);
+
+    if (VLOG_IS_DBG_ENABLED()) {
+        struct ds ds = DS_EMPTY_INITIALIZER;
+
+        ds_put_format(&ds, "%s: ", netdev_get_name(netdev));
+        ds_put_cstr(&ds, "flow get: ");
+        odp_format_ufid(ufid, &ds);
+        VLOG(VLL_DBG, "%s", ds_cstr(&ds));
+        ds_destroy(&ds);
+    }
+
+    if (stats) {
+        memset(stats, 0, sizeof *stats);
+    }
+
+    return 0;
+}
+
 #define NETDEV_DUMMY_CLASS_COMMON                       \
     .run = netdev_dummy_run,                            \
     .wait = netdev_dummy_wait,                          \
@@ -1660,6 +1701,7 @@ static const struct netdev_flow_api netdev_offload_dummy = {
     .type = "dummy",
     .flow_put = netdev_dummy_flow_put,
     .flow_del = netdev_dummy_flow_del,
+    .flow_get = netdev_dummy_flow_get,
     .init_flow_api = netdev_dummy_offloads_init_flow_api,
 };
 

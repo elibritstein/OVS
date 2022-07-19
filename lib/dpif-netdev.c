@@ -4069,7 +4069,8 @@ queue_netdev_flow_put(struct dp_netdev_pmd_thread *pmd,
 
 static void
 dp_netdev_pmd_remove_flow(struct dp_netdev_pmd_thread *pmd,
-                          struct dp_netdev_flow *flow)
+                          struct dp_netdev_flow *flow,
+                          bool offloaded)
     OVS_REQUIRES(pmd->flow_mutex)
 {
     struct cmap_node *node = CONST_CAST(struct cmap_node *, &flow->node);
@@ -4082,7 +4083,9 @@ dp_netdev_pmd_remove_flow(struct dp_netdev_pmd_thread *pmd,
     dp_netdev_simple_match_remove(pmd, flow);
     cmap_remove(&pmd->flow_table, node, dp_netdev_flow_hash(&flow->ufid));
     ccmap_dec(&pmd->n_flows, odp_to_u32(in_port));
-    queue_netdev_flow_del(pmd, flow);
+    if (offloaded) {
+        queue_netdev_flow_del(pmd, flow);
+    }
     flow->dead = true;
 
     if (OVS_UNLIKELY(!VLOG_DROP_DBG((&upcall_rl)))) {
@@ -4185,13 +4188,22 @@ dp_netdev_offload_flush(struct dp_netdev *dp,
 }
 
 static void
+get_dpif_flow_status(const struct dp_netdev *dp,
+                     const struct dp_netdev_flow *netdev_flow_,
+                     struct dpif_flow_stats *stats,
+                     struct dpif_flow_attrs *attrs);
+
+static void
 dp_netdev_pmd_flow_flush(struct dp_netdev_pmd_thread *pmd)
 {
     struct dp_netdev_flow *netdev_flow;
 
     ovs_mutex_lock(&pmd->flow_mutex);
     CMAP_FOR_EACH (netdev_flow, node, &pmd->flow_table) {
-        dp_netdev_pmd_remove_flow(pmd, netdev_flow);
+        struct dpif_flow_attrs attrs;
+
+        get_dpif_flow_status(pmd->dp, netdev_flow, NULL, &attrs);
+        dp_netdev_pmd_remove_flow(pmd, netdev_flow, attrs.offloaded);
     }
     ovs_mutex_unlock(&pmd->flow_mutex);
 }
@@ -5363,14 +5375,15 @@ flow_del_on_pmd(struct dp_netdev_pmd_thread *pmd,
                 const struct dpif_flow_del *del)
 {
     struct dp_netdev_flow *netdev_flow;
+    struct dpif_flow_attrs attrs;
     int error = 0;
 
     ovs_mutex_lock(&pmd->flow_mutex);
     netdev_flow = dp_netdev_pmd_find_flow(pmd, del->ufid, del->key,
                                           del->key_len);
     if (netdev_flow) {
-        get_dpif_flow_status(pmd->dp, netdev_flow, stats, NULL);
-        dp_netdev_pmd_remove_flow(pmd, netdev_flow);
+        get_dpif_flow_status(pmd->dp, netdev_flow, stats, &attrs);
+        dp_netdev_pmd_remove_flow(pmd, netdev_flow, attrs.offloaded);
     } else {
         error = ENOENT;
     }
