@@ -4733,22 +4733,26 @@ get_dpif_flow_status(const struct dp_netdev *dp,
 
     netdev_flow = CONST_CAST(struct dp_netdev_flow *, netdev_flow_);
 
-    atomic_read_relaxed(&netdev_flow->stats.packet_count, &n);
-    stats->n_packets = n;
-    atomic_read_relaxed(&netdev_flow->stats.byte_count, &n);
-    stats->n_bytes = n;
-    atomic_read_relaxed(&netdev_flow->stats.used, &used);
-    stats->used = used;
-    atomic_read_relaxed(&netdev_flow->stats.tcp_flags, &flags);
-    stats->tcp_flags = flags;
+    if (stats) {
+        atomic_read_relaxed(&netdev_flow->stats.packet_count, &n);
+        stats->n_packets = n;
+        atomic_read_relaxed(&netdev_flow->stats.byte_count, &n);
+        stats->n_bytes = n;
+        atomic_read_relaxed(&netdev_flow->stats.used, &used);
+        stats->used = used;
+        atomic_read_relaxed(&netdev_flow->stats.tcp_flags, &flags);
+        stats->tcp_flags = flags;
+    }
 
     if (!dpif_netdev_get_flow_offload_status(dp, netdev_flow,
                                              &offload_stats, &offload_attrs,
                                              time_msec(), 0)) {
-        stats->n_packets += offload_stats.n_packets;
-        stats->n_bytes += offload_stats.n_bytes;
-        stats->used = MAX(stats->used, offload_stats.used);
-        stats->tcp_flags |= offload_stats.tcp_flags;
+        if (stats) {
+            stats->n_packets += offload_stats.n_packets;
+            stats->n_bytes += offload_stats.n_bytes;
+            stats->used = MAX(stats->used, offload_stats.used);
+            stats->tcp_flags |= offload_stats.tcp_flags;
+        }
         if (attrs) {
             attrs->offloaded = offload_attrs.offloaded;
             attrs->dp_layer = offload_attrs.dp_layer;
@@ -5239,9 +5243,7 @@ flow_put_on_pmd(struct dp_netdev_pmd_thread *pmd,
                                   DP_NETDEV_FLOW_OFFLOAD_OP_MOD);
             log_netdev_flow_change(netdev_flow, match, old_actions);
 
-            if (stats) {
-                get_dpif_flow_status(pmd->dp, netdev_flow, stats, NULL);
-            }
+            get_dpif_flow_status(pmd->dp, netdev_flow, stats, NULL);
             if (put->flags & DPIF_FP_ZERO_STATS) {
                 /* XXX: The userspace datapath uses thread local statistics
                  * (for flows), which should be updated only by the owning
@@ -5367,9 +5369,7 @@ flow_del_on_pmd(struct dp_netdev_pmd_thread *pmd,
     netdev_flow = dp_netdev_pmd_find_flow(pmd, del->ufid, del->key,
                                           del->key_len);
     if (netdev_flow) {
-        if (stats) {
-            get_dpif_flow_status(pmd->dp, netdev_flow, stats, NULL);
-        }
+        get_dpif_flow_status(pmd->dp, netdev_flow, stats, NULL);
         dp_netdev_pmd_remove_flow(pmd, netdev_flow);
     } else {
         error = ENOENT;
