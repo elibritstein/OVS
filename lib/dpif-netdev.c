@@ -353,6 +353,7 @@ enum dp_offload_type {
     DP_OFFLOAD_FLOW,
     DP_OFFLOAD_FLUSH,
     DP_OFFLOAD_CT,
+    DP_OFFLOAD_STATS_CLEAR,
 };
 
 enum {
@@ -3095,6 +3096,8 @@ dp_netdev_free_offload(struct dp_offload_thread_item *offload)
     case DP_OFFLOAD_FLOW:
         dp_netdev_free_flow_offload(offload);
         break;
+    case DP_OFFLOAD_STATS_CLEAR:
+        /* Fallthrough */
     case DP_OFFLOAD_FLUSH:
         free(offload);
         break;
@@ -3749,6 +3752,10 @@ dp_netdev_flow_offload_main(void *arg)
             switch (offload->type) {
             case DP_OFFLOAD_FLOW:
                 dp_offload_flow(offload);
+                break;
+            case DP_OFFLOAD_STATS_CLEAR:
+                mov_avg_cma_init(&ofl_thread->cma);
+                mov_avg_ema_init(&ofl_thread->ema, 100);
                 break;
             case DP_OFFLOAD_FLUSH:
                 dp_offload_flush(offload);
@@ -5975,6 +5982,30 @@ dpif_netdev_offload_stats_get(struct dpif *dpif,
         snprintf(stats->counters[i].name, sizeof(stats->counters[i].name),
                  "  Total %s", cur_stats->name);
         stats->counters[i].value = cur_stats->total;
+    }
+
+    return 0;
+}
+
+static int
+dpif_netdev_offload_stats_clear(struct dpif *dpif OVS_UNUSED)
+{
+    struct dp_netdev *dp = get_dp_netdev(dpif);
+    unsigned int tid;
+
+    if (!netdev_is_flow_api_enabled()) {
+        return EINVAL;
+    }
+
+    for (tid = 0; tid < netdev_offload_thread_nb(); tid++) {
+        struct dp_offload_thread_item *item;
+
+        item = xmalloc(sizeof *item);
+        item->type = DP_OFFLOAD_STATS_CLEAR;
+        item->dp = dp;
+        item->timestamp = time_usec();
+
+        dp_netdev_append_offload(item, tid);
     }
 
     return 0;
@@ -12571,7 +12602,7 @@ const struct dpif_class dpif_netdev_class = {
     dpif_netdev_dump_e2e_flows,
     dpif_netdev_operate,
     dpif_netdev_offload_stats_get,
-    NULL,                       /* offload_stats_clear */
+    dpif_netdev_offload_stats_clear,
     NULL,                       /* recv_set */
     NULL,                       /* handlers_set */
     NULL,                       /* number_handlers_required */
