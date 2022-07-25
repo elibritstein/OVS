@@ -363,6 +363,7 @@ conntrack_offload_del_conn(struct conntrack *ct,
         conn_dir->offloads.dir_info[CT_DIR_INIT].status = false;
         conn_dir->offloads.dir_info[CT_DIR_REP].status = false;
     }
+    item[CT_DIR_INIT].timestamp = time_usec();
     item[CT_DIR_INIT].refcnt = conn->offloads.refcnt;
     item[CT_DIR_REP].refcnt = NULL;
     offload_class->conn_del(item);
@@ -1757,7 +1758,7 @@ static void
 conntrack_offload_add_conn(struct conntrack *ct,
                            struct dp_packet *packet,
                            struct conn *conn,
-                           bool reply)
+                           bool reply, long long now_us)
 {
     struct conntrack_offload_class *offload_class;
     struct ct_flow_offload_item item[CT_DIR_NUM];
@@ -1819,6 +1820,7 @@ conntrack_offload_add_conn(struct conntrack *ct,
         refcnt = xmalloc(sizeof *refcnt);
         ovs_refcount_init(refcnt);
         ovs_refcount_ref(refcnt);
+        item[CT_DIR_INIT].timestamp = now_us;
         item[CT_DIR_INIT].refcnt = refcnt;
         item[CT_DIR_REP].refcnt = NULL;
         offload_class->conn_add(item);
@@ -1851,9 +1853,11 @@ conntrack_execute(struct conntrack *ct, struct dp_packet_batch *pkt_batch,
                   const struct ovs_key_ct_labels *setlabel,
                   ovs_be16 tp_src, ovs_be16 tp_dst, const char *helper,
                   const struct nat_action_info_t *nat_action_info,
-                  long long now, uint32_t tp_id)
+                  long long now_us, uint32_t tp_id)
 {
-    ipf_preprocess_conntrack(ct->ipf, pkt_batch, now, dl_type, zone,
+    long long now_ms = now_us / 1000;
+
+    ipf_preprocess_conntrack(ct->ipf, pkt_batch, now_ms, dl_type, zone,
                              ct->hash_basis);
 
     struct dp_packet *packet;
@@ -1876,7 +1880,7 @@ conntrack_execute(struct conntrack *ct, struct dp_packet_batch *pkt_batch,
             packet->md.ct_state = CS_INVALID;
             write_ct_md_alg_exp(packet, zone, NULL, NULL);
         } else {
-            process_one(ct, packet, &ctx, zone, force, commit, now, setmark,
+            process_one(ct, packet, &ctx, zone, force, commit, now_ms, setmark,
                         setlabel, nat_action_info, tp_src, tp_dst, helper,
                         tp_id);
         }
@@ -1908,7 +1912,8 @@ conntrack_execute(struct conntrack *ct, struct dp_packet_batch *pkt_batch,
                 actual_conn->offloads.dir_info[dir].pkt_ct_label[1] =
                     updated_label_bits;
 
-                conntrack_offload_add_conn(ct, packet, conn, ctx.reply);
+                conntrack_offload_add_conn(ct, packet, conn, ctx.reply,
+                                           now_us);
             }
             if (ct_e2e_cache_enabled) {
                 e2e_cache_trace_add_ct(ct, packet, conn, ctx.reply);
@@ -1916,7 +1921,7 @@ conntrack_execute(struct conntrack *ct, struct dp_packet_batch *pkt_batch,
         }
     }
 
-    ipf_postprocess_conntrack(ct->ipf, pkt_batch, now, dl_type);
+    ipf_postprocess_conntrack(ct->ipf, pkt_batch, now_ms, dl_type);
 
     return 0;
 }

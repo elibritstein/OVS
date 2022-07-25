@@ -129,6 +129,7 @@ struct ct_flow_offload_item {
     ovs_u128 ufid;
     void *dp;
     uintptr_t ctid_key;
+    long long int timestamp;
 
     /* matches */
     struct ct_match ct_match;

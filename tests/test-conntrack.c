@@ -85,7 +85,7 @@ ct_thread_main(void *aux_)
     struct dp_packet *pkt;
     ovs_be16 dl_type;
     size_t i;
-    long long now = time_msec();
+    long long now = time_usec();
 
     pkt_batch = prepare_packets(batch_size, change_conn, aux->tid, &dl_type);
     ovs_barrier_block(&barrier);
@@ -159,7 +159,7 @@ pcap_batch_execute_conntrack(struct conntrack *ct_,
 {
     struct dp_packet_batch new_batch;
     ovs_be16 dl_type = htons(0);
-    long long now = time_msec();
+    long long now = time_usec();
 
     dp_packet_batch_init(&new_batch);
 

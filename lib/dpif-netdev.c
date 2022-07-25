@@ -3025,7 +3025,7 @@ mark_to_flow_find(const struct dp_netdev_pmd_thread *pmd,
 static struct dp_offload_thread_item *
 dp_netdev_alloc_flow_offload(struct dp_netdev *dp,
                              struct dp_netdev_flow *flow,
-                             int op)
+                             int op, long long now)
 {
     struct dp_offload_thread_item *item;
     struct dp_offload_flow_item *flow_offload;
@@ -3035,6 +3035,7 @@ dp_netdev_alloc_flow_offload(struct dp_netdev *dp,
 
     item->type = DP_OFFLOAD_FLOW;
     item->dp = dp;
+    item->timestamp = now;
 
     flow_offload->flow = flow;
     flow_offload->op = op;
@@ -3800,8 +3801,8 @@ queue_netdev_flow_del(struct dp_netdev_pmd_thread *pmd,
         e2e_cache_flow_del(&flow->mega_ufid, pmd->dp);
     }
     offload = dp_netdev_alloc_flow_offload(pmd->dp, flow,
-                                           DP_NETDEV_FLOW_OFFLOAD_OP_DEL);
-    offload->timestamp = pmd->ctx.now;
+                                           DP_NETDEV_FLOW_OFFLOAD_OP_DEL,
+                                           pmd->ctx.now);
     dp_netdev_offload_flow_enqueue(offload);
 }
 
@@ -3866,6 +3867,7 @@ dp_netdev_ct_offload_add_item(struct ct_flow_offload_item *ct_offload)
     item = xzalloc(sizeof *item + CT_DIR_NUM * sizeof *ct_offload);
     item->type = DP_OFFLOAD_CT;
     item->dp = NULL;
+    item->timestamp = ct_offload[0].timestamp;
     for (dir = 0; dir < CT_DIR_NUM; dir++) {
         item->data->ct_offload_item[dir] = ct_offload[dir];
         item->data->ct_offload_item[dir].op = DP_NETDEV_FLOW_OFFLOAD_OP_ADD;
@@ -3888,6 +3890,7 @@ dp_netdev_ct_offload_del_item(struct ct_flow_offload_item *ct_offload)
     item = xzalloc(sizeof *item + CT_DIR_NUM * sizeof *ct_offload);
     item->type = DP_OFFLOAD_CT;
     item->dp = NULL;
+    item->timestamp = ct_offload[0].timestamp;
     for (dir = 0; dir < CT_DIR_NUM; dir++) {
         item->data->ct_offload_item[dir] = ct_offload[dir];
         item->data->ct_offload_item[dir].op = DP_NETDEV_FLOW_OFFLOAD_OP_DEL;
@@ -4044,7 +4047,7 @@ queue_netdev_flow_put(struct dp_netdev_pmd_thread *pmd,
                            actions_len);
     }
 
-    item = dp_netdev_alloc_flow_offload(pmd->dp, flow, op);
+    item = dp_netdev_alloc_flow_offload(pmd->dp, flow, op, pmd->ctx.now);
     flow_offload = &item->data->flow;
     flow_offload->match = *match;
     flow_offload->actions = xmalloc(actions_len);
@@ -4052,7 +4055,6 @@ queue_netdev_flow_put(struct dp_netdev_pmd_thread *pmd,
     flow_offload->actions_len = actions_len;
     flow_offload->orig_in_port = flow->orig_in_port;
 
-    item->timestamp = pmd->ctx.now;
     dp_netdev_offload_flow_enqueue(item);
 }
 
@@ -9682,7 +9684,8 @@ static inline void
 e2e_cache_populate_offload_item(struct dp_offload_thread_item *offload_item,
                                 int op,
                                 struct dp_netdev *dp,
-                                struct dp_netdev_flow *flow);
+                                struct dp_netdev_flow *flow,
+                                long long now);
 
 static int
 e2e_cache_ct_flow_offload_del_mt(struct dp_netdev *dp,
@@ -9692,6 +9695,7 @@ e2e_cache_ct_flow_offload_del_mt(struct dp_netdev *dp,
     struct dp_offload_thread_item *offload_item;
     struct e2e_cache_stats *e2e_stats;
     struct dp_netdev_flow flow;
+    long long now = time_usec();
     int ret;
 
     e2e_stats = &dp_offload_threads[tid].e2e_stats;
@@ -9701,9 +9705,11 @@ e2e_cache_ct_flow_offload_del_mt(struct dp_netdev *dp,
         ct_flow->ct_match[0].odp_port;
 
     offload_item = dp_netdev_alloc_flow_offload(dp, &flow,
-                                                DP_NETDEV_FLOW_OFFLOAD_OP_DEL);
+                                                DP_NETDEV_FLOW_OFFLOAD_OP_DEL,
+                                                now);
     e2e_cache_populate_offload_item(offload_item,
-                                    DP_NETDEV_FLOW_OFFLOAD_OP_DEL, dp, &flow);
+                                    DP_NETDEV_FLOW_OFFLOAD_OP_DEL, dp, &flow,
+                                    now);
 
     ret = dp_netdev_flow_offload_del(offload_item);
     free(offload_item);
@@ -10242,7 +10248,8 @@ static inline void
 e2e_cache_populate_offload_item(struct dp_offload_thread_item *offload_item,
                                 int op,
                                 struct dp_netdev *dp,
-                                struct dp_netdev_flow *flow)
+                                struct dp_netdev_flow *flow,
+                                long long now)
 {
     struct dp_offload_flow_item *flow_offload;
     flow_offload = &offload_item->data->flow;
@@ -10250,6 +10257,7 @@ e2e_cache_populate_offload_item(struct dp_offload_thread_item *offload_item,
     memset(offload_item, 0, sizeof *offload_item);
     offload_item->type = DP_OFFLOAD_FLOW;
     offload_item->dp = dp;
+    offload_item->timestamp = now;
     flow_offload->flow = flow;
     flow_offload->op = op;
     flow_offload->is_e2e_cache_flow = true;
@@ -10432,7 +10440,8 @@ e2e_cache_merged_flow_offload_del(struct e2e_cache_merged_flow *merged_flow)
     offload_item = xmalloc(sizeof *offload_item +
                            sizeof offload_item->data->flow);
     e2e_cache_populate_offload_item(offload_item,
-                                    DP_NETDEV_FLOW_OFFLOAD_OP_DEL, dp, &flow);
+                                    DP_NETDEV_FLOW_OFFLOAD_OP_DEL, dp, &flow,
+                                    time_usec());
 
     merged_flow->dp = NULL;
     e2e_stats->del_merged_flow_hw++;
@@ -10511,7 +10520,8 @@ e2e_cache_merged_flow_offload_put(struct dp_netdev *dp,
     offload_item = xmalloc(sizeof *offload_item +
                            sizeof offload_item->data->flow);
     e2e_cache_populate_offload_item(offload_item,
-                                    DP_NETDEV_FLOW_OFFLOAD_OP_ADD, dp, &flow);
+                                    DP_NETDEV_FLOW_OFFLOAD_OP_ADD, dp, &flow,
+                                    time_usec());
 
     num_elements = trc_info->num_elements;
     /* For CT2CT, don't associate the last megaflow. */
@@ -12036,7 +12046,7 @@ dp_execute_cb(void *aux_, struct dp_packet_batch *packets_,
         conntrack_execute(dp->conntrack, packets_, aux->flow->dl_type, force,
                           commit, zone, setmark, setlabel, aux->flow->tp_src,
                           aux->flow->tp_dst, helper, nat_action_info_ref,
-                          pmd->ctx.now / 1000, tp_id);
+                          pmd->ctx.now, tp_id);
         break;
     }
 
