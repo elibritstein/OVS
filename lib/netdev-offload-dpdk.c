@@ -41,6 +41,7 @@ VLOG_DEFINE_THIS_MODULE(netdev_offload_dpdk);
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(600, 600);
 
 static bool netdev_offload_dpdk_ct_labels_mapping = false;
+static bool netdev_offload_dpdk_disable_zone_tables = false;
 
 /* Thread-safety
  * =============
@@ -4857,15 +4858,29 @@ parse_ct_actions(struct flow_actions *actions,
     act_vars->ct_mode = CT_MODE_CT;
     NL_ATTR_FOR_EACH_UNSAFE (cta, ctleft, ct_actions, ct_actions_len) {
         if (nl_attr_type(cta) == OVS_CT_ATTR_ZONE) {
-            if (act_resources->ct_action_zone_id) {
-                put_zone_id(act_resources->ct_action_zone_id);
-                act_resources->ct_action_zone_id = 0;
-            }
-            if (act_resources->flow_id != INVALID_FLOW_MARK &&
-                get_zone_id(nl_attr_get_u16(cta),
-                            &act_resources->ct_action_zone_id)) {
-                VLOG_DBG_RL(&rl, "Could not create zone id");
-                return -1;
+            if (!netdev_offload_dpdk_disable_zone_tables) {
+                if (act_resources->ct_action_zone_id) {
+                    put_zone_id(act_resources->ct_action_zone_id);
+                    act_resources->ct_action_zone_id = 0;
+                }
+                if (act_resources->flow_id != INVALID_FLOW_MARK &&
+                    get_zone_id(nl_attr_get_u16(cta),
+                                &act_resources->ct_action_zone_id)) {
+                    VLOG_DBG_RL(&rl, "Could not create zone id");
+                    return -1;
+                }
+            } else {
+                const uint32_t ct_zone_mask = reg_fields[REG_FIELD_CT_ZONE].mask;
+
+                if (act_resources->flow_id != INVALID_FLOW_MARK &&
+                    (get_zone_id(nl_attr_get_u16(cta),
+                                 &act_resources->ct_action_zone_id) ||
+                     add_action_set_reg_field(actions, REG_FIELD_CT_ZONE,
+                                              act_resources->ct_action_zone_id,
+                                              ct_zone_mask))) {
+                    VLOG_DBG_RL(&rl, "Could not create zone id");
+                    return -1;
+                }
             }
 
             ct_miss_ctx.zone = nl_attr_get_u16(cta);
@@ -5210,7 +5225,9 @@ create_pre_post_ct(struct netdev *netdev,
     } else {
         ct_table_id = CTNAT_TABLE_ID;
     }
-    ct_table_id += act_resources->ct_action_zone_id;
+    if (!netdev_offload_dpdk_disable_zone_tables) {
+        ct_table_id += act_resources->ct_action_zone_id;
+    }
     pre_ct_miss_ctx.vport = act_vars->vport;
     pre_ct_miss_ctx.recirc_id = act_vars->recirc_id;
     if (act_vars->vport != ODPP_NONE) {
@@ -5778,6 +5795,7 @@ netdev_offload_dpdk_init_flow_api(struct netdev *netdev)
     }
 
     netdev_offload_dpdk_ct_labels_mapping = netdev_is_ct_labels_mapping_enabled();
+    netdev_offload_dpdk_disable_zone_tables = netdev_is_zone_tables_disabled();
 
     return ret;
 }

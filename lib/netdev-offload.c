@@ -65,6 +65,7 @@ static struct id_fpool *flow_mark_pool;
 static uint32_t e2e_cache_size = 0;
 bool netdev_offload_ct_on_ct_nat = false;
 bool ct_labels_mapping = false;
+bool disable_zone_tables = false;
 
 #define DEFAULT_OFFLOAD_THREAD_NB 1
 
@@ -603,6 +604,12 @@ netdev_is_ct_labels_mapping_enabled(void)
     return ct_labels_mapping;
 }
 
+bool
+netdev_is_zone_tables_disabled(void)
+{
+    return disable_zone_tables;
+}
+
 unsigned int
 netdev_offload_ufid_to_thread_id(const ovs_u128 ufid)
 {
@@ -1064,6 +1071,16 @@ netdev_set_flow_api_enabled(const struct smap *ovs_other_config)
         if (ovsthread_once_start(&once)) {
             ct_labels_mapping = true;
             VLOG_INFO("CT offloads: labels mapping enabled");
+            ovsthread_once_done(&once);
+        }
+    }
+
+    if (smap_get_bool(ovs_other_config, "disable-zone-tables", false)) {
+        static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
+
+        if (ovsthread_once_start(&once)) {
+            disable_zone_tables = true;
+            VLOG_INFO("CT offloads: zone tables disabled");
             ovsthread_once_done(&once);
         }
     }

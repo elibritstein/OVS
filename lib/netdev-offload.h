@@ -179,6 +179,7 @@ bool netdev_is_flow_counter_key_zero(const struct flows_counter_key *);
 char *netdev_flow_counter_key_to_string(const struct flows_counter_key *,
                                         char *, size_t);
 bool netdev_is_ct_labels_mapping_enabled(void);
+bool netdev_is_zone_tables_disabled(void);
 
 struct dpif_port;
 int netdev_ports_insert(struct netdev *, struct dpif_port *);
