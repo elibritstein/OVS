@@ -135,6 +135,7 @@ OVS_PACKED(
 struct e2e_cache_trace_message {
     OVS_ALIGNED_VAR(sizeof(void *)) struct mpsc_queue_node node;
     void *dp;
+    long long int timestamp;
     uint32_t num_elements;
     uint32_t pad;
     OVS_ALIGNED_VAR((sizeof(void *))) struct e2e_cache_trace_info data[0];

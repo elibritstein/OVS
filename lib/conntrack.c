@@ -328,6 +328,7 @@ conntrack_offload_del_conn(struct conntrack *ct,
     struct conntrack_offload_class *offload_class;
     struct ct_flow_offload_item item[CT_DIR_NUM];
     struct conn *conn_dir;
+    long long int now = time_usec();
     void *dp;
     int dir;
 
@@ -355,7 +356,7 @@ conntrack_offload_del_conn(struct conntrack *ct,
         }
         if (ct_e2e_cache_enabled) {
             dp = conn_dir->offloads.dir_info[dir].dp;
-            offload_class->conn_e2e_del(&item[dir].ufid, dp);
+            offload_class->conn_e2e_del(&item[dir].ufid, dp, now);
         }
         /* Set conn_dir->offloads.dir_info[CT_DIR_INIT].status = false
          * to indicate that the offload of the connection is deleted.
@@ -363,7 +364,7 @@ conntrack_offload_del_conn(struct conntrack *ct,
         conn_dir->offloads.dir_info[CT_DIR_INIT].status = false;
         conn_dir->offloads.dir_info[CT_DIR_REP].status = false;
     }
-    item[CT_DIR_INIT].timestamp = time_usec();
+    item[CT_DIR_INIT].timestamp = now;
     item[CT_DIR_INIT].refcnt = conn->offloads.refcnt;
     item[CT_DIR_REP].refcnt = NULL;
     offload_class->conn_del(item);
@@ -1623,7 +1624,8 @@ conntrack_swap_conn_key(const struct conn_key *key,
 static void
 conntrack_offload_fill_item_add(struct ct_flow_offload_item *item,
                                 struct conn *conn,
-                                int dir)
+                                int dir,
+                                long long int now)
 {
     /* nat_conn has opposite directions. */
     bool reply = !!conn->master_conn ^ dir;
@@ -1659,6 +1661,7 @@ conntrack_offload_fill_item_add(struct ct_flow_offload_item *item,
     item->label_key = conn->offloads.dir_info[dir].pkt_ct_label[0];
     item->label_mask = conn->offloads.dir_info[dir].pkt_ct_label[1];
     item->status = &conn->offloads.dir_info[dir].status;
+    item->timestamp = now;
 }
 
 static void
@@ -1679,7 +1682,8 @@ static inline void
 e2e_cache_trace_add_ct(struct conntrack *ct,
                        struct dp_packet *p,
                        struct conn *conn,
-                       bool reply)
+                       bool reply,
+                       long long int now)
 {
     struct conntrack_offload_class *offload_class;
     uint32_t e2e_trace_size = p->e2e_trace_size;
@@ -1708,7 +1712,7 @@ e2e_cache_trace_add_ct(struct conntrack *ct,
                conn->master_conn->offloads.dir_info[dir].dp) {
         conn = conn->master_conn;
     }
-    conntrack_offload_fill_item_add(&item, conn, dir);
+    conntrack_offload_fill_item_add(&item, conn, dir, now);
     item.ct_match.odp_port = p->md.in_port.odp_port;
     item.ct_match.orig_in_port = p->md.orig_in_port;
 
@@ -1751,7 +1755,7 @@ e2e_cache_trace_add_ct(struct conntrack *ct,
     p->e2e_trace_size = e2e_trace_size + 1;
 }
 #else
-#define e2e_cache_trace_add_ct(ct, p, conn, r) do { } while (0)
+#define e2e_cache_trace_add_ct(ct, p, conn, r, n) do { } while (0)
 #endif
 
 static void
@@ -1808,7 +1812,7 @@ conntrack_offload_add_conn(struct conntrack *ct,
                        conn->master_conn->offloads.dir_info[dir].dp) {
                 conn = conn->master_conn;
             }
-            conntrack_offload_fill_item_add(&item[dir], conn, dir);
+            conntrack_offload_fill_item_add(&item[dir], conn, dir, now_us);
             ufid[dir] = &conn->offloads.dir_info[dir].ufid;
         }
         offload_class->conn_get_ufid(&item[CT_DIR_INIT],
@@ -1820,7 +1824,6 @@ conntrack_offload_add_conn(struct conntrack *ct,
         refcnt = xmalloc(sizeof *refcnt);
         ovs_refcount_init(refcnt);
         ovs_refcount_ref(refcnt);
-        item[CT_DIR_INIT].timestamp = now_us;
         item[CT_DIR_INIT].refcnt = refcnt;
         item[CT_DIR_REP].refcnt = NULL;
         offload_class->conn_add(item);
@@ -1916,7 +1919,7 @@ conntrack_execute(struct conntrack *ct, struct dp_packet_batch *pkt_batch,
                                            now_us);
             }
             if (ct_e2e_cache_enabled) {
-                e2e_cache_trace_add_ct(ct, packet, conn, ctx.reply);
+                e2e_cache_trace_add_ct(ct, packet, conn, ctx.reply, now_us);
             }
         }
     }

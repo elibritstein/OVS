@@ -484,6 +484,7 @@ struct e2e_cache_ufid_msg {
     struct ovs_barrier *barrier;
     struct ovs_refcount *del_refcnt;
     size_t actions_len;
+    long long int timestamp;
     union {
         struct match match[0];
         struct ct_match ct_match[0];
@@ -508,11 +509,13 @@ dp_netdev_ct_offload_active(struct ct_flow_offload_item *offload,
 static void
 dp_netdev_ct_offload_e2e_add(struct ct_flow_offload_item *offload);
 static int
-e2e_cache_flow_del(const ovs_u128 *ufid, struct dp_netdev *dp);
+e2e_cache_flow_del(const ovs_u128 *ufid, struct dp_netdev *dp,
+                   long long int now);
 static void
-dp_netdev_ct_offload_e2e_del(ovs_u128 *ufid, void *dp)
+dp_netdev_ct_offload_e2e_del(ovs_u128 *ufid, void *dp,
+                             long long int now)
 {
-    e2e_cache_flow_del(ufid, dp);
+    e2e_cache_flow_del(ufid, dp, now);
 }
 static void
 dp_netdev_offload_init(void);
@@ -3720,6 +3723,8 @@ dp_netdev_flow_offload_main(void *arg)
     next_rcu = time_usec() + DP_NETDEV_OFFLOAD_QUIESCE_INTERVAL_US;
 
     for (;;) {
+        long long int start = 0;
+
         dp_netdev_offload_poll_queues(ofl_thread, &ufid_msg, &offload,
                                       &trace_msg);
 
@@ -3738,6 +3743,7 @@ dp_netdev_flow_offload_main(void *arg)
             } else {
                 OVS_NOT_REACHED();
             }
+            start = ufid_msg->timestamp;
             e2e_cache_ufid_msg_free(ufid_msg);
         } else if (offload != NULL) {
             switch (offload->type) {
@@ -3753,11 +3759,7 @@ dp_netdev_flow_offload_main(void *arg)
             default:
                 OVS_NOT_REACHED();
             }
-
-            latency_us = now - offload->timestamp;
-            mov_avg_cma_update(&ofl_thread->cma, latency_us);
-            mov_avg_ema_update(&ofl_thread->ema, latency_us);
-
+            start = offload->timestamp;
             dp_netdev_free_offload(offload);
         } else if (trace_msg != NULL) {
             uint32_t i, num_elements;
@@ -3768,8 +3770,14 @@ dp_netdev_flow_offload_main(void *arg)
                 e2e_cache_process_trace_info((struct dp_netdev *)trace_msg->dp,
                                              &trace_msg->data[i], tid);
             }
-
+            start = trace_msg->timestamp;
             free_cacheline(trace_msg);
+        }
+
+        if (start != 0) {
+            latency_us = now - start;
+            mov_avg_cma_update(&ofl_thread->cma, latency_us);
+            mov_avg_ema_update(&ofl_thread->ema, latency_us);
         }
 
         /* Do RCU synchronization at fixed interval. */
@@ -3798,7 +3806,7 @@ queue_netdev_flow_del(struct dp_netdev_pmd_thread *pmd,
     }
 
     if (dp_netdev_e2e_cache_enabled) {
-        e2e_cache_flow_del(&flow->mega_ufid, pmd->dp);
+        e2e_cache_flow_del(&flow->mega_ufid, pmd->dp, pmd->ctx.now);
     }
     offload = dp_netdev_alloc_flow_offload(pmd->dp, flow,
                                            DP_NETDEV_FLOW_OFFLOAD_OP_DEL,
@@ -3808,7 +3816,8 @@ queue_netdev_flow_del(struct dp_netdev_pmd_thread *pmd,
 
 static int
 e2e_cache_flow_put(bool is_ct, const ovs_u128 *ufid, const void *match,
-                   const struct nlattr *actions, size_t actions_len);
+                   const struct nlattr *actions, size_t actions_len,
+                   long long int now);
 static void
 dp_netdev_offload_ct_enqueue(struct dp_offload_thread_item *item)
 {
@@ -3846,7 +3855,7 @@ dp_netdev_ct_e2e_add_cb(struct ct_flow_offload_item *offload,
                         int actions_len)
 {
     return e2e_cache_flow_put(true, &offload->ufid, match, actions,
-                              actions_len);
+                              actions_len, offload->timestamp);
 }
 
 static void
@@ -4044,7 +4053,7 @@ queue_netdev_flow_put(struct dp_netdev_pmd_thread *pmd,
 
     if (dp_netdev_e2e_cache_enabled) {
         e2e_cache_flow_put(false, &flow->mega_ufid, match, actions,
-                           actions_len);
+                           actions_len, pmd->ctx.now);
     }
 
     item = dp_netdev_alloc_flow_offload(pmd->dp, flow, op, pmd->ctx.now);
@@ -9439,7 +9448,8 @@ e2e_cache_flow_free(void *arg)
 }
 
 static inline struct e2e_cache_ufid_msg *
-e2e_cache_ufid_msg_alloc(int op, bool is_ct, size_t actions_len)
+e2e_cache_ufid_msg_alloc(int op, bool is_ct, size_t actions_len,
+                         long long int now)
 {
     struct e2e_cache_ufid_msg *msg;
     struct nlattr *actions = NULL;
@@ -9466,6 +9476,7 @@ e2e_cache_ufid_msg_alloc(int op, bool is_ct, size_t actions_len)
     msg->is_ct = is_ct;
     msg->actions = actions;
     msg->actions_len = actions_len;
+    msg->timestamp = now;
     return msg;
 
 err:
@@ -9936,7 +9947,8 @@ e2e_cache_flow_db_put(struct e2e_cache_ufid_msg *ufid_msg)
 }
 
 static int
-e2e_cache_flow_del(const ovs_u128 *ufid, struct dp_netdev *dp)
+e2e_cache_flow_del(const ovs_u128 *ufid, struct dp_netdev *dp,
+                   long long int now)
 {
     static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(10, 10);
     struct e2e_cache_ufid_msg *del_msg;
@@ -9962,7 +9974,7 @@ e2e_cache_flow_del(const ovs_u128 *ufid, struct dp_netdev *dp)
         ovs_refcount_ref(del_refcnt);
     }
     for (tid = 0; tid < netdev_offload_thread_nb(); tid++) {
-        del_msg = e2e_cache_ufid_msg_alloc(E2E_UFID_MSG_DEL, false, 0);
+        del_msg = e2e_cache_ufid_msg_alloc(E2E_UFID_MSG_DEL, false, 0, now);
         if (OVS_UNLIKELY(!del_msg)) {
             free(del_refcnt);
             return -1;
@@ -9983,7 +9995,8 @@ e2e_cache_flow_del(const ovs_u128 *ufid, struct dp_netdev *dp)
 
 static int
 e2e_cache_flow_put(bool is_ct, const ovs_u128 *ufid, const void *match,
-                   const struct nlattr *actions, size_t actions_len)
+                   const struct nlattr *actions, size_t actions_len,
+                   long long int now)
 {
     static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(10, 10);
     struct e2e_cache_ufid_msg *put_msg;
@@ -9992,7 +10005,8 @@ e2e_cache_flow_put(bool is_ct, const ovs_u128 *ufid, const void *match,
 
     VLOG_DBG_RL(&rl, "%s: ufid="UUID_FMT, __FUNCTION__,
                 UUID_ARGS((struct uuid *)ufid));
-    put_msg = e2e_cache_ufid_msg_alloc(E2E_UFID_MSG_PUT, is_ct, actions_len);
+    put_msg = e2e_cache_ufid_msg_alloc(E2E_UFID_MSG_PUT, is_ct, actions_len,
+                                       now);
     if (OVS_UNLIKELY(!put_msg)) {
         return -1;
     }
@@ -10079,7 +10093,8 @@ netdev_offload_trace_to_thread_id(ovs_u128 *ufids,
 
 static void
 e2e_cache_dispatch_trace_message(struct dp_netdev *dp,
-                                 struct dp_packet_batch *batch)
+                                 struct dp_packet_batch *batch,
+                                 long long int now)
 {
     struct e2e_cache_trace_info *cur_trace_info[MAX_OFFLOAD_THREAD_NB];
     struct e2e_cache_trace_message *buffer[MAX_OFFLOAD_THREAD_NB];
@@ -10199,6 +10214,7 @@ e2e_cache_dispatch_trace_message(struct dp_netdev *dp,
 
         buffer[tid]->dp = dp;
         buffer[tid]->num_elements = num_elements[tid];
+        buffer[tid]->timestamp = now;
 
         e2e_cache_trace_msg_enqueue(buffer[tid], tid);
         atomic_count_inc(&e2e_stats[tid]->generated_trcs);
@@ -10825,7 +10841,7 @@ out:
 #else
 #define e2e_cache_trace_add_flow(p, ufid) do { } while (0)
 #define e2e_cache_trace_msg_enqueue(m, t) do { } while (0)
-#define e2e_cache_dispatch_trace_message(d, b) do { } while (0)
+#define e2e_cache_dispatch_trace_message(d, b, n) do { } while (0)
 #define e2e_cache_trace_tnl_pop(p) do { } while (0)
 OVS_UNUSED
 static int
@@ -10833,13 +10849,15 @@ e2e_cache_flow_put(bool is_ct OVS_UNUSED,
                    const ovs_u128 *ufid OVS_UNUSED,
                    const void *match OVS_UNUSED,
                    const struct nlattr *actions OVS_UNUSED,
-                   size_t actions_len OVS_UNUSED)
+                   size_t actions_len OVS_UNUSED,
+                   long long int now OVS_UNUSED)
 {
     return 0;
 }
 static int
 e2e_cache_flow_del(const ovs_u128 *ufid OVS_UNUSED,
-                   struct dp_netdev *dp OVS_UNUSED)
+                   struct dp_netdev *dp OVS_UNUSED,
+                   long long int now OVS_UNUSED)
 {
     return 0;
 }
@@ -11667,7 +11685,7 @@ dp_execute_output_action(struct dp_netdev_pmd_thread *pmd,
     struct dp_packet_batch out;
 
     if (dp_netdev_e2e_cache_enabled) {
-        e2e_cache_dispatch_trace_message(pmd->dp, packets_);
+        e2e_cache_dispatch_trace_message(pmd->dp, packets_, pmd->ctx.now);
     }
 
     if (!OVS_LIKELY(p)) {
@@ -12062,7 +12080,7 @@ dp_execute_cb(void *aux_, struct dp_packet_batch *packets_,
                                        dp_packet_batch_size(packets_));
 
         if (dp_netdev_e2e_cache_enabled) {
-            e2e_cache_dispatch_trace_message(pmd->dp, packets_);
+            e2e_cache_dispatch_trace_message(pmd->dp, packets_, pmd->ctx.now);
         }
 
         dp_packet_delete_batch(packets_, should_steal);
