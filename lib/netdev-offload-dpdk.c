@@ -6195,6 +6195,10 @@ ct_zones_uninit(struct netdev *netdev, unsigned int tid,
     uint32_t zone_id;
     int nat, i;
 
+    if (netdev_offload_dpdk_disable_zone_tables) {
+        return;
+    }
+
     for (nat = 0; nat < 2; nat++) {
         for (i = 0; i < 2; i++) {
             for (zone_id = MIN_ZONE_ID; zone_id <= MAX_ZONE_ID; zone_id++) {
@@ -6243,6 +6247,10 @@ ct_zones_init(struct netdev *netdev, unsigned int tid,
     uint32_t base_group;
     uint32_t zone_id;
     int nat;
+
+    if (netdev_offload_dpdk_disable_zone_tables) {
+        return 0;
+    }
 
     memset(&set_tag, 0, sizeof(set_tag));
     memset(&jump, 0, sizeof(jump));
