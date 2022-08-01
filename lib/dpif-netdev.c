@@ -448,7 +448,7 @@ struct e2e_cache_stats {
 struct dp_offload_thread {
     PADDED_MEMBERS(CACHE_LINE_SIZE,
         struct mpsc_queue offload_queue;
-        atomic_uint64_t enqueued_offload_add;
+        atomic_uint64_t enqueued_ct_add;
         atomic_uint64_t enqueued_offload;
         struct cmap megaflow_to_mark;
         struct cmap mark_to_flow;
@@ -545,7 +545,7 @@ dp_netdev_offload_queue_full(void)
 
     for (tid = 0; tid < netdev_offload_thread_nb(); tid++) {
         total_add +=
-            atomic_count_get64(&dp_offload_threads[tid].enqueued_offload_add);
+            atomic_count_get64(&dp_offload_threads[tid].enqueued_ct_add);
     }
 
     return total_add > offload_queue_size;
@@ -624,7 +624,7 @@ dp_netdev_offload_init(void)
         cmap_init(&thread->megaflow_to_mark);
         cmap_init(&thread->mark_to_flow);
         atomic_init(&thread->enqueued_offload, 0);
-        atomic_init(&thread->enqueued_offload_add, 0);
+        atomic_init(&thread->enqueued_ct_add, 0);
         mov_avg_cma_init(&thread->cma);
         mov_avg_ema_init(&thread->ema, 100);
         mpsc_queue_init(&thread->ufid_queue);
@@ -3104,15 +3104,12 @@ dp_netdev_free_offload(struct dp_offload_thread_item *offload)
 
 static void
 dp_netdev_append_offload(struct dp_offload_thread_item *offload,
-                         unsigned int tid, int op)
+                         unsigned int tid)
 {
     dp_netdev_offload_init();
 
     mpsc_queue_insert(&dp_offload_threads[tid].offload_queue, &offload->node);
     atomic_count_inc64(&dp_offload_threads[tid].enqueued_offload);
-    if (op == DP_NETDEV_FLOW_OFFLOAD_OP_ADD) {
-        atomic_count_inc64(&dp_offload_threads[tid].enqueued_offload_add);
-    }
 }
 
 static void
@@ -3124,7 +3121,7 @@ dp_netdev_offload_flow_enqueue(struct dp_offload_thread_item *item)
     ovs_assert(item->type == DP_OFFLOAD_FLOW);
 
     tid = netdev_offload_ufid_to_thread_id(flow_offload->flow->mega_ufid);
-    dp_netdev_append_offload(item, tid, flow_offload->op);
+    dp_netdev_append_offload(item, tid);
 }
 
 static int
@@ -3247,16 +3244,12 @@ static void
 dp_offload_flow(struct dp_offload_thread_item *item)
 {
     struct dp_offload_flow_item *flow_offload = &item->data->flow;
-    struct dp_offload_thread *ofl_thread;
     const char *op;
     int ret;
-
-    ofl_thread = &dp_offload_threads[netdev_offload_thread_id()];
 
     switch (flow_offload->op) {
     case DP_NETDEV_FLOW_OFFLOAD_OP_ADD:
         op = "add";
-        atomic_count_dec64(&ofl_thread->enqueued_offload_add);
         ret = dp_netdev_flow_offload_put(item);
         break;
     case DP_NETDEV_FLOW_OFFLOAD_OP_MOD:
@@ -3592,7 +3585,7 @@ dp_offload_ct(struct dp_offload_thread_item *item)
     ofl_thread = &dp_offload_threads[netdev_offload_thread_id()];
 
     if (ct_offload[CT_DIR_INIT].op == DP_NETDEV_FLOW_OFFLOAD_OP_ADD) {
-        atomic_count_dec64(&ofl_thread->enqueued_offload_add);
+        atomic_count_dec64(&ofl_thread->enqueued_ct_add);
     }
 
     if (ct_offload[CT_DIR_INIT].op == DP_NETDEV_FLOW_OFFLOAD_OP_ADD &&
@@ -3829,7 +3822,10 @@ dp_netdev_offload_ct_enqueue(struct dp_offload_thread_item *item)
                                     ovs_u128_xor(ct_offload[CT_DIR_INIT].ufid,
                                                  ct_offload[CT_DIR_REP].ufid));
 
-    dp_netdev_append_offload(item, tid, ct_offload->op);
+    dp_netdev_append_offload(item, tid);
+    if (ct_offload->op == DP_NETDEV_FLOW_OFFLOAD_OP_ADD) {
+        atomic_count_inc64(&dp_offload_threads[tid].enqueued_ct_add);
+    }
 }
 
 static void
@@ -4047,9 +4043,6 @@ queue_netdev_flow_put(struct dp_netdev_pmd_thread *pmd,
         e2e_cache_flow_put(false, &flow->mega_ufid, match, actions,
                            actions_len);
     }
-    if (dp_netdev_offload_queue_full()) {
-        return;
-    }
 
     item = dp_netdev_alloc_flow_offload(pmd->dp, flow, op);
     flow_offload = &item->data->flow;
@@ -4113,7 +4106,7 @@ dp_netdev_offload_flush_enqueue(struct dp_netdev *dp,
         flush->netdev = netdev;
         flush->barrier = barrier;
 
-        dp_netdev_append_offload(item, tid, 0);
+        dp_netdev_append_offload(item, tid);
     }
 }
 
