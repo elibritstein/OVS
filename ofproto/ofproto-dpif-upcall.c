@@ -357,6 +357,8 @@ static void revalidator_sweep(struct revalidator *);
 static void revalidator_purge(struct revalidator *);
 static void upcall_unixctl_show(struct unixctl_conn *conn, int argc,
                                 const char *argv[], void *aux);
+static void upcall_unixctl_clear(struct unixctl_conn *conn, int argc,
+                                 const char *argv[], void *aux);
 static void upcall_unixctl_disable_megaflows(struct unixctl_conn *, int argc,
                                              const char *argv[], void *aux);
 static void upcall_unixctl_enable_megaflows(struct unixctl_conn *, int argc,
@@ -430,6 +432,8 @@ udpif_init(void)
     if (ovsthread_once_start(&once)) {
         unixctl_command_register("upcall/show", "", 0, 0, upcall_unixctl_show,
                                  NULL);
+        unixctl_command_register("upcall/clear", "", 0, 0,
+                                 upcall_unixctl_clear, NULL);
         unixctl_command_register("upcall/disable-megaflows", "", 0, 0,
                                  upcall_unixctl_disable_megaflows, NULL);
         unixctl_command_register("upcall/enable-megaflows", "", 0, 0,
@@ -3182,6 +3186,31 @@ upcall_unixctl_show(struct unixctl_conn *conn, int argc OVS_UNUSED,
 
     unixctl_command_reply(conn, ds_cstr(&ds));
     ds_destroy(&ds);
+}
+
+static void
+upcall_unixctl_clear(struct unixctl_conn *conn, int argc OVS_UNUSED,
+                     const char *argv[] OVS_UNUSED, void *aux OVS_UNUSED)
+{
+    uint64_t n_offloaded_flows;
+    struct udpif *udpif;
+
+    LIST_FOR_EACH (udpif, list_node, &all_udpifs) {
+        size_t i;
+
+        if (!dpif_get_n_offloaded_flows(udpif->dpif, &n_offloaded_flows)) {
+            for (i = 0; i < udpif->n_revalidators; i++) {
+                ovs_mutex_lock(&udpif->revalidators[i].stats_lock);
+                udpif->revalidators[i].n_offloaded_packets = 0;
+                udpif->revalidators[i].n_offloaded_bytes = 0;
+                udpif->revalidators[i].n_packets = 0;
+                udpif->revalidators[i].n_bytes = 0;
+                ovs_mutex_unlock(&udpif->revalidators[i].stats_lock);
+            }
+        }
+    }
+
+    unixctl_command_reply(conn, "statistics cleared");
 }
 
 /* Disable using the megaflows.
