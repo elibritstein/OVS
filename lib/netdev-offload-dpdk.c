@@ -6124,6 +6124,26 @@ netdev_offload_dpdk_get_n_flows(struct netdev *netdev,
 }
 
 static int
+netdev_offload_dpdk_get_n_offloads(struct netdev *netdev,
+                                   uint64_t *n_offloads)
+{
+    struct netdev_offload_dpdk_data *data;
+    unsigned int tid;
+
+    data = (struct netdev_offload_dpdk_data *)
+        ovsrcu_get(void *, &netdev->hw_info.offload_data);
+    if (!data) {
+        return -1;
+    }
+
+    for (tid = 0; tid < netdev_offload_thread_nb(); tid++) {
+        n_offloads[tid] = data->rte_flow_counters[tid];
+    }
+
+    return 0;
+}
+
+static int
 netdev_offload_dpdk_ct_counter_query(struct netdev *netdev,
                                      uintptr_t counter_key,
                                      long long now,
@@ -6440,5 +6460,6 @@ const struct netdev_flow_api netdev_offload_dpdk = {
     .flow_flush = netdev_offload_dpdk_flow_flush,
     .hw_miss_packet_recover = netdev_offload_dpdk_hw_miss_packet_recover,
     .flow_get_n_flows = netdev_offload_dpdk_get_n_flows,
+    .flow_get_n_offloads = netdev_offload_dpdk_get_n_offloads,
     .ct_counter_query = netdev_offload_dpdk_ct_counter_query,
 };

@@ -5844,7 +5844,7 @@ dpif_netdev_offload_stats_get(struct dpif *dpif,
     HMAP_FOR_EACH (port, node, &dp->ports) {
         memset(port_nb_offloads, 0, nb_thread * sizeof *port_nb_offloads);
         /* Do not abort on read error from a port, just report 0. */
-        if (!netdev_flow_get_n_flows(port->netdev, port_nb_offloads)) {
+        if (!netdev_flow_get_n_offloads(port->netdev, port_nb_offloads)) {
             for (i = 0; i < nb_thread; i++) {
                 nb_offloads[i] += port_nb_offloads[i];
             }
