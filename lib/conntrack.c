@@ -54,14 +54,6 @@ COVERAGE_DEFINE(conntrack_clean_5s_latency);
 COVERAGE_DEFINE(conntrack_clean_2s_latency);
 COVERAGE_DEFINE(conntrack_clean_1s_latency);
 
-struct conn_lookup_ctx {
-    struct conn_key key;
-    struct conn *conn;
-    uint32_t hash;
-    bool reply;
-    bool icmp_related;
-};
-
 enum ftp_ctl_pkt {
     /* Control packets with address and/or port specifiers. */
     CT_FTP_CTL_INTEREST,
@@ -90,9 +82,6 @@ struct zone_limit {
     struct conntrack_zone_limit czl;
 };
 
-static bool conn_key_extract(struct conntrack *, struct dp_packet *,
-                             ovs_be16 dl_type, struct conn_lookup_ctx *,
-                             uint16_t zone);
 static uint32_t conn_key_hash(const struct conn_key *, uint32_t basis);
 static void conn_key_reverse(struct conn_key *);
 static bool valid_new(struct dp_packet *pkt, struct conn_key *);
@@ -2269,7 +2258,7 @@ extract_l4(struct conn_key *key, const void *data, size_t size, bool *related,
     return true;
 }
 
-static bool
+bool
 conn_key_extract(struct conntrack *ct, struct dp_packet *pkt, ovs_be16 dl_type,
                  struct conn_lookup_ctx *ctx, uint16_t zone)
 {
@@ -2348,6 +2337,7 @@ conn_key_extract(struct conntrack *ct, struct dp_packet *pkt, ovs_be16 dl_type,
                            &ctx->icmp_related, l3, !hwol_good_l4_csum,
                            NULL)) {
                 ctx->hash = conn_key_hash(&ctx->key, ct->hash_basis);
+                ctx->valid = true;
                 return true;
             }
         } else {

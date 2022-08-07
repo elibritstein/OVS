@@ -115,6 +115,15 @@ struct nat_action_info_t {
     uint16_t nat_action;
 };
 
+struct conn_lookup_ctx {
+    struct conn_key key;
+    struct conn *conn;
+    uint32_t hash;
+    bool reply;
+    bool icmp_related;
+    bool valid;
+};
+
 enum ct_direction {
     CT_DIR_INIT,
     CT_DIR_REP,
@@ -191,5 +200,8 @@ int zone_limit_delete(struct conntrack *ct, uint16_t zone);
 
 int
 ctd_conntrack_execute(struct dp_packet *pkt);
+bool
+conn_key_extract(struct conntrack *, struct dp_packet *, ovs_be16 dl_type,
+                 struct conn_lookup_ctx *, uint16_t zone);
 
 #endif /* conntrack.h */

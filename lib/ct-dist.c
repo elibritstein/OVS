@@ -158,6 +158,7 @@ ct_dist_exec(struct conntrack *conntrack,
     const struct ovs_key_ct_labels *setlabel = NULL;
     struct nat_action_info_t *nat_action_info_ref;
     struct nat_action_info_t nat_action_info;
+    struct dp_packet OVS_UNUSED *packet;
     const uint32_t *setmark = NULL;
     const char *helper = NULL;
     bool nat_config = false;
@@ -284,11 +285,61 @@ ct_dist_exec(struct conntrack *conntrack,
         VLOG_WARN_RL(&rl, "NAT specified without commit.");
     }
 
-    conntrack_execute(conntrack, packets_, flow->dl_type, force,
-                      commit, zone, setmark, setlabel, flow->tp_src,
-                      flow->tp_dst, helper, nat_action_info_ref,
-                      pmd->ctx.now, tp_id);
-    return false;
+    if (n_threads == 0) {
+        conntrack_execute(conntrack, packets_, flow->dl_type, force,
+                          commit, zone, setmark, setlabel, flow->tp_src,
+                          flow->tp_dst, helper, nat_action_info_ref,
+                          pmd->ctx.now, tp_id);
+        return false;
+    }
+
+    /* Each packet is sent separately on a message to the appropriate
+     * ct-thread (by its ct-hash).
+     * Batching it is TBD.
+     */
+    DP_PACKET_BATCH_FOR_EACH (i, packet, packets_) {
+        struct ct_exec *e = &packet->ct_exec;
+
+        packet->ct_type = CT_TYPE_EXEC;
+        packet->timestamp_ms = pmd->ctx.now / 1000;
+        *e = (struct ct_exec) {
+            .ct = conntrack,
+            .dl_type = flow->dl_type,
+            .force = force,
+            .commit = commit,
+            .zone = zone,
+            .setmark = setmark,
+            .setlabel = setlabel,
+            .tp_src = flow->tp_src,
+            .tp_dst = flow->tp_dst,
+            .helper = helper,
+            .nat_action_info = nat_action_info,
+            .nat_action_info_ref = NULL,
+            .tp_id = tp_id,
+            .pmd = pmd,
+            .flow = dp_flow,
+            .actions_len = actions_len,
+            .depth = depth,
+        };
+        if (nat_action_info_ref) {
+            e->nat_action_info_ref = &e->nat_action_info;
+        }
+        conn_key_extract(conntrack, packet, e->dl_type, &e->ct_lookup_ctx,
+                         e->zone);
+
+        if (dp_flow) {
+            dp_netdev_flow_ref(dp_flow);
+        }
+        memcpy(e->actions_buf, actions, actions_len);
+        send_pkt_to_ct_thread(packet, e->ct_lookup_ctx.hash);
+    }
+
+    /* Empty the batch, to stop its processing in this context.
+     * It will be completed in the ct2pmd context.
+     */
+    dp_packet_batch_init(packets_);
+
+    return true;
 }
 
 unsigned int

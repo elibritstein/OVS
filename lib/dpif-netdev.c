@@ -696,7 +696,6 @@ struct dp_netdev_port {
     enum txq_req_mode txq_requested_mode;
 };
 
-static bool dp_netdev_flow_ref(struct dp_netdev_flow *);
 static int dpif_netdev_flow_from_nlattrs(const struct nlattr *, uint32_t,
                                          struct flow *, bool);
 
@@ -4711,7 +4710,7 @@ dp_netdev_flow_cast(const struct dpcls_rule *cr)
     return cr ? CONTAINER_OF(cr, struct dp_netdev_flow, cr) : NULL;
 }
 
-static bool dp_netdev_flow_ref(struct dp_netdev_flow *flow)
+bool dp_netdev_flow_ref(struct dp_netdev_flow *flow)
 {
     return ovs_refcount_try_ref_rcu(&flow->ref_cnt);
 }

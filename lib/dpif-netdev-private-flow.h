@@ -144,6 +144,8 @@ netdev_flow_key_size(size_t flow_u64s)
     return sizeof(struct miniflow) + MINIFLOW_VALUES_SIZE(flow_u64s);
 }
 
+bool dp_netdev_flow_ref(struct dp_netdev_flow *flow);
+
 /* forward declaration required for EMC to unref flows */
 void dp_netdev_flow_unref(struct dp_netdev_flow *);
 

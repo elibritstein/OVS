@@ -19,10 +19,11 @@
 #include "conntrack.c"
 
 static void
-ctd_process_one(struct dp_packet *pkt, struct conn_lookup_ctx *ctx)
+ctd_process_one(struct dp_packet *pkt)
 {
     const struct nat_action_info_t *nat_action_info;
     const struct ovs_key_ct_labels *setlabel;
+    struct conn_lookup_ctx *ctx;
     const uint32_t *setmark;
     struct conntrack *ct;
     const char *helper;
@@ -48,6 +49,7 @@ ctd_process_one(struct dp_packet *pkt, struct conn_lookup_ctx *ctx)
     tp_dst = e->tp_dst;
     helper = e->helper;
     tp_id = e->tp_id;
+    ctx = &e->ct_lookup_ctx;
 
     /* Reset ct_state whenever entering a new zone. */
     if (pkt->md.ct_state && pkt->md.ct_zone != zone) {
@@ -169,7 +171,7 @@ ctd_conntrack_execute(struct dp_packet *pkt)
     const struct nat_action_info_t *nat_action_info;
     const struct ovs_key_ct_labels *setlabel;
     struct dp_packet_batch pkt_batch;
-    struct conn_lookup_ctx ctx;
+    struct conn_lookup_ctx *ctx;
     const uint32_t *setmark;
     struct conntrack *ct;
     ovs_u128 orig_label;
@@ -207,22 +209,22 @@ ctd_conntrack_execute(struct dp_packet *pkt)
     orig_mark = pkt->md.ct_mark;
     orig_label = pkt->md.ct_label;
 
-    ctx.conn = NULL;
+    ctx = &pkt->ct_exec.ct_lookup_ctx;
+    ctx->conn = NULL;
     if (OVS_UNLIKELY(pkt->md.ct_state == CS_INVALID)) {
         write_ct_md_alg_exp(pkt, zone, NULL, NULL);
     } else if (conn && conn->key.zone == zone && !force
                && !get_alg_ctl_type(pkt, tp_src, tp_dst, helper)) {
         process_one_fast(zone, setmark, setlabel, nat_action_info,
                          conn, pkt);
-    } else if (OVS_UNLIKELY(!conn_key_extract(ct, pkt, dl_type, &ctx,
-                            zone))) {
+    } else if (OVS_UNLIKELY(!ctx->valid)) {
         pkt->md.ct_state = CS_INVALID;
         write_ct_md_alg_exp(pkt, zone, NULL, NULL);
     } else {
-        ctd_process_one(pkt, &ctx);
+        ctd_process_one(pkt);
     }
-    conn = pkt->md.conn ? pkt->md.conn : ctx.conn;
-    process_one_ct_offload(ct, pkt, conn, ctx.reply, now_us, orig_mark,
+    conn = pkt->md.conn ? pkt->md.conn : ctx->conn;
+    process_one_ct_offload(ct, pkt, conn, ctx->reply, now_us, orig_mark,
                            orig_label);
 
     ipf_postprocess_conntrack(ct->ipf, &pkt_batch, now_ms, dl_type);

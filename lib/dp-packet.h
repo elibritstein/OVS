@@ -161,6 +161,7 @@ struct ct_exec {
     struct nat_action_info_t nat_action_info;
     struct nat_action_info_t *nat_action_info_ref;
     uint32_t tp_id;
+    struct conn_lookup_ctx ct_lookup_ctx;
     struct dp_netdev_pmd_thread *pmd;
     struct dp_netdev_flow *flow;
     uint64_t actions_buf[512 / 8];
