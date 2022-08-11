@@ -1047,6 +1047,10 @@ netdev_set_flow_api_enabled(const struct smap *ovs_other_config)
 
             ovsthread_once_done(&once);
         }
+    } else {
+        VLOG_INFO_ONCE("netdev: Flow API Disabled. Sub-offload configurations"
+                       " are ignored.");
+        return;
     }
 
     if (smap_get_bool(ovs_other_config, "e2e-enable", false)) {

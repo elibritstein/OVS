@@ -176,6 +176,7 @@ m4_define([_OVS_VSWITCHD_START],
 /netlink_socket|INFO|netlink: could not enable listening to all nsid/d
 /probe tc:/d
 /setting extended ack support failed/d
+/Flow API/d
 /tc: Using policy/d']])
 ])
 
