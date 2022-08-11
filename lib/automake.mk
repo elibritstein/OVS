@@ -188,6 +188,10 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/memory.c \
 	lib/memory.h \
 	lib/meta-flow.c \
+	lib/metrics.c \
+	lib/metrics-set.c \
+	lib/metrics.h \
+	lib/metrics-private.h \
 	lib/mov-avg.h \
 	lib/mpsc-queue.c \
 	lib/mpsc-queue.h \

@@ -288,3 +288,7 @@ AT_CLEANUP
 AT_SETUP([salloc])
 AT_CHECK([ovstest test-salloc], [0], [])
 AT_CLEANUP
+
+AT_SETUP([metrics framework])
+AT_CHECK([ovstest test-metrics > /dev/null], [0], [])
+AT_CLEANUP
