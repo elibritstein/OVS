@@ -33,6 +33,7 @@
 #include "dpif-netdev-private-dpif.h"
 #include "dpif-netdev-perf.h"
 #include "dpif-netdev-private-extract.h"
+#include "mpsc-queue.h"
 #include "openvswitch/thread.h"
 
 #ifdef  __cplusplus
@@ -199,6 +200,10 @@ struct dp_netdev_pmd_thread {
     /* Map of 'tx_bond's used for transmission.  Written by the main thread
      * and read by the pmd thread. */
     struct cmap tx_bonds;
+
+    struct {
+        struct mpsc_queue queue;
+    } ct2pmd;
 
     /* These are thread-local copies of 'tx_ports'.  One contains only tunnel
      * ports (that support push_tunnel/pop_tunnel), the other contains ports

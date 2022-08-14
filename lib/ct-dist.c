@@ -83,7 +83,12 @@ out:
 static void
 ct_dist_exec_pkt(struct dp_packet *pkt)
 {
+    struct ct_exec *e = &pkt->ct_exec;
+
     ctd_conntrack_execute(pkt);
+
+    /* Send back to the PMD. */
+    mpsc_queue_insert(&e->pmd->ct2pmd.queue, &pkt->node);
 }
 
 static void *

@@ -34,6 +34,9 @@
 #include "util.h"
 #include "flow.h"
 
+struct dp_netdev_flow;
+struct dp_netdev_pmd_thread;
+
 #ifdef  __cplusplus
 extern "C" {
 #endif
@@ -158,6 +161,11 @@ struct ct_exec {
     struct nat_action_info_t nat_action_info;
     struct nat_action_info_t *nat_action_info_ref;
     uint32_t tp_id;
+    struct dp_netdev_pmd_thread *pmd;
+    struct dp_netdev_flow *flow;
+    uint64_t actions_buf[512 / 8];
+    size_t actions_len;
+    uint32_t depth;
 };
 
 /* Buffer for holding packet data.  A dp_packet is automatically reallocated

@@ -388,7 +388,7 @@ void
 pmd_perf_start_iteration(struct pmd_perf_stats *s);
 void
 pmd_perf_end_iteration(struct pmd_perf_stats *s, int rx_packets,
-                       int tx_packets, bool full_metrics);
+                       int tx_packets, int ct_packets, bool full_metrics);
 
 /* Formatting the output of commands. */
 

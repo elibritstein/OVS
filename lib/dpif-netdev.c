@@ -206,6 +206,8 @@ static void dp_netdev_get_mega_ufid(const struct match *match,
                                     ovs_u128 *mega_ufid);
 static void dp_netdev_fill_ct_match(struct match *match,
                                     const struct ct_match *ct_match);
+static uint64_t
+dp_netdev_ct2pmd(struct dp_netdev_pmd_thread *pmd);
 
 /* Set of supported meter flags */
 #define DP_SUPPORTED_METER_FLAGS_MASK \
@@ -8787,10 +8789,11 @@ reload:
 
     pmd->next_rcu_quiesce = pmd->ctx.now + PMD_RCU_QUIESCE_INTERVAL;
 
+    mpsc_queue_acquire(&pmd->ct2pmd.queue);
     /* Protect pmd stats from external clearing while polling. */
     ovs_mutex_lock(&pmd->perf_stats.stats_mutex);
     for (;;) {
-        uint64_t rx_packets = 0, tx_packets = 0;
+        uint64_t rx_packets = 0, tx_packets = 0, ct_packets;
 
         pmd_perf_start_iteration(s);
 
@@ -8814,8 +8817,9 @@ reload:
                                            poll_list[i].port_no);
             rx_packets += process_packets;
         }
+        ct_packets = dp_netdev_ct2pmd(pmd);
 
-        if (!rx_packets) {
+        if (!rx_packets && !ct_packets) {
             /* We didn't receive anything in the process loop.
              * Check if we need to send something.
              * There was no time updates on current iteration. */
@@ -8860,10 +8864,11 @@ reload:
             break;
         }
 
-        pmd_perf_end_iteration(s, rx_packets, tx_packets,
+        pmd_perf_end_iteration(s, rx_packets, tx_packets, ct_packets,
                                pmd_perf_metrics_enabled(pmd));
     }
     ovs_mutex_unlock(&pmd->perf_stats.stats_mutex);
+    mpsc_queue_release(&pmd->ct2pmd.queue);
 
     poll_cnt = pmd_load_queues_and_ports(pmd, &poll_list);
     atomic_read_relaxed(&pmd->wait_for_reload, &wait_for_reload);
@@ -9349,6 +9354,7 @@ dp_netdev_configure_pmd(struct dp_netdev_pmd_thread *pmd, struct dp_netdev *dp,
     hmap_init(&pmd->tnl_port_cache);
     hmap_init(&pmd->send_port_cache);
     cmap_init(&pmd->tx_bonds);
+    mpsc_queue_init(&pmd->ct2pmd.queue);
 
     /* Initialize DPIF function pointer to the default configured version. */
     dp_netdev_input_func default_func = dp_netdev_impl_get_default();
@@ -9381,6 +9387,7 @@ dp_netdev_destroy_pmd(struct dp_netdev_pmd_thread *pmd)
     hmap_destroy(&pmd->tnl_port_cache);
     hmap_destroy(&pmd->tx_ports);
     cmap_destroy(&pmd->tx_bonds);
+    mpsc_queue_destroy(&pmd->ct2pmd.queue);
     hmap_destroy(&pmd->poll_list);
     free(pmd->busy_cycles_intrvl);
     /* All flows (including their dpcls_rules) have been deleted already */
@@ -14074,4 +14081,69 @@ ct2ct_merge_flows(struct e2e_cache_ovs_flow **flows,
     }
     e2e_stats->succ_ct2ct_merges++;
     return 0;
+}
+
+static void
+ct2pmd_handle(struct dp_packet *pkt)
+{
+    struct ct_exec *e = &pkt->ct_exec;
+    struct dp_packet_batch batch;
+    struct dp_netdev_flow *flow;
+    struct nlattr *actions;
+    const struct nlattr *a;
+    uint8_t skip_actions;
+    size_t actions_len;
+    unsigned int left;
+
+    dp_packet_batch_init_packet(&batch, pkt);
+
+    /* Count the actions to be skipped. */
+    skip_actions = 0;
+    actions = (struct nlattr *) e->actions_buf;
+    actions_len = e->actions_len;
+    NL_ATTR_FOR_EACH_UNSAFE (a, left, actions, actions_len) {
+        skip_actions++;
+        if (nl_attr_type(a) == OVS_ACTION_ATTR_CT) {
+            break;
+        }
+    }
+
+    /* Skip the actions that were already executed. */
+    while (skip_actions--) {
+        actions_len -= actions->nla_len;
+        actions = nl_attr_next(actions);
+    }
+    *recirc_depth_get() = e->depth;
+    /* The flow field in the packet can be overwritten if going to CT again.
+     * Keep it here.
+     */
+    flow = e->flow;
+
+    dp_netdev_execute_actions(e->pmd, &batch, true, &e->flow->flow, actions,
+                              actions_len);
+
+    if (flow) {
+        dp_netdev_flow_unref(flow);
+    }
+}
+
+static uint64_t
+dp_netdev_ct2pmd(struct dp_netdev_pmd_thread *pmd)
+    OVS_REQUIRES(pmd->ct2pmd.queue.read_lock)
+{
+    struct mpsc_queue_node *queue_node;
+    struct dp_packet *pkt;
+    uint64_t n_msgs;
+
+    for (n_msgs = 0; ; n_msgs++) {
+        queue_node = mpsc_queue_pop(&pmd->ct2pmd.queue);
+        if (queue_node == NULL) {
+            break;
+        }
+
+        pkt = CONTAINER_OF(queue_node, struct dp_packet, node);
+        ct2pmd_handle(pkt);
+    }
+
+    return n_msgs;
 }

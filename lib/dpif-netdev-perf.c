@@ -453,7 +453,7 @@ OVS_REQUIRES(s->stats_mutex)
 
 void
 pmd_perf_end_iteration(struct pmd_perf_stats *s, int rx_packets,
-                       int tx_packets, bool full_metrics)
+                       int tx_packets, int ct_packets, bool full_metrics)
 {
     uint64_t now_tsc = cycles_counter_update(s);
     struct iter_stats *cum_ms;
@@ -465,7 +465,7 @@ pmd_perf_end_iteration(struct pmd_perf_stats *s, int rx_packets,
     s->current.cycles = cycles;
     s->current.pkts = rx_packets;
 
-    if (rx_packets + tx_packets > 0) {
+    if (rx_packets + tx_packets + ct_packets > 0) {
         pmd_perf_update_counter(s, PMD_CYCLES_ITER_BUSY, cycles);
     } else {
         pmd_perf_update_counter(s, PMD_CYCLES_ITER_IDLE, cycles);
