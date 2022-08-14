@@ -947,6 +947,7 @@ static void dp_netdev_execute_actions(struct dp_netdev_pmd_thread *pmd,
                                       struct dp_packet_batch *,
                                       bool should_steal,
                                       const struct flow *flow,
+                                      struct dp_netdev_flow *dp_flow,
                                       const struct nlattr *actions,
                                       size_t actions_len);
 static void dp_netdev_recirculate(struct dp_netdev_pmd_thread *,
@@ -6064,7 +6065,7 @@ dpif_netdev_execute(struct dpif *dpif, struct dpif_execute *execute)
      * and caller might still need it.  */
     struct dp_packet *packet_clone = dp_packet_clone(execute->packet);
     dp_packet_batch_init_packet(&pp, packet_clone);
-    dp_netdev_execute_actions(pmd, &pp, false, execute->flow,
+    dp_netdev_execute_actions(pmd, &pp, false, execute->flow, NULL,
                               execute->actions, execute->actions_len);
     dp_netdev_pmd_flush_output_packets(pmd, true);
 
@@ -9770,7 +9771,7 @@ packet_batch_per_flow_execute(struct packet_batch_per_flow *batch,
         updated_actions = nl_attr_next(updated_actions);
     }
 
-    dp_netdev_execute_actions(pmd, &batch->array, true, &flow->flow,
+    dp_netdev_execute_actions(pmd, &batch->array, true, &flow->flow, flow,
                               updated_actions, updated_actions_size);
 }
 
@@ -9788,7 +9789,7 @@ dp_netdev_batch_execute(struct dp_netdev_pmd_thread *pmd,
     dp_netdev_flow_used(flow, dp_packet_batch_size(packets), bytes,
                         tcp_flags, pmd->ctx.now / 1000);
     const uint32_t steal = 1;
-    dp_netdev_execute_actions(pmd, packets, steal, &flow->flow,
+    dp_netdev_execute_actions(pmd, packets, steal, &flow->flow, flow,
                               actions->actions, actions->size);
 }
 
@@ -11806,6 +11807,7 @@ handle_packet_upcall(struct dp_netdev_pmd_thread *pmd,
                      const struct netdev_flow_key *key,
                      struct ofpbuf *actions, struct ofpbuf *put_actions)
 {
+    struct dp_netdev_flow *netdev_flow = NULL;
     struct ofpbuf *add_actions;
     struct dp_packet_batch b;
     struct match match;
@@ -11843,8 +11845,6 @@ handle_packet_upcall(struct dp_netdev_pmd_thread *pmd,
 
     add_actions = put_actions->size ? put_actions : actions;
     if (OVS_LIKELY(error != ENOSPC)) {
-        struct dp_netdev_flow *netdev_flow;
-
         /* XXX: There's a race window where a flow covering this packet
          * could have already been installed since we last did the flow
          * lookup before upcall.  This could be solved by moving the
@@ -11870,7 +11870,7 @@ handle_packet_upcall(struct dp_netdev_pmd_thread *pmd,
      * the actions.  Otherwise, if there are any slow path actions,
      * we'll send the packet up twice. */
     dp_packet_batch_init_packet(&b, packet);
-    dp_netdev_execute_actions(pmd, &b, true, &match.flow,
+    dp_netdev_execute_actions(pmd, &b, true, &match.flow, netdev_flow,
                               actions->data, actions->size);
 
     if (pmd_perf_metrics_enabled(pmd)) {
@@ -12223,8 +12223,8 @@ error:
 static void
 dp_execute_userspace_action(struct dp_netdev_pmd_thread *pmd,
                             struct dp_packet *packet, bool should_steal,
-                            struct flow *flow, ovs_u128 *ufid,
-                            struct ofpbuf *actions,
+                            struct flow *flow, struct dp_netdev_flow *dp_flow,
+                            ovs_u128 *ufid, struct ofpbuf *actions,
                             const struct nlattr *userdata)
 {
     struct dp_packet_batch b;
@@ -12237,7 +12237,7 @@ dp_execute_userspace_action(struct dp_netdev_pmd_thread *pmd,
                              NULL);
     if (!error || error == ENOSPC) {
         dp_packet_batch_init_packet(&b, packet);
-        dp_netdev_execute_actions(pmd, &b, should_steal, flow,
+        dp_netdev_execute_actions(pmd, &b, should_steal, flow, dp_flow,
                                   actions->data, actions->size);
     } else if (should_steal) {
         dp_packet_delete(packet);
@@ -12459,7 +12459,8 @@ dp_execute_cb(void *aux_, struct dp_packet_batch *packets_,
                 flow_extract(packet, &flow);
                 odp_flow_key_hash(&flow, sizeof flow, &ufid);
                 dp_execute_userspace_action(pmd, packet, should_steal, &flow,
-                                            &ufid, &actions, userdata);
+                                            aux->dp_flow, &ufid, &actions,
+                                            userdata);
             }
 
             if (clone) {
@@ -12557,12 +12558,13 @@ static void
 dp_netdev_execute_actions(struct dp_netdev_pmd_thread *pmd,
                           struct dp_packet_batch *packets,
                           bool should_steal, const struct flow *flow,
+                          struct dp_netdev_flow *dp_flow,
                           const struct nlattr *actions, size_t actions_len)
 {
     struct dp_netdev_execute_aux aux = {
         .pmd = pmd,
         .flow = flow,
-        .dp_flow = NULL,
+        .dp_flow = dp_flow,
         .actions = actions,
         .actions_len = actions_len,
     };
@@ -14000,8 +14002,8 @@ ct2pmd_handle(struct dp_packet *pkt)
      */
     flow = e->flow;
 
-    dp_netdev_execute_actions(e->pmd, &batch, true, &e->flow->flow, actions,
-                              actions_len);
+    dp_netdev_execute_actions(e->pmd, &batch, true, &e->flow->flow, e->flow,
+                              actions, actions_len);
 
     if (flow) {
         dp_netdev_flow_unref(flow);
