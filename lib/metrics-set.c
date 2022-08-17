@@ -24,6 +24,47 @@
 #include "openvswitch/util.h"
 #include "util.h"
 
+static size_t
+metrics_set_size(struct metrics_node *node)
+{
+    struct metrics_set *set = metrics_node_cast(node);
+
+    return sizeof(struct metrics_set) +
+           set->n_entries * sizeof(struct metrics_entry);
+}
+
+static size_t
+metrics_set_n_values(struct metrics_node *node)
+{
+    struct metrics_set *set = metrics_node_cast(node);
+
+    return set->n_entries;
+}
+
+static void
+metrics_set_check_entry(struct metrics_entry *entry)
+{
+    /* The entry has associated description. */
+    ovs_assert(entry->help != NULL);
+    /* The entry has a 'public' stable name. */
+    ovs_assert(entry->name != NULL);
+}
+
+static void
+metrics_set_check(struct metrics_node *node)
+{
+    struct metrics_set *set = metrics_node_cast(node);
+    size_t i;
+
+    ovs_assert(set->read != NULL);
+    for (i = 0; i < set->n_entries; i++) {
+        metrics_set_check_entry(&set->entries[i]);
+    }
+}
+
 struct metrics_class metrics_class_set = {
     .init = NULL,
+    .size = metrics_set_size,
+    .n_values = metrics_set_n_values,
+    .check = metrics_set_check,
 };

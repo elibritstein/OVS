@@ -45,9 +45,12 @@ void metrics_node_leaf_init(struct metrics_node *node);
 
 struct metrics_class {
     void (*init)(struct metrics_node *node);
+    size_t (*size)(struct metrics_node *node);
+    size_t (*n_values)(struct metrics_node *node);
+    void (*check)(struct metrics_node *node);
 };
 #define METRICS_CLASS_DEFAULT_INITIALIZER { \
-    .init = NULL, \
+    .init = NULL, .size = NULL, .n_values = NULL, .check = NULL, \
 }
 
 extern struct metrics_class metrics_class_set;
@@ -58,5 +61,18 @@ metrics_ops(struct metrics_node *node)
 {
     return metrics_classes[node->type];
 }
+
+unsigned int metrics_values_count(void);
+size_t metrics_tree_size(void);
+void metrics_tree_check(void);
+
+void metrics_visitor_dfs(struct metrics_visitor_context *ctx,
+                         struct metrics_node *node);
+void metrics_node_n_values(struct metrics_node *node,
+                           struct metrics_visitor_context *ctx);
+void metrics_node_size(struct metrics_node *node,
+                       struct metrics_visitor_context *ctx);
+void metrics_node_check(struct metrics_node *node,
+                        struct metrics_visitor_context *ctx);
 
 #endif /* METRICS_PRIVATE_H */

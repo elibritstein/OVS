@@ -18,6 +18,7 @@
 #include <assert.h>
 #include <getopt.h>
 #include <string.h>
+#include <math.h>
 
 #include <config.h>
 
@@ -59,7 +60,25 @@ METRICS_ENTRIES(test, flat_entries,
 static void
 metrics_test_main(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
 {
+    uint64_t n_values;
+    size_t size;
+
     METRICS_REGISTER(flat_entries);
+
+    /* Sanity checks. */
+    metrics_tree_check();
+
+    /* Read and output the test metrics. */
+    n_values = metrics_values_count();
+    size = metrics_tree_size();
+
+    printf("Got %ld metrics values to read\n", n_values);
+    printf("Got %"PRIuSIZE" bytes of payload described in %" PRIuSIZE
+           " bytes of framework.\n",
+           n_values * sizeof(uint64_t), size);
+    printf("Efficiency: %.2lf%%\n",
+           (double) (n_values * sizeof(uint64_t)) /
+           (double) (size) * 100.0);
 }
 
 OVSTEST_REGISTER("test-metrics", metrics_test_main);

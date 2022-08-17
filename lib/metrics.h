@@ -43,6 +43,15 @@ struct metrics_subsystem {
     struct metrics_node node;
 };
 
+struct metrics_visitor_context;
+typedef void (*metrics_node_fn)(struct metrics_node *node,
+                                struct metrics_visitor_context *ctx);
+
+struct metrics_visitor_context {
+    metrics_node_fn ops;
+    void *ops_aux;
+};
+
 enum metrics_entry_type {
     METRICS_ENTRY_TYPE_GAUGE,
     METRICS_ENTRY_TYPE_COUNTER,

@@ -115,6 +115,43 @@ metrics_register(struct metrics_node *node)
     metrics_node_init(node);
 }
 
+size_t
+metrics_tree_size(void)
+{
+    size_t total_size = 0;
+    struct metrics_visitor_context ctx = {
+        .ops = metrics_node_size,
+        .ops_aux = &total_size,
+    };
+
+    metrics_visitor_dfs(&ctx, METRICS_ROOT);
+    return total_size;
+}
+
+unsigned int
+metrics_values_count(void)
+{
+    unsigned int n_values = 0;
+    struct metrics_visitor_context ctx = {
+        .ops = metrics_node_n_values,
+        .ops_aux = &n_values,
+    };
+
+    metrics_visitor_dfs(&ctx, METRICS_ROOT);
+    return n_values;
+}
+
+void
+metrics_tree_check(void)
+{
+    struct metrics_visitor_context ctx = {
+        .ops = metrics_node_check,
+    };
+
+    /* Sanity checks. */
+    metrics_visitor_dfs(&ctx, METRICS_ROOT);
+}
+
 struct metrics_class metrics_class_default = METRICS_CLASS_DEFAULT_INITIALIZER;
 struct metrics_class *metrics_classes[METRICS_N_NODE_TYPE] = {
     [METRICS_NODE_TYPE_SUBSYSTEM] = &metrics_class_default,
