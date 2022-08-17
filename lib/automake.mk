@@ -137,6 +137,8 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/dpif.h \
 	lib/heap.c \
 	lib/heap.h \
+	lib/histogram.c \
+	lib/histogram.h \
 	lib/dynamic-string.c \
 	lib/entropy.c \
 	lib/entropy.h \

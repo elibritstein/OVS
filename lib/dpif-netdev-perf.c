@@ -19,6 +19,7 @@
 
 #include "dpdk.h"
 #include "dpif-netdev-perf.h"
+#include "histogram.h"
 #include "openvswitch/dynamic-string.h"
 #include "openvswitch/vlog.h"
 #include "ovs-numa.h"
@@ -98,76 +99,6 @@ pmd_perf_estimate_tsc_frequency(void)
     }
 
     VLOG_INFO("Estimated TSC frequency: %"PRIu64" KHz", tsc_hz / 1000);
-}
-
-/* Histogram functions. */
-
-void
-histogram_walls_set_lin(struct histogram *hist, uint32_t min, uint32_t max)
-{
-    uint32_t i, inc;
-
-    ovs_assert(min < max);
-    inc = (max - min) / (NUM_BINS - 2);
-    for (i = 0; i < NUM_BINS-1; i++) {
-        hist->wall[i] = min + (i * inc);
-    }
-    if (max != UINT32_MAX) {
-        hist->wall[NUM_BINS - 2] = max;
-    }
-    hist->wall[NUM_BINS-1] = UINT32_MAX;
-}
-
-void
-histogram_walls_set_log(struct histogram *hist, uint32_t min, uint32_t max)
-{
-    uint32_t i, start, bins, wall;
-    double log_min, log_max;
-
-    ovs_assert(min < max);
-    if (min > 0) {
-        log_min = log(min);
-        log_max = log(max);
-        start = 0;
-        bins = NUM_BINS - 1;
-    } else {
-        hist->wall[0] = 0;
-        log_min = log(1);
-        log_max = log(max);
-        start = 1;
-        bins = NUM_BINS - 2;
-    }
-    wall = start;
-    for (i = 0; i < bins; i++) {
-        /* Make sure each wall is monotonically increasing. */
-        wall = MAX(wall, exp(log_min + (i * (log_max - log_min)) / (bins-1)));
-        hist->wall[start + i] = wall++;
-    }
-    if (hist->wall[NUM_BINS - 2] < max && max != UINT32_MAX) {
-        hist->wall[NUM_BINS-2] = max;
-    }
-    hist->wall[NUM_BINS-1] = UINT32_MAX;
-}
-
-uint64_t
-histogram_samples(const struct histogram *hist)
-{
-    uint64_t samples = 0;
-
-    for (int i = 0; i < NUM_BINS; i++) {
-        samples += hist->bin[i];
-    }
-    return samples;
-}
-
-static void
-histogram_clear(struct histogram *hist)
-{
-    int i;
-
-    for (i = 0; i < NUM_BINS; i++) {
-        hist->bin[i] = 0;
-    }
 }
 
 static void
@@ -307,7 +238,7 @@ pmd_perf_format_histograms(struct ds *str, struct pmd_perf_stats *s)
                   "   %-21s  %-21s  %-21s  %-21s  %-21s  %-21s  %-21s\n",
                   "cycles/it", "packets/it", "cycles/pkt", "pkts/batch",
                   "max vhost qlen", "upcalls/it", "cycles/upcall");
-    for (i = 0; i < NUM_BINS-1; i++) {
+    for (i = 0; i < HISTOGRAM_N_BINS - 1; i++) {
         ds_put_format(str,
             "   %-9d %-11"PRIu64"  %-9d %-11"PRIu64"  %-9d %-11"PRIu64
             "  %-9d %-11"PRIu64"  %-9d %-11"PRIu64"  %-9d %-11"PRIu64

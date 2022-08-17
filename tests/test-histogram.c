@@ -18,7 +18,7 @@
 
 #include <stdint.h>
 
-#include "dpif-netdev-perf.h"
+#include "histogram.h"
 #include "openvswitch/util.h"
 #include "ovstest.h"
 #include "random.h"
@@ -59,7 +59,7 @@ test_histogram_check(struct histogram *hist,
     };
     bool min_found = false, max_found = false;
 
-    for (size_t i = 0; i < NUM_BINS; i++) {
+    for (size_t i = 0; i < HISTOGRAM_N_BINS; i++) {
         if (ops[EQ](hist->wall[i], min)) {
             min_found = true;
         }
@@ -69,7 +69,7 @@ test_histogram_check(struct histogram *hist,
     }
     ovs_assert(min_found);
     ovs_assert(max_found);
-    for (size_t i = 0; i < NUM_BINS - 1; i++) {
+    for (size_t i = 0; i < HISTOGRAM_N_BINS - 1; i++) {
         if (ops[LT](hist->wall[i], min)) {
             ovs_abort(0, "A bucket is under the requested minimum. "
                     "For [%"PRIu32",%"PRIu32"]: "
@@ -126,14 +126,14 @@ test_main(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
         { LIN | LOG, 1, UINT32_MAX },
         { LIN | LOG, 0, UINT32_MAX - 1 },
         { LIN | LOG, 1, UINT32_MAX - 1 },
-        { LIN      , UINT32_MAX - (NUM_BINS - 1), UINT32_MAX },
-        { LIN      , UINT32_MAX - (NUM_BINS - 1), UINT32_MAX - 1 },
+        { LIN      , UINT32_MAX - (HISTOGRAM_N_BINS - 1), UINT32_MAX },
+        { LIN      , UINT32_MAX - (HISTOGRAM_N_BINS - 1), UINT32_MAX - 1 },
         /* Congruent case with inc=1. */
-        { LIN      , 5, 5 +  NUM_BINS },
+        { LIN      , 5, 5 +  HISTOGRAM_N_BINS },
         /* Non-congruent case with inc<1. */
-        { LIN      , 5, 5 + (NUM_BINS - 1) },
+        { LIN      , 5, 5 + (HISTOGRAM_N_BINS - 1) },
         /* Non-congruent case with inc<1. */
-        { LIN      , 5, 5 + (NUM_BINS - 2) },
+        { LIN      , 5, 5 + (HISTOGRAM_N_BINS - 2) },
         { LIN | LOG, 0x88888888, 0x99999999 },
         { LIN | LOG, 2203470768, 2441348688 },
         { LIN | LOG, 1732474832, 2432533624 },

@@ -29,6 +29,7 @@
 #include <rte_cycles.h>
 #endif
 
+#include "histogram.h"
 #include "openvswitch/vlog.h"
 #include "ovs-atomic.h"
 #include "timeval.h"
@@ -41,7 +42,7 @@ extern "C" {
 
 /* This module encapsulates data structures and functions to maintain basic PMD
  * performance metrics such as packet counters, execution cycles as well as
- * histograms and time series recording for more detailed PMD metrics.
+ * time series recording for more detailed PMD metrics.
  *
  * It provides a clean API for dpif-netdev to initialize, update and read and
  * reset these metrics.
@@ -93,19 +94,6 @@ enum pmd_stat_type {
 struct pmd_counters {
     atomic_uint64_t n[PMD_N_STATS];     /* Value since _init(). */
     uint64_t zero[PMD_N_STATS];         /* Value at last _clear().  */
-};
-
-/* Data structure to collect statistical distribution of an integer measurement
- * type in form of a histogram. The wall[] array contains the inclusive
- * upper boundaries of the bins, while the bin[] array contains the actual
- * counters per bin. The histogram walls are typically set automatically
- * using the functions provided below.*/
-
-#define NUM_BINS 32             /* Number of histogram bins. */
-
-struct histogram {
-    uint32_t wall[NUM_BINS];
-    uint64_t bin[NUM_BINS];
 };
 
 /* Data structure to record details PMD execution metrics per iteration for
@@ -330,25 +318,6 @@ pmd_perf_update_counter(struct pmd_perf_stats *s,
 }
 
 /* Functions to manipulate a sample history. */
-
-static inline void
-histogram_add_sample(struct histogram *hist, uint32_t val)
-{
-    /* TODO: Can do better with binary search? */
-    for (int i = 0; i < NUM_BINS-1; i++) {
-        if (val <= hist->wall[i]) {
-            hist->bin[i]++;
-            return;
-        }
-    }
-    hist->bin[NUM_BINS-1]++;
-}
-
-void histogram_walls_set_lin(struct histogram *hist,
-                             uint32_t min, uint32_t max);
-void histogram_walls_set_log(struct histogram *hist,
-                             uint32_t min, uint32_t max);
-uint64_t histogram_samples(const struct histogram *hist);
 
 /* This function is used to advance the given history index by positive
  * offset in the circular history buffer. */
