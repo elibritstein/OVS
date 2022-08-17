@@ -57,6 +57,26 @@ METRICS_ENTRIES(test, flat_entries,
     [P] = METRICS_GAUGE(p, "Gauge the number of p"),
 );
 
+static struct histogram *
+linear_histogram_get(void)
+{
+    static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
+    static struct histogram hist;
+    size_t i;
+
+    if (ovsthread_once_start(&once)) {
+        histogram_walls_set_lin(&hist, UINT32_MAX / 32, UINT32_MAX / 8);
+        for (i = 0; i < 1ULL << 20; i++) {
+            histogram_add_sample(&hist, random_uint32());
+        }
+        ovsthread_once_done(&once);
+    }
+    return &hist;
+}
+
+METRICS_HISTOGRAM(test, linear_histogram,
+    "A basic linear histogram", linear_histogram_get);
+
 static void
 metrics_test_main(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
 {
@@ -64,6 +84,7 @@ metrics_test_main(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
     size_t size;
 
     METRICS_REGISTER(flat_entries);
+    METRICS_REGISTER(linear_histogram);
 
     /* Sanity checks. */
     metrics_tree_check();

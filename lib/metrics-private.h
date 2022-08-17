@@ -33,6 +33,8 @@ metrics_node_cast(struct metrics_node *node)
         return CONTAINER_OF(node, struct metrics_subsystem, node);
     case METRICS_NODE_TYPE_SET:
         return CONTAINER_OF(node, struct metrics_set, node);
+    case METRICS_NODE_TYPE_HISTOGRAM:
+        return CONTAINER_OF(node, struct metrics_histogram, node);
     case METRICS_N_NODE_TYPE:
         OVS_NOT_REACHED();
     }
@@ -54,6 +56,7 @@ struct metrics_class {
 }
 
 extern struct metrics_class metrics_class_set;
+extern struct metrics_class metrics_class_histogram;
 extern struct metrics_class *metrics_classes[METRICS_N_NODE_TYPE];
 
 static inline struct metrics_class *

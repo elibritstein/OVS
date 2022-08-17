@@ -47,6 +47,8 @@ metrics_node_generic_size(struct metrics_node *node)
         return sizeof(struct metrics_subsystem);
     case METRICS_NODE_TYPE_SET:
         return sizeof(struct metrics_set);
+    case METRICS_NODE_TYPE_HISTOGRAM:
+        return sizeof(struct metrics_histogram);
     case METRICS_N_NODE_TYPE:
         OVS_NOT_REACHED();
     }

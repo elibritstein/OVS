@@ -190,6 +190,7 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/meta-flow.c \
 	lib/metrics.c \
 	lib/metrics-set.c \
+	lib/metrics-histogram.c \
 	lib/metrics-visitor.c \
 	lib/metrics.h \
 	lib/metrics-private.h \

@@ -81,8 +81,10 @@ metrics_register(struct metrics_node *node)
     struct metrics_node *n;
     int head = -1;
 
-    ovs_assert("Only register 'METRICS_ENTRIES' using 'METRICS_REGISTER'." &&
-               node->type == METRICS_NODE_TYPE_SET);
+    ovs_assert("Only register 'METRICS_ENTRIES' or 'METRICS_HISTOGRAM' "
+               "using 'METRICS_REGISTER'." &&
+               (node->type == METRICS_NODE_TYPE_SET ||
+                node->type == METRICS_NODE_TYPE_HISTOGRAM));
 
     /* The 'up' pointer must be set before executing
      * the node initialization. */
@@ -156,4 +158,5 @@ struct metrics_class metrics_class_default = METRICS_CLASS_DEFAULT_INITIALIZER;
 struct metrics_class *metrics_classes[METRICS_N_NODE_TYPE] = {
     [METRICS_NODE_TYPE_SUBSYSTEM] = &metrics_class_default,
     [METRICS_NODE_TYPE_SET] = &metrics_class_set,
+    [METRICS_NODE_TYPE_HISTOGRAM] = &metrics_class_histogram,
 };

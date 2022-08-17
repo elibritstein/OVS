@@ -20,11 +20,13 @@
 #include <stdint.h>
 
 #include "compiler.h"
+#include "histogram.h"
 #include "openvswitch/list.h"
 
 enum metrics_node_type {
     METRICS_NODE_TYPE_SUBSYSTEM,
     METRICS_NODE_TYPE_SET,
+    METRICS_NODE_TYPE_HISTOGRAM,
     METRICS_N_NODE_TYPE,
 };
 
@@ -55,6 +57,7 @@ struct metrics_visitor_context {
 enum metrics_entry_type {
     METRICS_ENTRY_TYPE_GAUGE,
     METRICS_ENTRY_TYPE_COUNTER,
+    METRICS_ENTRY_TYPE_HISTOGRAM,
 };
 
 struct metrics_entry {
@@ -70,6 +73,14 @@ struct metrics_set {
     metrics_set_read read;
     size_t n_entries;
     struct metrics_entry *entries;
+};
+
+typedef struct histogram *(*metrics_histogram_get_fn)(void);
+
+struct metrics_histogram {
+    struct metrics_node node;
+    struct metrics_entry entry;
+    metrics_histogram_get_fn get;
 };
 
 #define METRICS(NAME) metrics_node_##NAME
@@ -188,11 +199,50 @@ struct metrics_set {
 #define METRICS_GAUGE(NAME, HELP) \
     METRICS_ENTRY_(NAME, HELP, GAUGE)
 
+/* Histogram:
+ * A histogram measures a distribution of samples across
+ * several buckets. Each buckets will count the number of
+ * occurences of each samples valued less-than or equal
+ * to that bucket limit.
+ *
+ * The metrics_histogram node is backed by the 'histogram'
+ * type available as a module.
+ *
+ * A histogram should be cumulative, each buckets matching
+ * the sample value being incremented. To accelerate operations,
+ * the 'histogram' type only writes to the highest matching
+ * bucket.
+ *
+ * When the values are read, they are accumulated across buckets,
+ * so the telemetry output generated from this metrics node
+ * will respect the expected behavior of histograms.
+ * i.e. its last bucket will be valued exactly to the total
+ * number of samples measured.
+ *
+ * UP (C identifier):
+ *      Parent metrics node.
+ * NAME (C identifier):
+ *      Name of this node. This name is also used
+ *      externally in telemetry and must remain stable.
+ * HELP (const char[]):
+ *      Help string sent along with the name and current value.
+ * GET_FN (metrics_histogram_get_fn):
+ *      Callback to access the underlying histogram.
+ */
+#define METRICS_HISTOGRAM(UP, NAME, HELP, GET_FN) \
+    METRICS_DECLARE_INIT(NAME); \
+    static struct metrics_histogram METRICS(NAME) = { \
+        .node = METRICS_NODE_(NAME, NULL, HISTOGRAM), \
+        .entry = METRICS_ENTRY_(NAME, HELP, HISTOGRAM), \
+        .get = GET_FN, \
+    }; \
+    METRICS_DEFINE_INIT(UP, NAME);
+
 /* Register metrics entries:
- * All entries (defined using 'METRICS_ENTRIES' above) must be manually
- * registered using the following macro. Not doing so means those
- * entries won't be reachable from the root, and they won't appear
- * in metrics reads.
+ * All entries (defined using 'METRICS_ENTRIES' or 'METRICS_HISTOGRAM')
+ * must be manually registered using the following macro.
+ * Not doing so means those entries won't be reachable from the root,
+ * and they won't appear in metrics reads.
  *
  * NAME (C identifier):
  *      Name of the registered node.
