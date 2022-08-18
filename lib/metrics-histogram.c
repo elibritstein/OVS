@@ -59,7 +59,7 @@ metrics_histogram_read_values(struct metrics_node *node,
     uint64_t count = 0, sum = 0;
     size_t i;
 
-    histogram = hist->get();
+    histogram = hist->get(ctx->it);
     /* Make sure we read a 'count' consistent with the buckets:
      * first load the buckets locally, then count them independently from
      * potential subsystem changes.

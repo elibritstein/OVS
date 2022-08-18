@@ -30,21 +30,36 @@ void
 metrics_visitor_dfs(struct metrics_visitor_context *ctx,
                     struct metrics_node *node)
 {
-    struct metrics_node *child;
-
-    ctx->ops(node, ctx);
+    /* Execute the operation only the first time
+     * we see the COLLECTION node. */
+    if (node->type != METRICS_NODE_TYPE_COLLECTION || ctx->it == NULL) {
+        ctx->ops(node, ctx);
+    }
 
     if (!ctx->inspect &&
         node->type == METRICS_NODE_TYPE_COND) {
         struct metrics_cond *cond = metrics_node_cast(node);
 
-        if (!cond->enabled()) {
+        if (!cond->enabled(ctx->it)) {
             return;
         }
     }
 
-    LIST_FOR_EACH (child, siblings, &node->children) {
-        metrics_visitor_dfs(ctx, child);
+    if (!ctx->inspect &&
+        node->type == METRICS_NODE_TYPE_COLLECTION &&
+        ctx->it == NULL) {
+        struct metrics_collection *coll = metrics_node_cast(node);
+
+        coll->iterate(metrics_visitor_dfs, ctx, node);
+        /* Cleanup eventual collection iterator that might have
+         * been leftover by the 'iterate' call. */
+        ctx->it = NULL;
+    } else {
+        struct metrics_node *child;
+
+        LIST_FOR_EACH (child, siblings, &node->children) {
+            metrics_visitor_dfs(ctx, child);
+        }
     }
 }
 
@@ -56,6 +71,8 @@ metrics_node_generic_size(struct metrics_node *node)
         return sizeof(struct metrics_subsystem);
     case METRICS_NODE_TYPE_COND:
         return sizeof(struct metrics_cond);
+    case METRICS_NODE_TYPE_COLLECTION:
+        return sizeof(struct metrics_collection);
     case METRICS_NODE_TYPE_SET:
         return sizeof(struct metrics_set);
     case METRICS_NODE_TYPE_HISTOGRAM:

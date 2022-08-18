@@ -241,6 +241,7 @@ struct metrics_class metrics_class_default = METRICS_CLASS_DEFAULT_INITIALIZER;
 struct metrics_class *metrics_classes[METRICS_N_NODE_TYPE] = {
     [METRICS_NODE_TYPE_SUBSYSTEM] = &metrics_class_default,
     [METRICS_NODE_TYPE_COND] = &metrics_class_default,
+    [METRICS_NODE_TYPE_COLLECTION] = &metrics_class_default,
     [METRICS_NODE_TYPE_SET] = &metrics_class_set,
     [METRICS_NODE_TYPE_HISTOGRAM] = &metrics_class_histogram,
 };
@@ -252,7 +253,7 @@ enum {
 };
 
 static void
-metrics_entries_read_value(double *values)
+metrics_entries_read_value(double *values, void *it OVS_UNUSED)
 {
     values[METRICS_HIST_N_READ_ERRORS] = n_failed_histogram_reads;
 }

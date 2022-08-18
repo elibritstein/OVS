@@ -26,6 +26,7 @@
 enum metrics_node_type {
     METRICS_NODE_TYPE_SUBSYSTEM,
     METRICS_NODE_TYPE_COND,
+    METRICS_NODE_TYPE_COLLECTION,
     METRICS_NODE_TYPE_SET,
     METRICS_NODE_TYPE_HISTOGRAM,
     METRICS_N_NODE_TYPE,
@@ -46,7 +47,7 @@ struct metrics_subsystem {
     struct metrics_node node;
 };
 
-typedef bool (*metrics_cond_enabled)(void);
+typedef bool (*metrics_cond_enabled)(void *it);
 
 struct metrics_cond {
     struct metrics_node node;
@@ -62,6 +63,19 @@ struct metrics_visitor_context {
     void *ops_aux;
     bool inspect; /* Run the visitor to 'inspect' the tree:
                    * callbacks are not executed, the tree is fully visited. */
+    void *it;
+};
+
+typedef void (*metrics_visitor_fn)(struct metrics_visitor_context *ctx,
+                                   struct metrics_node *node);
+
+typedef void (*metrics_collection_iterate)(metrics_visitor_fn visitor,
+                                           struct metrics_visitor_context *ctx,
+                                           struct metrics_node *node);
+
+struct metrics_collection {
+    struct metrics_node node;
+    metrics_collection_iterate iterate;
 };
 
 enum metrics_entry_type {
@@ -76,7 +90,7 @@ struct metrics_entry {
     enum metrics_entry_type type;
 };
 
-typedef void (*metrics_set_read)(double *values);
+typedef void (*metrics_set_read)(double *values, void *it);
 
 struct metrics_set {
     struct metrics_node node;
@@ -85,7 +99,7 @@ struct metrics_set {
     struct metrics_entry *entries;
 };
 
-typedef struct histogram *(*metrics_histogram_get_fn)(void);
+typedef struct histogram *(*metrics_histogram_get_fn)(void *it);
 
 struct metrics_histogram {
     struct metrics_node node;
@@ -174,6 +188,34 @@ struct metrics_histogram {
     static struct metrics_cond METRICS(NAME) = { \
         .node = METRICS_NODE_(NAME, NULL, COND), \
         .enabled = ENABLED_CB, \
+    }; \
+    METRICS_DEFINE_INIT(UP, NAME);
+
+/* Collection:
+ * This node is used to demultiply the current tree operation
+ * on each of its children, following the iteration pattern executed
+ * in its callback of type 'metrics_collection_iterate'.
+ *
+ * For example, when multiple interfaces exist in a datapath, each
+ * of them have their own metrics (rx_packets, tx_packets, etc.).
+ * Putting a 'collection' node above the interface metrics allows
+ * visiting their metrics sub-tree once per instance.
+ *
+ * UP (C identifier):
+ *      Parent metrics node.
+ * NAME (C identifier):
+ *      Name of this node.
+ * ITERATE_CB (metrics_collection_iterate):
+ *      Callback executing the iteration. This function takes
+ *      a visitor function of type 'metrics_visitor_fn' as parameter,
+ *      and must call this function once for each iteration it
+ *      executes.
+ */
+#define METRICS_COLLECTION(UP, NAME, ITERATE_CB) \
+    METRICS_DECLARE_INIT(NAME); \
+    static struct metrics_collection METRICS(NAME) = { \
+        .node = METRICS_NODE_(NAME, NULL, COLLECTION), \
+        .iterate = ITERATE_CB, \
     }; \
     METRICS_DEFINE_INIT(UP, NAME);
 

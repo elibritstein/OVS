@@ -41,7 +41,8 @@ enum TEST_METRICS_NAMES {
 };
 
 static void
-flat_entries_read_value(double *values)
+flat_entries_read_value(double *values,
+                        void *it OVS_UNUSED)
 {
     values[M] = 42;
     values[N] = 24.48;
@@ -60,7 +61,7 @@ METRICS_ENTRIES(test, flat_entries,
 );
 
 static struct histogram *
-linear_histogram_get(void)
+linear_histogram_get(void *it OVS_UNUSED)
 {
     static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
     static struct histogram hist;
@@ -79,15 +80,75 @@ linear_histogram_get(void)
 METRICS_HISTOGRAM(test, linear_histogram,
     "A basic linear histogram", linear_histogram_get);
 
+static struct {
+    uint64_t m, o;
+    double n, p;
+} objects[] = {
+    [0] = {
+        .m = 0xCAFED00D,
+        .n = 2.17,
+        .o = 0xBAADF00D,
+        .p = 4.135667696,
+    },
+    [1] = {
+        .m = 0xCAFED00D + 1,
+        .n = 2.17 + 1,
+        .o = 0xBAADF00D + 1,
+        .p = 4.135667696 + 1,
+    },
+    [2] = {
+        .m = 0xCAFED00D + 2,
+        .n = 2.17 + 2,
+        .o = 0xBAADF00D + 2,
+        .p = 4.135667696 + 2,
+    },
+};
+
+static void
+do_foreach_objects(metrics_visitor_fn visitor,
+                   struct metrics_visitor_context *ctx,
+                   struct metrics_node *node)
+{
+    size_t i;
+
+    for (i = 0; i < ARRAY_SIZE(objects); i++) {
+        ctx->it = &i;
+        visitor(ctx, node);
+    }
+}
+
+static void
+objects_read_value(double *values,
+                   void *it)
+{
+    size_t *iptr = it, i = *iptr;
+
+    values[M] = objects[i].m;
+    values[N] = objects[i].n;
+    values[O] = objects[i].o;
+    values[P] = objects[i].p;
+}
+
+METRICS_COLLECTION(test, foreach_objects, do_foreach_objects);
+
+METRICS_ENTRIES(foreach_objects, objects_entries,
+    "objects", objects_read_value,
+    [M] = METRICS_COUNTER(m, "Count the number of m in range of objects"),
+    [N] = METRICS_COUNTER(n, "Count the number of n in range of objects"),
+    [O] = METRICS_GAUGE(o, "Gauge the number of o in range of objects"),
+    [P] = METRICS_GAUGE(p, "Gauge the number of p in range of objects"),
+);
+
 static bool enabled_cond_metrics_seen = false;
 static bool
-test_cond_metrics_true(void)
+test_cond_metrics_true(void *it OVS_UNUSED)
 {
     return true;
 }
 METRICS_COND(test, enabled_cond, test_cond_metrics_true);
 static void
-test_enabled_cond_read_value(double *values OVS_UNUSED)
+test_enabled_cond_read_value(double *values OVS_UNUSED,
+                             void *it OVS_UNUSED)
 {
     /* Verify we visit this node when the conditional is enabled. */
     enabled_cond_metrics_seen = true;
@@ -97,13 +158,14 @@ METRICS_ENTRIES(enabled_cond, trigger_enabled_cond_read, "",
 );
 
 static bool
-test_cond_metrics_false(void)
+test_cond_metrics_false(void *it OVS_UNUSED)
 {
     return false;
 }
 METRICS_COND(test, disabled_cond, test_cond_metrics_false);
 static void
-test_disabled_cond_read_value(double *values OVS_UNUSED)
+test_disabled_cond_read_value(double *values OVS_UNUSED,
+                              void *it OVS_UNUSED)
 {
     /* Verify we do not visit this node when the conditional is disabled. */
     OVS_NOT_REACHED();
@@ -125,6 +187,7 @@ metrics_test_main(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
     METRICS_REGISTER(linear_histogram);
     METRICS_REGISTER(trigger_enabled_cond_read);
     METRICS_REGISTER(check_disabled_cond_read);
+    METRICS_REGISTER(objects_entries);
 
     /* Sanity checks. */
     metrics_tree_check();

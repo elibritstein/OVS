@@ -69,7 +69,7 @@ metrics_set_read_values(struct metrics_node *node,
 {
     struct metrics_set *set = metrics_node_cast(node);
 
-    set->read(values);
+    set->read(values, ctx->it);
 }
 
 static void
