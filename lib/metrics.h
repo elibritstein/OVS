@@ -25,6 +25,7 @@
 
 enum metrics_node_type {
     METRICS_NODE_TYPE_SUBSYSTEM,
+    METRICS_NODE_TYPE_COND,
     METRICS_NODE_TYPE_SET,
     METRICS_NODE_TYPE_HISTOGRAM,
     METRICS_N_NODE_TYPE,
@@ -45,6 +46,13 @@ struct metrics_subsystem {
     struct metrics_node node;
 };
 
+typedef bool (*metrics_cond_enabled)(void);
+
+struct metrics_cond {
+    struct metrics_node node;
+    metrics_cond_enabled enabled;
+};
+
 struct metrics_visitor_context;
 typedef void (*metrics_node_fn)(struct metrics_node *node,
                                 struct metrics_visitor_context *ctx);
@@ -52,6 +60,8 @@ typedef void (*metrics_node_fn)(struct metrics_node *node,
 struct metrics_visitor_context {
     metrics_node_fn ops;
     void *ops_aux;
+    bool inspect; /* Run the visitor to 'inspect' the tree:
+                   * callbacks are not executed, the tree is fully visited. */
 };
 
 enum metrics_entry_type {
@@ -142,6 +152,30 @@ struct metrics_histogram {
         .node = METRICS_NODE_(NAME, NULL, SUBSYSTEM) \
     }; \
     METRICS_DEFINE_INIT(root, NAME);
+
+/* Conditional:
+ * This node is used to introduce conditional access to its sub-nodes.
+ * A callback is required of type 'metrics_cond_enabled'. If this
+ * callback returns 'false' the current operation on the tree will
+ * not proceed to this node's children.
+ *
+ * This is used to disable some metrics if their subsystem is currently
+ * disabled (e.g. hardware offloads).
+ *
+ * UP (C identifier):
+ *      Parent metrics node.
+ * NAME (C identifier):
+ *      Name of this node.
+ * ENABLED_CB (metrics_cond_enabled):
+ *      Callback to determine if the tree operation should proceed.
+ */
+#define METRICS_COND(UP, NAME, ENABLED_CB) \
+    METRICS_DECLARE_INIT(NAME); \
+    static struct metrics_cond METRICS(NAME) = { \
+        .node = METRICS_NODE_(NAME, NULL, COND), \
+        .enabled = ENABLED_CB, \
+    }; \
+    METRICS_DEFINE_INIT(UP, NAME);
 
 /* Entries:
  * This node describes a set of entries. It is bound to a parent node 'UP'.

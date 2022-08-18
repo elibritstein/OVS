@@ -34,6 +34,15 @@ metrics_visitor_dfs(struct metrics_visitor_context *ctx,
 
     ctx->ops(node, ctx);
 
+    if (!ctx->inspect &&
+        node->type == METRICS_NODE_TYPE_COND) {
+        struct metrics_cond *cond = metrics_node_cast(node);
+
+        if (!cond->enabled()) {
+            return;
+        }
+    }
+
     LIST_FOR_EACH (child, siblings, &node->children) {
         metrics_visitor_dfs(ctx, child);
     }
@@ -45,6 +54,8 @@ metrics_node_generic_size(struct metrics_node *node)
     switch (node->type) {
     case METRICS_NODE_TYPE_SUBSYSTEM:
         return sizeof(struct metrics_subsystem);
+    case METRICS_NODE_TYPE_COND:
+        return sizeof(struct metrics_cond);
     case METRICS_NODE_TYPE_SET:
         return sizeof(struct metrics_set);
     case METRICS_NODE_TYPE_HISTOGRAM:

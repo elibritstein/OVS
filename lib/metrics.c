@@ -134,6 +134,7 @@ metrics_tree_size(void)
     struct metrics_visitor_context ctx = {
         .ops = metrics_node_size,
         .ops_aux = &total_size,
+        .inspect = true,
     };
 
     metrics_visitor_dfs(&ctx, METRICS_ROOT);
@@ -147,6 +148,7 @@ metrics_values_count(void)
     struct metrics_visitor_context ctx = {
         .ops = metrics_node_n_values,
         .ops_aux = &n_values,
+        .inspect = false,
     };
 
     metrics_visitor_dfs(&ctx, METRICS_ROOT);
@@ -158,6 +160,7 @@ metrics_tree_check(void)
 {
     struct metrics_visitor_context ctx = {
         .ops = metrics_node_check,
+        .inspect = true,
     };
 
     /* Sanity checks. */
@@ -237,6 +240,7 @@ metrics_values_format(struct ds *s)
 struct metrics_class metrics_class_default = METRICS_CLASS_DEFAULT_INITIALIZER;
 struct metrics_class *metrics_classes[METRICS_N_NODE_TYPE] = {
     [METRICS_NODE_TYPE_SUBSYSTEM] = &metrics_class_default,
+    [METRICS_NODE_TYPE_COND] = &metrics_class_default,
     [METRICS_NODE_TYPE_SET] = &metrics_class_set,
     [METRICS_NODE_TYPE_HISTOGRAM] = &metrics_class_histogram,
 };

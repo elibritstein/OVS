@@ -79,6 +79,39 @@ linear_histogram_get(void)
 METRICS_HISTOGRAM(test, linear_histogram,
     "A basic linear histogram", linear_histogram_get);
 
+static bool enabled_cond_metrics_seen = false;
+static bool
+test_cond_metrics_true(void)
+{
+    return true;
+}
+METRICS_COND(test, enabled_cond, test_cond_metrics_true);
+static void
+test_enabled_cond_read_value(double *values OVS_UNUSED)
+{
+    /* Verify we visit this node when the conditional is enabled. */
+    enabled_cond_metrics_seen = true;
+}
+METRICS_ENTRIES(enabled_cond, trigger_enabled_cond_read, "",
+    test_enabled_cond_read_value,
+);
+
+static bool
+test_cond_metrics_false(void)
+{
+    return false;
+}
+METRICS_COND(test, disabled_cond, test_cond_metrics_false);
+static void
+test_disabled_cond_read_value(double *values OVS_UNUSED)
+{
+    /* Verify we do not visit this node when the conditional is disabled. */
+    OVS_NOT_REACHED();
+}
+METRICS_ENTRIES(disabled_cond, check_disabled_cond_read, "",
+    test_disabled_cond_read_value,
+);
+
 static void
 metrics_test_main(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
 {
@@ -90,6 +123,8 @@ metrics_test_main(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
 
     METRICS_REGISTER(flat_entries);
     METRICS_REGISTER(linear_histogram);
+    METRICS_REGISTER(trigger_enabled_cond_read);
+    METRICS_REGISTER(check_disabled_cond_read);
 
     /* Sanity checks. */
     metrics_tree_check();

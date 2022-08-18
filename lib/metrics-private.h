@@ -34,6 +34,8 @@ metrics_node_cast(struct metrics_node *node)
     switch (node->type) {
     case METRICS_NODE_TYPE_SUBSYSTEM:
         return CONTAINER_OF(node, struct metrics_subsystem, node);
+    case METRICS_NODE_TYPE_COND:
+        return CONTAINER_OF(node, struct metrics_cond, node);
     case METRICS_NODE_TYPE_SET:
         return CONTAINER_OF(node, struct metrics_set, node);
     case METRICS_NODE_TYPE_HISTOGRAM:
