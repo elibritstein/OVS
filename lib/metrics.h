@@ -26,6 +26,7 @@
 enum metrics_node_type {
     METRICS_NODE_TYPE_SUBSYSTEM,
     METRICS_NODE_TYPE_COND,
+    METRICS_NODE_TYPE_LABEL,
     METRICS_NODE_TYPE_COLLECTION,
     METRICS_NODE_TYPE_SET,
     METRICS_NODE_TYPE_HISTOGRAM,
@@ -58,12 +59,37 @@ struct metrics_visitor_context;
 typedef void (*metrics_node_fn)(struct metrics_node *node,
                                 struct metrics_visitor_context *ctx);
 
+struct metrics_label {
+    const char *key;
+    const char *value;
+};
+
+typedef void (*metrics_label_set_value)(struct metrics_label *labels,
+                                        size_t n, void *it);
+
+struct metrics_label_array {
+    struct metrics_label *labels;
+    size_t n_labels;
+};
+
+struct metrics_add_label {
+    struct metrics_node node;
+    metrics_label_set_value set_value;
+    struct metrics_label_array array;
+    const char **keys;
+};
+
 struct metrics_visitor_context {
     metrics_node_fn ops;
     void *ops_aux;
     bool inspect; /* Run the visitor to 'inspect' the tree:
                    * callbacks are not executed, the tree is fully visited. */
     void *it;
+    struct {
+        struct metrics_label_array *stack;
+        size_t capacity;
+        size_t n_arrays;
+    } labels;
 };
 
 typedef void (*metrics_visitor_fn)(struct metrics_visitor_context *ctx,
@@ -71,7 +97,9 @@ typedef void (*metrics_visitor_fn)(struct metrics_visitor_context *ctx,
 
 typedef void (*metrics_collection_iterate)(metrics_visitor_fn visitor,
                                            struct metrics_visitor_context *ctx,
-                                           struct metrics_node *node);
+                                           struct metrics_node *node,
+                                           struct metrics_label *labels,
+                                           size_t n_labels);
 
 struct metrics_collection {
     struct metrics_node node;
@@ -191,6 +219,42 @@ struct metrics_histogram {
     }; \
     METRICS_DEFINE_INIT(UP, NAME);
 
+/* Label:
+ * This node allows setting a variable number of metrics_label.
+ * Those will be applied to all metrics having this node in its
+ * path.
+ *
+ * The labels are passed as a list of keys. Then, the callback
+ * of type 'metrics_label_set_value' provided is executed
+ * when the node is visited, that must set each values.
+ * The labels will be applied only on the sub-tree starting
+ * from this node.
+ *
+ * UP (C identifier):
+ *      Parent metrics node.
+ * NAME (C identifier):
+ *      Name of this node.
+ * SET_VALUE_CB (metrics_label_set_value):
+ *      Callback setting each label value when executed.
+ * [...] (const char[]):
+ *      A variadic list of label keys.
+ */
+#define METRICS_LABEL(UP, NAME, SET_VALUE_CB, ...) \
+    static const char *METRICS(NAME##_keys)[] = { \
+        __VA_ARGS__ \
+    }; \
+    static struct metrics_label METRICS(NAME##_label_array) \
+        [ARRAY_SIZE(METRICS(NAME##_keys))]; \
+    METRICS_DECLARE_INIT(NAME); \
+    static struct metrics_add_label METRICS(NAME) = { \
+        .node = METRICS_NODE_(NAME, NULL, LABEL), \
+        .set_value = SET_VALUE_CB, \
+        .array.labels = METRICS(NAME##_label_array), \
+        .array.n_labels = ARRAY_SIZE(METRICS(NAME##_label_array)), \
+        .keys = METRICS(NAME##_keys), \
+    }; \
+    METRICS_DEFINE_INIT(UP, NAME);
+
 /* Collection:
  * This node is used to demultiply the current tree operation
  * on each of its children, following the iteration pattern executed
@@ -201,6 +265,13 @@ struct metrics_histogram {
  * Putting a 'collection' node above the interface metrics allows
  * visiting their metrics sub-tree once per instance.
  *
+ * Each instance of the iteration must be labeled for the telemetry.
+ * A variadic list of label keys are given in parameters. The resulting
+ * 'metrics_label' struct are given as parameters of the 'iterate' callback.
+ * For each iteration, their 'value' field must be set. The pointed
+ * string must be valid memory during the execution of the visitor
+ * function called.
+ *
  * UP (C identifier):
  *      Parent metrics node.
  * NAME (C identifier):
@@ -210,14 +281,17 @@ struct metrics_histogram {
  *      a visitor function of type 'metrics_visitor_fn' as parameter,
  *      and must call this function once for each iteration it
  *      executes.
+ * [...] (const char[]):
+ *      A variadic list of label keys.
  */
-#define METRICS_COLLECTION(UP, NAME, ITERATE_CB) \
-    METRICS_DECLARE_INIT(NAME); \
-    static struct metrics_collection METRICS(NAME) = { \
-        .node = METRICS_NODE_(NAME, NULL, COLLECTION), \
+#define METRICS_COLLECTION(UP, NAME, ITERATE_CB, ...) \
+    METRICS_DECLARE_INIT(NAME##_coll); \
+    static struct metrics_collection METRICS(NAME##_coll) = { \
+        .node = METRICS_NODE_(NAME##_coll, NULL, COLLECTION), \
         .iterate = ITERATE_CB, \
     }; \
-    METRICS_DEFINE_INIT(UP, NAME);
+    METRICS_DEFINE_INIT(UP, NAME##_coll); \
+    METRICS_LABEL(NAME##_coll, NAME, NULL, __VA_ARGS__)
 
 /* Entries:
  * This node describes a set of entries. It is bound to a parent node 'UP'.
@@ -329,6 +403,7 @@ struct metrics_histogram {
 
 METRICS_DECLARE(root);
 
+void metrics_set_read_one(double *values, void *it);
 void metrics_init(void);
 void metrics_register(struct metrics_node *node);
 

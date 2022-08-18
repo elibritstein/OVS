@@ -62,14 +62,28 @@ metrics_set_check(struct metrics_node *node)
     }
 }
 
+void
+metrics_set_read_one(double *values OVS_UNUSED,
+                     void *it OVS_UNUSED)
+{
+    /* This is a dummy function serving as a placeholder. */
+}
+
 static void
 metrics_set_read_values(struct metrics_node *node,
                         struct metrics_visitor_context *ctx OVS_UNUSED,
                         double *values)
 {
     struct metrics_set *set = metrics_node_cast(node);
+    size_t i;
 
-    set->read(values, ctx->it);
+    if (set->read == metrics_set_read_one) {
+        for (i = 0; i < set->n_entries; i++) {
+            values[i] = 1.;
+        }
+    } else {
+        set->read(values, ctx->it);
+    }
 }
 
 static void

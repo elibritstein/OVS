@@ -25,11 +25,36 @@
 #include "openvswitch/util.h"
 #include "util.h"
 
+static const struct metrics_label *
+metrics_visitor_last_label(struct metrics_visitor_context *ctx)
+{
+    size_t n = ctx->labels.n_arrays;
+
+    return n > 0 ? ctx->labels.stack[n - 1].labels : NULL;
+}
+
+static struct metrics_add_label *
+find_child_label(struct metrics_collection *coll)
+{
+    struct metrics_node *child;
+
+    /* the 'add-label' node of a 'collection' node is its immediate
+     * first child. */
+    LIST_FOR_EACH (child, siblings, &coll->node.children) {
+        ovs_assert(child->type == METRICS_NODE_TYPE_LABEL);
+        return metrics_node_cast(child);
+    }
+    OVS_NOT_REACHED();
+    return NULL;
+}
+
 /* Depth-First Search on the tree. */
 void
 metrics_visitor_dfs(struct metrics_visitor_context *ctx,
                     struct metrics_node *node)
 {
+    const struct metrics_label *last_labels = metrics_visitor_last_label(ctx);
+
     /* Execute the operation only the first time
      * we see the COLLECTION node. */
     if (node->type != METRICS_NODE_TYPE_COLLECTION || ctx->it == NULL) {
@@ -46,11 +71,24 @@ metrics_visitor_dfs(struct metrics_visitor_context *ctx,
     }
 
     if (!ctx->inspect &&
+        node->type == METRICS_NODE_TYPE_LABEL) {
+        struct metrics_add_label *add_label = metrics_node_cast(node);
+        struct metrics_label_array *array = &add_label->array;
+
+        metrics_visitor_labels_push(ctx, array->labels, array->n_labels);
+        if (add_label->set_value) {
+            add_label->set_value(array->labels, array->n_labels, ctx->it);
+        }
+    }
+
+    if (!ctx->inspect &&
         node->type == METRICS_NODE_TYPE_COLLECTION &&
         ctx->it == NULL) {
         struct metrics_collection *coll = metrics_node_cast(node);
+        struct metrics_add_label *add_label = find_child_label(coll);
 
-        coll->iterate(metrics_visitor_dfs, ctx, node);
+        coll->iterate(metrics_visitor_dfs, ctx, node,
+                      add_label->array.labels, add_label->array.n_labels);
         /* Cleanup eventual collection iterator that might have
          * been leftover by the 'iterate' call. */
         ctx->it = NULL;
@@ -61,6 +99,98 @@ metrics_visitor_dfs(struct metrics_visitor_context *ctx,
             metrics_visitor_dfs(ctx, child);
         }
     }
+
+    if (!ctx->inspect &&
+        node->type == METRICS_NODE_TYPE_LABEL) {
+        metrics_visitor_labels_pop(ctx);
+    }
+
+    ovs_assert("A callback did not properly clean the labels it pushed"
+               && metrics_visitor_last_label(ctx) == last_labels);
+}
+
+void
+metrics_visitor_labels_push(struct metrics_visitor_context *ctx,
+                            struct metrics_label *labels,
+                            size_t n_labels)
+{
+    size_t n = ctx->labels.n_arrays;
+
+    if (n == ctx->labels.capacity) {
+        ctx->labels.stack = x2nrealloc(ctx->labels.stack,
+                                       &ctx->labels.capacity,
+                                       sizeof(ctx->labels.stack[0]));
+    }
+    ctx->labels.stack[n].labels = labels;
+    ctx->labels.stack[n].n_labels = n_labels;
+    ctx->labels.n_arrays++;
+}
+
+void
+metrics_visitor_labels_pop(struct metrics_visitor_context *ctx)
+{
+    if (ctx->labels.n_arrays == 0) {
+        return;
+    }
+    ctx->labels.n_arrays--;
+    if (ctx->labels.n_arrays == 0) {
+        free(ctx->labels.stack);
+        ctx->labels.stack = NULL;
+        ctx->labels.capacity = 0;
+    }
+}
+
+static bool
+ds_contains_label(struct ds *s, const char *key)
+{
+    struct ds pattern = DS_EMPTY_INITIALIZER;
+    bool found;
+
+    ds_put_format(&pattern, "%s=", key);
+    found = (strstr(ds_cstr(s), ds_cstr(&pattern)) != NULL);
+    ds_destroy(&pattern);
+    return found;
+}
+
+static void
+metrics_visitor_labels_format(struct metrics_visitor_context *ctx,
+                              struct ds *s)
+{
+    struct ds l = DS_EMPTY_INITIALIZER;
+    size_t i;
+
+    /* If there are any labels set,
+     * start from the last and write each k:v pairs if the key is not already
+     * present (the last label takes precedence). */
+
+    for (i = ctx->labels.n_arrays; i > 0; i--) {
+        struct metrics_label_array *array = &ctx->labels.stack[i - 1];
+        size_t j;
+
+        /* Assume no-one submitted labels where a key would be repeated.
+         * If it happens, the first of the values only will be written. */
+        for (j = 0; j < array->n_labels; j++) {
+            const struct metrics_label *label = &array->labels[j];
+
+            if (label->value == NULL ||
+                label->value[0] == '\0') {
+                continue;
+            }
+            if (ds_contains_label(&l, label->key)) {
+                continue;
+            }
+            if (l.length > 0) {
+                ds_put_cstr(&l, ",");
+            }
+            ds_put_format(&l, "%s=\"%s\"", label->key, label->value);
+        }
+    }
+
+    if (l.length > 0) {
+        ds_put_format(s, "{%s}", ds_cstr(&l));
+    }
+
+    ds_destroy(&l);
 }
 
 static size_t
@@ -71,6 +201,8 @@ metrics_node_generic_size(struct metrics_node *node)
         return sizeof(struct metrics_subsystem);
     case METRICS_NODE_TYPE_COND:
         return sizeof(struct metrics_cond);
+    case METRICS_NODE_TYPE_LABEL:
+        return sizeof(struct metrics_add_label);
     case METRICS_NODE_TYPE_COLLECTION:
         return sizeof(struct metrics_collection);
     case METRICS_NODE_TYPE_SET:
@@ -226,7 +358,7 @@ metrics_header_find(struct format_aux *aux,
 void
 metrics_header_add_line(struct metrics_header *hdr,
                         const char *prefix,
-                        struct metrics_visitor_context *ctx OVS_UNUSED,
+                        struct metrics_visitor_context *ctx,
                         double value)
 {
     struct metrics_line *line;
@@ -237,6 +369,7 @@ metrics_header_add_line(struct metrics_header *hdr,
     if (prefix) {
         ds_put_cstr(&line->s, prefix);
     }
+    metrics_visitor_labels_format(ctx, &line->s);
     ds_put_format(&line->s, " %.10g\n", value);
 
     ovs_list_init(&line->next);

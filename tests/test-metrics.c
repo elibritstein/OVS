@@ -107,11 +107,16 @@ static struct {
 static void
 do_foreach_objects(metrics_visitor_fn visitor,
                    struct metrics_visitor_context *ctx,
-                   struct metrics_node *node)
+                   struct metrics_node *node,
+                   struct metrics_label *labels,
+                   size_t n OVS_UNUSED)
 {
+    char obj[64];
     size_t i;
 
+    labels[0].value = obj;
     for (i = 0; i < ARRAY_SIZE(objects); i++) {
+        snprintf(obj, sizeof obj, "%" PRIuSIZE, i);
         ctx->it = &i;
         visitor(ctx, node);
     }
@@ -129,7 +134,7 @@ objects_read_value(double *values,
     values[P] = objects[i].p;
 }
 
-METRICS_COLLECTION(test, foreach_objects, do_foreach_objects);
+METRICS_COLLECTION(test, foreach_objects, do_foreach_objects, "obj");
 
 METRICS_ENTRIES(foreach_objects, objects_entries,
     "objects", objects_read_value,
@@ -175,6 +180,93 @@ METRICS_ENTRIES(disabled_cond, check_disabled_cond_read, "",
 );
 
 static void
+do_foreach_iface(metrics_visitor_fn visitor,
+                 struct metrics_visitor_context *ctx,
+                 struct metrics_node *node,
+                 struct metrics_label *labels,
+                 size_t n OVS_UNUSED)
+{
+    struct {
+        const char *bridge;
+        const char *interface;
+        const char *port;
+    } tuples[] = {
+        {   .bridge = "br-int",
+            .interface = "8bdd8bce8c7b306",
+            .port = "default_ubuntu-bf2-veth-7b6456456c-4ldhw",
+        },
+        {   .bridge = "br-int",
+            .interface = "br-int",
+            .port = "br-int",
+        },
+        {   .bridge = "br-int",
+            .interface = "ovn-k8s-mp0",
+            .port = "k8s-k8s-worker1-bf",
+        },
+        {   .bridge = "br-int",
+            .interface = "patch-br-int-to-brp0_k8s-worker1",
+            .port = "patch-br-int-to-brp0_k8s-worker1",
+        },
+        {   .bridge = "br-int",
+            .interface = "patch-br-int-to-brp0_k8s-worker1-bf",
+            .port = "patch-br-int-to-brp0_k8s-worker1-bf",
+        },
+        {   .bridge = "brp0",
+            .interface = "brp0",
+            .port = "brp0",
+        },
+        {   .bridge = "brp0",
+            .interface = "patch-brp0_k8s-worker1-bf-to-br-int",
+            .port = "patch-brp0_k8s-worker1-bf-to-br-int",
+        },
+        {   .bridge = "brp0",
+            .interface = "patch-brp0_k8s-worker1-to-br-int",
+            .port = "patch-brp0_k8s-worker1-to-br-int",
+        },
+        {   .bridge = "brp0",
+            .interface = "vtep0",
+            .port = "vtep0",
+        },
+    };
+    size_t i;
+
+    for (i = 0; i < ARRAY_SIZE(tuples); i++) {
+        labels[0].value = tuples[i].bridge;
+        labels[1].value = tuples[i].interface;
+        labels[2].value = tuples[i].port;
+        ctx->it = &tuples[i];
+        visitor(ctx, node);
+    }
+}
+
+METRICS_COLLECTION(test, foreach_iface, do_foreach_iface,
+                   "bridge", "interface", "port");
+METRICS_ENTRIES(foreach_iface, iface_entries,
+    "iface", metrics_set_read_one,
+    METRICS_GAUGE(rx_errors, "Gauge reading a constant 1"),
+);
+
+static void
+iface_set_label(struct metrics_label *labels,
+                size_t n OVS_UNUSED,
+                void *it OVS_UNUSED)
+{
+    static char name_value[64];
+
+    labels[0].value = name_value;
+    snprintf(name_value, sizeof name_value, "veth");
+}
+
+METRICS_LABEL(foreach_iface, iface_labels, iface_set_label, "name");
+METRICS_ENTRIES(iface_labels, iface_driver_name,
+    "iface", metrics_set_read_one,
+    METRICS_GAUGE(driver_name,
+        "A metric with a constant '1' value labeled by driver name "
+        "that specifies the name of the device driver controlling the "
+        "network interface"),
+);
+
+static void
 metrics_test_main(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
 {
     struct ds s = DS_EMPTY_INITIALIZER;
@@ -188,6 +280,8 @@ metrics_test_main(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
     METRICS_REGISTER(trigger_enabled_cond_read);
     METRICS_REGISTER(check_disabled_cond_read);
     METRICS_REGISTER(objects_entries);
+    METRICS_REGISTER(iface_entries);
+    METRICS_REGISTER(iface_driver_name);
 
     /* Sanity checks. */
     metrics_tree_check();

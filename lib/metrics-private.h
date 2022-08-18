@@ -36,6 +36,8 @@ metrics_node_cast(struct metrics_node *node)
         return CONTAINER_OF(node, struct metrics_subsystem, node);
     case METRICS_NODE_TYPE_COND:
         return CONTAINER_OF(node, struct metrics_cond, node);
+    case METRICS_NODE_TYPE_LABEL:
+        return CONTAINER_OF(node, struct metrics_add_label, node);
     case METRICS_NODE_TYPE_COLLECTION:
         return CONTAINER_OF(node, struct metrics_collection, node);
     case METRICS_NODE_TYPE_SET:
@@ -71,6 +73,7 @@ struct metrics_class {
 
 extern struct metrics_class metrics_class_set;
 extern struct metrics_class metrics_class_histogram;
+extern struct metrics_class metrics_class_add_label;
 extern struct metrics_class *metrics_classes[METRICS_N_NODE_TYPE];
 
 static inline struct metrics_class *
@@ -86,6 +89,10 @@ void metrics_values_format(struct ds *s);
 
 void metrics_visitor_dfs(struct metrics_visitor_context *ctx,
                          struct metrics_node *node);
+void metrics_visitor_labels_push(struct metrics_visitor_context *ctx,
+                                 struct metrics_label *labels,
+                                 size_t n_labels);
+void metrics_visitor_labels_pop(struct metrics_visitor_context *ctx);
 void metrics_node_n_values(struct metrics_node *node,
                            struct metrics_visitor_context *ctx);
 void metrics_node_size(struct metrics_node *node,

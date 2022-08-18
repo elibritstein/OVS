@@ -85,17 +85,37 @@ metrics_histogram_format_values(struct metrics_node *node,
                                 double *values)
 {
     struct metrics_histogram *hist = metrics_node_cast(node);
+    struct histogram *histogram = hist->get(ctx->it);
     struct format_aux *aux = ctx->ops_aux;
+    /* The size of the value must be enough to hold a full
+     * u32 currently:
+     *
+     *   log(2**32) ~= 22.18070977791825 rounded up: 23,
+     *   plus terminating NUL-byte.
+     *
+     * If buckets of bigger types are supported (u64, f64),
+     * then this string must be resized accordingly. */
+    BUILD_ASSERT_DECL(sizeof(histogram->wall[0] <= sizeof(uint32_t)));
+    char le_value[24] = {0};
+    struct metrics_label label_le = {
+        .key = "le",
+        .value = le_value,
+    };
     struct metrics_header *hdr;
     size_t i;
 
     hdr = metrics_header_find(aux, node, &hist->entry);
+    metrics_visitor_labels_push(ctx, &label_le, 1);
 
     for (i = 0; i < HISTOGRAM_N_BINS - 1; i++) {
+        snprintf(le_value, sizeof(le_value), "%"PRIu32, histogram->wall[i]);
         metrics_header_add_line(hdr, "_buckets", ctx, values[i]);
     }
     /* +Inf bucket */
+    snprintf(le_value, sizeof(le_value), "+Inf");
     metrics_header_add_line(hdr, "_buckets", ctx, values[i++]);
+
+    metrics_visitor_labels_pop(ctx);
 
     /* Sum field */
     metrics_header_add_line(hdr, "_sum", ctx, values[i++]);

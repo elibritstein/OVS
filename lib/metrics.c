@@ -237,10 +237,26 @@ metrics_values_format(struct ds *s)
     free(aux.hdrs.buf);
 }
 
+static void
+metrics_add_label_init(struct metrics_node *node)
+{
+    struct metrics_add_label *add_label = metrics_node_cast(node);
+    size_t i;
+
+    for (i = 0; i < add_label->array.n_labels; i++) {
+        add_label->array.labels[i].key = add_label->keys[i];
+    }
+}
+
+struct metrics_class metrics_class_add_label = {
+    .init = metrics_add_label_init,
+};
+
 struct metrics_class metrics_class_default = METRICS_CLASS_DEFAULT_INITIALIZER;
 struct metrics_class *metrics_classes[METRICS_N_NODE_TYPE] = {
     [METRICS_NODE_TYPE_SUBSYSTEM] = &metrics_class_default,
     [METRICS_NODE_TYPE_COND] = &metrics_class_default,
+    [METRICS_NODE_TYPE_LABEL] = &metrics_class_add_label,
     [METRICS_NODE_TYPE_COLLECTION] = &metrics_class_default,
     [METRICS_NODE_TYPE_SET] = &metrics_class_set,
     [METRICS_NODE_TYPE_HISTOGRAM] = &metrics_class_histogram,
