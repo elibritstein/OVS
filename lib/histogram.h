@@ -35,11 +35,13 @@ extern "C" {
 struct histogram {
     uint32_t wall[HISTOGRAM_N_BINS];
     uint64_t bin[HISTOGRAM_N_BINS];
+    uint64_t sum;
 };
 
 static inline void
 histogram_add_sample(struct histogram *hist, uint32_t val)
 {
+    hist->sum += val;
     /* TODO: Can do better with binary search? */
     for (int i = 0; i < HISTOGRAM_N_BINS - 1; i++) {
         if (val <= hist->wall[i]) {

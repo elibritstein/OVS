@@ -91,4 +91,5 @@ histogram_clear(struct histogram *hist)
     for (i = 0; i < HISTOGRAM_N_BINS; i++) {
         hist->bin[i] = 0;
     }
+    hist->sum = 0;
 }
