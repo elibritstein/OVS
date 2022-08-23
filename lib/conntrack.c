@@ -310,7 +310,6 @@ conntrack_offload_fill_item_common(struct ct_flow_offload_item *item,
     item->ct_match.odp_port = conn->offloads.dir_info[dir].port;
     item->dp = conn->offloads.dir_info[dir].dp;
     item->ctid_key = conntrack_offload_get_ctid_key(conn);
-    item->status = &conn->offloads.dir_info[dir].status;
     item->ct_actions_set = false;
     item->actions = NULL;
     item->actions_size = 0;
@@ -358,11 +357,8 @@ conntrack_offload_del_conn(struct conntrack *ct,
             dp = conn_dir->offloads.dir_info[dir].dp;
             offload_class->conn_e2e_del(&item[dir].ufid, dp, now);
         }
-        /* Set conn_dir->offloads.dir_info[CT_DIR_INIT].status = false
-         * to indicate that the offload of the connection is deleted.
-         */
-        conn_dir->offloads.dir_info[CT_DIR_INIT].status = false;
-        conn_dir->offloads.dir_info[CT_DIR_REP].status = false;
+        /* Turn off offload indication of the connection. */
+        conn_dir->offloads.flags &= ~CT_OFFLOAD_BOTH;
     }
     item[CT_DIR_INIT].timestamp = now;
     item[CT_DIR_INIT].refcnt = conn->offloads.refcnt;
@@ -1660,7 +1656,6 @@ conntrack_offload_fill_item_add(struct ct_flow_offload_item *item,
     item->mark_mask = conn->offloads.dir_info[dir].pkt_ct_mark[1];
     item->label_key = conn->offloads.dir_info[dir].pkt_ct_label[0];
     item->label_mask = conn->offloads.dir_info[dir].pkt_ct_label[1];
-    item->status = &conn->offloads.dir_info[dir].status;
     item->timestamp = now;
 }
 
@@ -3291,13 +3286,13 @@ conn_to_ct_dpif_entry(const struct conn *conn, struct ct_dpif_entry *entry,
     if (class->conn_get_protoinfo) {
         class->conn_get_protoinfo(conn, &entry->protoinfo);
     }
-    entry->offload_status_orig = conn->offloads.dir_info[CT_DIR_INIT].status;
-    entry->offload_status_reply = conn->offloads.dir_info[CT_DIR_REP].status;
+    entry->offload_status_orig = conn->offloads.flags & CT_OFFLOAD_INIT;
+    entry->offload_status_reply = conn->offloads.flags & CT_OFFLOAD_REP;
     if (conn->nat_conn) {
-        entry->offload_status_orig |=
-            conn->nat_conn->offloads.dir_info[CT_DIR_INIT].status;
-        entry->offload_status_reply |=
-            conn->nat_conn->offloads.dir_info[CT_DIR_REP].status;
+        entry->offload_status_orig |= conn->nat_conn->offloads.flags &
+            CT_OFFLOAD_INIT;
+        entry->offload_status_reply |= conn->nat_conn->offloads.flags &
+            CT_OFFLOAD_REP;
     }
     conn_unlock(conn);
 

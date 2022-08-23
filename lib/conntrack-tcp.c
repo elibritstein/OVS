@@ -183,10 +183,11 @@ tcp_get_tm(struct conn *conn_)
 static bool
 tcp_bypass_seq_chk(struct conntrack *ct, struct conn *conn, bool reply)
 {
-    int dir = ct_get_packet_dir(reply);
+    int offloaded;
 
-    if (!conntrack_get_tcp_seq_chk(ct) ||
-        conn->offloads.dir_info[dir].status) {
+    offloaded = conn->offloads.flags &
+        (reply ? CT_OFFLOAD_REP : CT_OFFLOAD_INIT);
+    if (!conntrack_get_tcp_seq_chk(ct) || offloaded) {
         COVERAGE_INC(conntrack_tcp_seq_chk_bypass);
         return true;
     }

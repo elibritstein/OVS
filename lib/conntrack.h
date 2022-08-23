@@ -151,11 +151,6 @@ struct ct_flow_offload_item {
         struct conn_key  key;
     } nat;
 
-    /* The value of status describes whether the connection is offloaded or
-     * not.
-     */
-    int *status;
-
     /* refcnt is used to handle a scenario in which a connection issued an
      * offload request and was removed before the offload request is processed.
      */

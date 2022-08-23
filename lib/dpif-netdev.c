@@ -3506,9 +3506,6 @@ dp_netdev_ct_offload_add_cb(struct ct_flow_offload_item *ct_offload,
     info.orig_in_port = ct_match->orig_in_port;
     ret = netdev_flow_put(port, &match, actions, actions_len, &ct_offload->ufid,
                           &info, NULL);
-    if (ct_offload->status) {
-        *(ct_offload->status) = !ret;
-    }
     ovs_rwlock_unlock(&dp->port_rwlock);
     netdev_close(port);
 
@@ -3876,8 +3873,6 @@ dp_netdev_ct_offload_add_item(struct ct_flow_offload_item *ct_offload)
     }
 
     if (dp_netdev_e2e_cache_enabled) {
-        *ct_offload[0].status = 0;
-        *ct_offload[1].status = 0;
         return;
     }
     item = xzalloc(sizeof *item + CT_DIR_NUM * sizeof *ct_offload);

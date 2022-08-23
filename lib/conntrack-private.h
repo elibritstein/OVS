@@ -131,7 +131,6 @@ struct ct_dir_info {
     odp_port_t port;
     ovs_u128 ufid;
     void *dp;
-    int status;
     uint8_t pkt_ct_state;
     uint32_t pkt_ct_mark[2];
     ovs_u128 pkt_ct_label[2];
