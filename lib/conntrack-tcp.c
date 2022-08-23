@@ -181,12 +181,12 @@ tcp_get_tm(struct conn *conn_)
 }
 
 static bool
-tcp_bypass_seq_chk(struct conntrack *ct, struct conn *conn, bool reply)
+tcp_bypass_seq_chk(struct conntrack *ct, struct conn *conn)
 {
     int offloaded;
 
     offloaded = conn->offloads.flags &
-        (reply ? CT_OFFLOAD_REP : CT_OFFLOAD_INIT);
+        (CT_OFFLOAD_BOTH | CT_OFFLOAD_TERMINATED);
     if (!conntrack_get_tcp_seq_chk(ct) || offloaded) {
         COVERAGE_INC(conntrack_tcp_seq_chk_bypass);
         return true;
@@ -350,7 +350,7 @@ tcp_conn_update(struct conntrack *ct, struct conn *conn_,
         /* Acking not more than one window forward */
         && ((tcp_flags & TCP_RST) == 0 || orig_seq == src->seqlo
             || (orig_seq == src->seqlo + 1) || (orig_seq + 1 == src->seqlo)))
-        || tcp_bypass_seq_chk(ct, &conn->up, reply)) {
+        || tcp_bypass_seq_chk(ct, &conn->up)) {
         /* Require an exact/+1 sequence match on resets when possible */
 
         /* update max window */

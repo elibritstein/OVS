@@ -357,7 +357,11 @@ conntrack_offload_del_conn(struct conntrack *ct,
             dp = conn_dir->offloads.dir_info[dir].dp;
             offload_class->conn_e2e_del(&item[dir].ufid, dp, now);
         }
-        /* Turn off offload indication of the connection. */
+        /* Set connection's status to terminated to indicate that the offload
+         * of the connection is deleted, but should still bypass tcp seq
+         * checking.
+         */
+        conn_dir->offloads.flags |= CT_OFFLOAD_TERMINATED | CT_OFFLOAD_SKIP;
         conn_dir->offloads.flags &= ~CT_OFFLOAD_BOTH;
     }
     item[CT_DIR_INIT].timestamp = now;

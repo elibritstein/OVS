@@ -144,6 +144,7 @@ enum ct_offload_flag {
     CT_OFFLOAD_REP  = 0x1 << 1,
     CT_OFFLOAD_SKIP = 0x1 << 2,
     CT_OFFLOAD_BOTH = (CT_OFFLOAD_INIT | CT_OFFLOAD_REP),
+    CT_OFFLOAD_TERMINATED = 0x1 << 3,
 };
 
 struct ct_offloads {
