@@ -407,4 +407,14 @@ void metrics_set_read_one(double *values, void *it);
 void metrics_init(void);
 void metrics_register(struct metrics_node *node);
 
+/* Register metrics unixctl commands.
+ *
+ * The 'metrics_root_name' parameters, if set, overrides the
+ * metrics root name. Metrics output will use the overridden
+ * name as prefix to all metrics objects.
+ *
+ * Several processed can thus link to the metrics lib and
+ * be differentiated by metrics consumers. */
+void metrics_unixctl_register(const char *metrics_root_name);
+
 #endif /* METRICS_H */

@@ -34,6 +34,7 @@
 #include "dummy.h"
 #include "fatal-signal.h"
 #include "memory.h"
+#include "metrics.h"
 #include "netdev.h"
 #include "openflow/openflow.h"
 #include "ovsdb-idl.h"
@@ -109,6 +110,8 @@ main(int argc, char *argv[])
     }
     unixctl_command_register("exit", "[--cleanup]", 0, 1,
                              ovs_vswitchd_exit, &exit_args);
+
+    metrics_unixctl_register("ovs_vswitchd");
 
     bridge_init(remote);
     free(remote);

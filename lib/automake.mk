@@ -192,6 +192,7 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/metrics-set.c \
 	lib/metrics-histogram.c \
 	lib/metrics-visitor.c \
+	lib/metrics-unixctl.c \
 	lib/metrics.h \
 	lib/metrics-private.h \
 	lib/mov-avg.h \
