@@ -38,6 +38,7 @@
 #include "guarded-list.h"
 #include "heap.h"
 #include "hindex.h"
+#include "metrics.h"
 #include "object-collection.h"
 #include "ofproto/ofproto.h"
 #include "openvswitch/list.h"

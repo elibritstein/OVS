@@ -35,6 +35,7 @@
 #include "netdev.h"
 #include "nx-match.h"
 #include "ofproto.h"
+#include "ofproto-private.h"
 #include "ofproto-provider.h"
 #include "openflow/nicira-ext.h"
 #include "openflow/openflow.h"
@@ -313,8 +314,7 @@ unsigned ofproto_min_revalidate_pps = OFPROTO_MIN_REVALIDATE_PPS_DEFAULT;
 
 uint32_t n_handlers, n_revalidators;
 
-/* Map from datapath name to struct ofproto, for use by unixctl commands. */
-static struct hmap all_ofprotos = HMAP_INITIALIZER(&all_ofprotos);
+struct hmap all_ofprotos = HMAP_INITIALIZER(&all_ofprotos);
 
 /* Initial mappings of port to OpenFlow number mappings. */
 static struct shash init_ofp_ports = SHASH_INITIALIZER(&init_ofp_ports);
@@ -359,6 +359,7 @@ ofproto_init(const struct shash *iface_hints)
     }
 
     ofproto_unixctl_init();
+    ofproto_metrics_register();
 }
 
 /* 'type' should be a normalized datapath type, as returned by
