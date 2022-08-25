@@ -466,6 +466,7 @@ tests_ovstest_SOURCES = \
 	tests/test-hash.c \
 	tests/test-heap.c \
 	tests/test-hindex.c \
+	tests/test-histogram.c \
 	tests/test-hmap.c \
 	tests/test-id-fpool.c \
 	tests/test-json.c \

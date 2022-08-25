@@ -102,22 +102,26 @@ pmd_perf_estimate_tsc_frequency(void)
 
 /* Histogram functions. */
 
-static void
+void
 histogram_walls_set_lin(struct histogram *hist, uint32_t min, uint32_t max)
 {
-    int i;
+    uint32_t i, inc;
 
     ovs_assert(min < max);
+    inc = (max - min) / (NUM_BINS - 2);
     for (i = 0; i < NUM_BINS-1; i++) {
-        hist->wall[i] = min + (i * (max - min)) / (NUM_BINS - 2);
+        hist->wall[i] = min + (i * inc);
+    }
+    if (max != UINT32_MAX) {
+        hist->wall[NUM_BINS - 2] = max;
     }
     hist->wall[NUM_BINS-1] = UINT32_MAX;
 }
 
-static void
+void
 histogram_walls_set_log(struct histogram *hist, uint32_t min, uint32_t max)
 {
-    int i, start, bins, wall;
+    uint32_t i, start, bins, wall;
     double log_min, log_max;
 
     ovs_assert(min < max);
@@ -139,7 +143,7 @@ histogram_walls_set_log(struct histogram *hist, uint32_t min, uint32_t max)
         wall = MAX(wall, exp(log_min + (i * (log_max - log_min)) / (bins-1)));
         hist->wall[start + i] = wall++;
     }
-    if (hist->wall[NUM_BINS-2] < max) {
+    if (hist->wall[NUM_BINS - 2] < max && max != UINT32_MAX) {
         hist->wall[NUM_BINS-2] = max;
     }
     hist->wall[NUM_BINS-1] = UINT32_MAX;

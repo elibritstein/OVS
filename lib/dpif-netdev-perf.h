@@ -344,6 +344,10 @@ histogram_add_sample(struct histogram *hist, uint32_t val)
     hist->bin[NUM_BINS-1]++;
 }
 
+void histogram_walls_set_lin(struct histogram *hist,
+                             uint32_t min, uint32_t max);
+void histogram_walls_set_log(struct histogram *hist,
+                             uint32_t min, uint32_t max);
 uint64_t histogram_samples(const struct histogram *hist);
 
 /* This function is used to advance the given history index by positive
