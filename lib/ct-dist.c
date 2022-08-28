@@ -18,6 +18,7 @@
 #include <stdint.h>
 
 #include "conntrack-private.h"
+#include "conntrack.h"
 #include "ct-dist.h"
 #include "dp-packet.h"
 #include "dpif.h"
@@ -79,6 +80,12 @@ out:
     ovsthread_once_done(&once);
 }
 
+static void
+ct_dist_exec_pkt(struct dp_packet *pkt)
+{
+    ctd_conntrack_execute(pkt);
+}
+
 static void *
 ct_thread_main(void *arg)
 {
@@ -111,7 +118,13 @@ ct_thread_main(void *arg)
 
         pkt = CONTAINER_OF(queue_node, struct dp_packet, node);
         // handle pkt
-        (void) pkt;
+        switch (pkt->ct_type) {
+        case CT_TYPE_EXEC:
+            ct_dist_exec_pkt(pkt);
+            break;
+        default:
+            OVS_NOT_REACHED();
+        }
 
         /* Do RCU synchronization at fixed interval. */
         if (now_ms > next_rcu_ms) {
