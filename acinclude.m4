@@ -1355,7 +1355,7 @@ AC_DEFUN([_OVS_CHECK_CC_OPTION], [dnl
      CFLAGS="$CFLAGS $WERROR m4_bpatsubst([$1], [-Wno-], [-W])"
      AC_COMPILE_IFELSE(
        [AC_LANG_SOURCE([int x;])],
-       [if test -s conftest.err && grep "unrecognized option" conftest.err
+       [if test -s conftest.err && grep "unrecognized\|unknown" conftest.err
         then
           ovs_cv_name[]=no
         else

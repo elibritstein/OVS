@@ -183,6 +183,7 @@ struct act_resources {
 struct flow_item {
     struct rte_flow *rte_flow[NUM_RTE_FLOWS_PER_PORT];
     bool has_count[NUM_RTE_FLOWS_PER_PORT];
+    bool flow_offload;
 };
 
 struct ufid_to_rte_flow_data {
@@ -209,7 +210,8 @@ struct fixed_rule {
 
 struct netdev_offload_dpdk_data {
     struct cmap ufid_to_rte_flow;
-    uint64_t *rte_flow_counters;
+    uint64_t *offload_counters;
+    uint64_t *flow_counters;
     struct ovs_mutex map_lock;
     struct ovsthread_once ct_tables_once;
     struct fixed_rule ct_nat_miss;
@@ -227,8 +229,10 @@ offload_data_init(struct netdev *netdev)
     cmap_init(&data->ufid_to_rte_flow);
     /* Configure cmap to never shrink. */
     cmap_set_min_load(&data->ufid_to_rte_flow, 0.0);
-    data->rte_flow_counters = xcalloc(netdev_offload_thread_nb(),
-                                      sizeof *data->rte_flow_counters);
+    data->offload_counters = xcalloc(netdev_offload_thread_nb(),
+                                     sizeof *data->offload_counters);
+    data->flow_counters = xcalloc(netdev_offload_thread_nb(),
+                                  sizeof *data->flow_counters);
     data->ct_tables_once = (struct ovsthread_once) OVSTHREAD_ONCE_INITIALIZER;
 
     ovsrcu_set(&netdev->hw_info.offload_data, (void *) data);
@@ -241,7 +245,8 @@ offload_data_destroy__(struct netdev_offload_dpdk_data *data)
 {
     ovs_mutex_destroy(&data->ct_tables_once.mutex);
     ovs_mutex_destroy(&data->map_lock);
-    free(data->rte_flow_counters);
+    free(data->offload_counters);
+    free(data->flow_counters);
     free(data);
 }
 
@@ -2825,7 +2830,7 @@ create_rte_flow(struct netdev *netdev,
 
         data = (struct netdev_offload_dpdk_data *)
             ovsrcu_get(void *, &netdev->hw_info.offload_data);
-        data->rte_flow_counters[tid]++;
+        data->offload_counters[tid]++;
 
         if (!VLOG_DROP_DBG(&rl)) {
             dump_flow(&s, &s_extra, attr, flow_patterns, flow_actions);
@@ -5274,23 +5279,39 @@ netdev_offload_dpdk_flow_create(struct netdev *netdev,
                                 struct act_vars *act_vars,
                                 struct flow_item *fi)
 {
+    struct netdev_offload_dpdk_data *data;
+    int ret = 0;
+
     switch (act_vars->ct_mode) {
     case CT_MODE_NONE:
         fi->rte_flow[0] = create_rte_flow(netdev, attr, flow_patterns,
                                           flow_actions, error);
         fi->has_count[0] = true;
-        return fi->rte_flow[0] == NULL ? -1 : 0;
+        ret = fi->rte_flow[0] == NULL ? -1 : 0;
+        break;
     case CT_MODE_CT:
         /* fallthrough */
     case CT_MODE_CT_NAT:
-        return create_pre_post_ct(netdev, attr, flow_patterns, flow_actions,
-                                  error, act_resources, act_vars, fi);
+        ret = create_pre_post_ct(netdev, attr, flow_patterns, flow_actions,
+                                 error, act_resources, act_vars, fi);
+        break;
     case CT_MODE_CT_CONN:
+        fi->flow_offload = false;
         return create_ct_conn(netdev, flow_patterns, flow_actions, error,
                               act_resources, fi);
     default:
         OVS_NOT_REACHED();
     }
+
+    data = (struct netdev_offload_dpdk_data *)
+        ovsrcu_get(void *, &netdev->hw_info.offload_data);
+
+    if (ret == 0) {
+        fi->flow_offload = true;
+        data->flow_counters[netdev_offload_thread_id()]++;
+    }
+
+    return ret;
 }
 
 static int
@@ -5656,10 +5677,14 @@ netdev_offload_dpdk_remove_flows(struct ufid_to_rte_flow_data *rte_flow_data)
 
         ret = netdev_offload_dpdk_destroy_flow(physdev, rte_flow, ufid, true);
         if (ret == 0) {
-            data->rte_flow_counters[tid]--;
+            data->offload_counters[tid]--;
         } else {
             break;
         }
+    }
+
+    if (rte_flow_data->flow_item.flow_offload) {
+        data->flow_counters[tid]--;
     }
 
     if (ret == 0) {
@@ -6117,7 +6142,27 @@ netdev_offload_dpdk_get_n_flows(struct netdev *netdev,
     }
 
     for (tid = 0; tid < netdev_offload_thread_nb(); tid++) {
-        n_flows[tid] = data->rte_flow_counters[tid];
+        n_flows[tid] = data->flow_counters[tid];
+    }
+
+    return 0;
+}
+
+static int
+netdev_offload_dpdk_get_n_offloads(struct netdev *netdev,
+                                   uint64_t *n_offloads)
+{
+    struct netdev_offload_dpdk_data *data;
+    unsigned int tid;
+
+    data = (struct netdev_offload_dpdk_data *)
+        ovsrcu_get(void *, &netdev->hw_info.offload_data);
+    if (!data) {
+        return -1;
+    }
+
+    for (tid = 0; tid < netdev_offload_thread_nb(); tid++) {
+        n_offloads[tid] = data->offload_counters[tid];
     }
 
     return 0;
@@ -6440,5 +6485,6 @@ const struct netdev_flow_api netdev_offload_dpdk = {
     .flow_flush = netdev_offload_dpdk_flow_flush,
     .hw_miss_packet_recover = netdev_offload_dpdk_hw_miss_packet_recover,
     .flow_get_n_flows = netdev_offload_dpdk_get_n_flows,
+    .flow_get_n_offloads = netdev_offload_dpdk_get_n_offloads,
     .ct_counter_query = netdev_offload_dpdk_ct_counter_query,
 };

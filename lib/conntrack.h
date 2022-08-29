@@ -129,6 +129,7 @@ struct ct_flow_offload_item {
     ovs_u128 ufid;
     void *dp;
     uintptr_t ctid_key;
+    long long int timestamp;
 
     /* matches */
     struct ct_match ct_match;
@@ -169,7 +170,7 @@ struct conntrack_offload_class {
     int (*conn_active)(struct ct_flow_offload_item *, long long now,
                        long long prev_now);
     void (*conn_e2e_add)(struct ct_flow_offload_item *);
-    void (*conn_e2e_del)(ovs_u128 *, void *dp);
+    void (*conn_e2e_del)(ovs_u128 *, void *dp, long long int now);
     bool (*queue_full)(void);
 };
 
