@@ -1471,6 +1471,13 @@ int dpif_offload_stats_get(struct dpif *dpif,
             : EOPNOTSUPP);
 }
 
+int dpif_offload_stats_clear(struct dpif *dpif)
+{
+    return (dpif->dpif_class->offload_stats_clear
+            ? dpif->dpif_class->offload_stats_clear(dpif)
+            : EOPNOTSUPP);
+}
+
 /* Returns a string that represents 'type', for use in log messages. */
 const char *
 dpif_upcall_type_to_string(enum dpif_upcall_type type)

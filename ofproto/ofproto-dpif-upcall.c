@@ -105,6 +105,12 @@ struct revalidator {
     struct udpif *udpif;               /* Parent udpif. */
     pthread_t thread;                  /* Thread ID. */
     unsigned int id;                   /* ovsthread_id_self(). */
+
+    struct ovs_mutex stats_lock;
+    uint64_t n_packets;
+    uint64_t n_bytes;
+    uint64_t n_offloaded_packets;
+    uint64_t n_offloaded_bytes;
 };
 
 /* An upcall handler for ofproto_dpif.
@@ -318,7 +324,9 @@ struct udpif_key {
     uint64_t flow_pps_rate;		/* Packets-Per-Second rate */
     long long int flow_time;		/* last pps update time */
     uint64_t flow_packets;		/* #pkts seen in interval */
-    uint64_t flow_backlog_packets;	/* prev-mode #pkts (offl or kernel) */
+    uint64_t flow_backlog_packets;	/* prev-mode #pkts (offl or sw) */
+    uint64_t flow_bytes;		/* #bytes seen in interval */
+    uint64_t flow_backlog_bytes;	/* prev-mode #bytes (offl or sw) */
 };
 
 /* Datapath operation with optional ukey attached. */
@@ -349,6 +357,8 @@ static void revalidator_sweep(struct revalidator *);
 static void revalidator_purge(struct revalidator *);
 static void upcall_unixctl_show(struct unixctl_conn *conn, int argc,
                                 const char *argv[], void *aux);
+static void upcall_unixctl_clear(struct unixctl_conn *conn, int argc,
+                                 const char *argv[], void *aux);
 static void upcall_unixctl_disable_megaflows(struct unixctl_conn *, int argc,
                                              const char *argv[], void *aux);
 static void upcall_unixctl_enable_megaflows(struct unixctl_conn *, int argc,
@@ -422,6 +432,8 @@ udpif_init(void)
     if (ovsthread_once_start(&once)) {
         unixctl_command_register("upcall/show", "", 0, 0, upcall_unixctl_show,
                                  NULL);
+        unixctl_command_register("upcall/clear", "", 0, 0,
+                                 upcall_unixctl_clear, NULL);
         unixctl_command_register("upcall/disable-megaflows", "", 0, 0,
                                  upcall_unixctl_disable_megaflows, NULL);
         unixctl_command_register("upcall/enable-megaflows", "", 0, 0,
@@ -1017,6 +1029,12 @@ udpif_revalidator(void *arg)
     uint64_t last_reval_seq = 0;
     size_t n_flows = 0;
 
+    ovs_mutex_init(&revalidator->stats_lock);
+    revalidator->n_offloaded_packets = 0;
+    revalidator->n_offloaded_bytes = 0;
+    revalidator->n_packets = 0;
+    revalidator->n_bytes = 0;
+
     revalidator->id = ovsthread_id_self();
     for (;;) {
         if (leader) {
@@ -1123,6 +1141,7 @@ udpif_revalidator(void *arg)
             }
         }
     }
+    ovs_mutex_destroy(&revalidator->stats_lock);
 
     return NULL;
 }
@@ -1878,6 +1897,7 @@ ukey_create__(const struct nlattr *key, size_t key_len,
     ukey->offloaded = false;
     ukey->in_netdev = NULL;
     ukey->flow_packets = ukey->flow_backlog_packets = 0;
+    ukey->flow_bytes = ukey->flow_backlog_bytes = 0;
 
     ukey->key_recirc_id = key_recirc_id;
     recirc_refs_init(&ukey->recircs);
@@ -2707,6 +2727,13 @@ ukey_to_flow_netdev(struct udpif *udpif, struct udpif_key *ukey)
 }
 
 static uint64_t
+udpif_flow_byte_delta(struct udpif_key *ukey, const struct dpif_flow *f)
+{
+    return f->stats.n_bytes + ukey->flow_backlog_bytes -
+                ukey->flow_bytes;
+}
+
+static uint64_t
 udpif_flow_packet_delta(struct udpif_key *ukey, const struct dpif_flow *f)
 {
     return f->stats.n_packets + ukey->flow_backlog_packets -
@@ -2720,13 +2747,14 @@ udpif_flow_time_delta(struct udpif *udpif, struct udpif_key *ukey)
 }
 
 /*
- * Save backlog packet count while switching modes
+ * Save backlog packet/byte count while switching modes
  * between offloaded and kernel datapaths.
  */
 static void
-udpif_set_ukey_backlog_packets(struct udpif_key *ukey)
+udpif_set_ukey_backlog(struct udpif_key *ukey)
 {
     ukey->flow_backlog_packets = ukey->flow_packets;
+    ukey->flow_backlog_bytes = ukey->flow_bytes;
 }
 
 /* Gather pps-rate for the given dpif_flow and save it in its ukey */
@@ -2746,6 +2774,7 @@ udpif_update_flow_pps(struct udpif *udpif, struct udpif_key *ukey,
                     udpif_flow_time_delta(udpif, ukey);
     ukey->flow_pps_rate = pps;
     ukey->flow_packets = ukey->flow_backlog_packets + f->stats.n_packets;
+    ukey->flow_bytes = ukey->flow_backlog_bytes + f->stats.n_bytes;
     ukey->flow_time = udpif->dpif->current_ms;
 }
 
@@ -2779,6 +2808,11 @@ revalidate(struct revalidator *revalidator)
     uint64_t dump_seq, reval_seq;
     bool kill_warn_print = true;
     unsigned int flow_limit;
+
+    uint64_t n_offloaded_packets = 0;
+    uint64_t n_offloaded_bytes = 0;
+    uint64_t n_packets = 0;
+    uint64_t n_bytes = 0;
 
     dump_seq = seq_read(udpif->dump_seq);
     reval_seq = seq_read(udpif->reval_seq);
@@ -2901,8 +2935,16 @@ revalidate(struct revalidator *revalidator)
             }
             ukey->dump_seq = dump_seq;
 
-            if (netdev_is_offload_rebalance_policy_enabled() &&
-                result != UKEY_DELETE) {
+            if (result != UKEY_DELETE) {
+                uint64_t delta_p = udpif_flow_packet_delta(ukey, f);
+                uint64_t delta_b = udpif_flow_byte_delta(ukey, f);
+
+                if (f->attrs.offloaded) {
+                    n_offloaded_packets += delta_p;
+                    n_offloaded_bytes += delta_b;
+                }
+                n_packets += delta_p;
+                n_bytes += delta_b;
                 udpif_update_flow_pps(udpif, ukey, f);
             }
 
@@ -2922,6 +2964,13 @@ revalidate(struct revalidator *revalidator)
     }
     dpif_flow_dump_thread_destroy(dump_thread);
     ofpbuf_uninit(&odp_actions);
+
+    ovs_mutex_lock(&revalidator->stats_lock);
+    revalidator->n_offloaded_packets += n_offloaded_packets;
+    revalidator->n_offloaded_bytes += n_offloaded_bytes;
+    revalidator->n_packets += n_packets;
+    revalidator->n_bytes += n_bytes;
+    ovs_mutex_unlock(&revalidator->stats_lock);
 }
 
 /* Pauses the 'revalidator', can only proceed after main thread
@@ -3086,8 +3135,34 @@ upcall_unixctl_show(struct unixctl_conn *conn, int argc OVS_UNUSED,
             " (avg %u) (max %u) (limit %u)\n", udpif_get_n_flows(udpif),
             udpif->avg_n_flows, udpif->max_n_flows, flow_limit);
         if (!dpif_get_n_offloaded_flows(udpif->dpif, &n_offloaded_flows)) {
+            uint64_t n_packets[2] = {0};
+            uint64_t n_bytes[2] = {0};
+            double pkts_ratio = 0.0, bytes_ratio = 0.0;
+
             ds_put_format(&ds, "  offloaded flows : %"PRIu64"\n",
                           n_offloaded_flows);
+            for (i = 0; i < udpif->n_revalidators; i++) {
+                ovs_mutex_lock(&udpif->revalidators[i].stats_lock);
+                n_packets[0] += udpif->revalidators[i].n_offloaded_packets;
+                n_bytes[0]   += udpif->revalidators[i].n_offloaded_bytes;
+                n_packets[1] += udpif->revalidators[i].n_packets;
+                n_bytes[1]   += udpif->revalidators[i].n_bytes;
+                ovs_mutex_unlock(&udpif->revalidators[i].stats_lock);
+            }
+            if (n_packets[1] != 0.0) {
+                pkts_ratio = (double) n_packets[0] /
+                             (double) n_packets[1] * 100.0;
+            }
+            if (n_bytes[1] != 0.0) {
+                bytes_ratio = (double) n_bytes[0] /
+                              (double) n_bytes[1] * 100.0;
+            }
+            ds_put_format(&ds, "  offloaded packets : %.2lf%% "
+                          "(%"PRIu64"/%"PRIu64")\n", pkts_ratio,
+                          n_packets[0], n_packets[1]);
+            ds_put_format(&ds, "  offloaded bytes : %.2lf%% "
+                          "(%"PRIu64"/%"PRIu64")\n", bytes_ratio,
+                          n_bytes[0], n_bytes[1]);
         }
         ds_put_format(&ds, "  dump duration : %lldms\n", udpif->dump_duration);
         ds_put_format(&ds, "  ufid enabled : ");
@@ -3111,6 +3186,31 @@ upcall_unixctl_show(struct unixctl_conn *conn, int argc OVS_UNUSED,
 
     unixctl_command_reply(conn, ds_cstr(&ds));
     ds_destroy(&ds);
+}
+
+static void
+upcall_unixctl_clear(struct unixctl_conn *conn, int argc OVS_UNUSED,
+                     const char *argv[] OVS_UNUSED, void *aux OVS_UNUSED)
+{
+    uint64_t n_offloaded_flows;
+    struct udpif *udpif;
+
+    LIST_FOR_EACH (udpif, list_node, &all_udpifs) {
+        size_t i;
+
+        if (!dpif_get_n_offloaded_flows(udpif->dpif, &n_offloaded_flows)) {
+            for (i = 0; i < udpif->n_revalidators; i++) {
+                ovs_mutex_lock(&udpif->revalidators[i].stats_lock);
+                udpif->revalidators[i].n_offloaded_packets = 0;
+                udpif->revalidators[i].n_offloaded_bytes = 0;
+                udpif->revalidators[i].n_packets = 0;
+                udpif->revalidators[i].n_bytes = 0;
+                ovs_mutex_unlock(&udpif->revalidators[i].stats_lock);
+            }
+        }
+    }
+
+    unixctl_command_reply(conn, "statistics cleared");
 }
 
 /* Disable using the megaflows.
@@ -3290,7 +3390,7 @@ rebalance_insert_pending(struct udpif *udpif, struct udpif_key **pending_flows,
         /* Change the state of the flow, adjust dpif counters */
         flow->offloaded = true;
 
-        udpif_set_ukey_backlog_packets(flow);
+        udpif_set_ukey_backlog(flow);
         count++;
     }
 
@@ -3319,7 +3419,7 @@ rebalance_remove_offloaded(struct udpif *udpif,
             udpif_flow_unprogram(udpif, flow, DPIF_OFFLOAD_NEVER);
             continue;
         }
-        udpif_set_ukey_backlog_packets(flow);
+        udpif_set_ukey_backlog(flow);
         flow->offloaded = false;
     }
 }

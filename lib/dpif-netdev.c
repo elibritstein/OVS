@@ -353,6 +353,7 @@ enum dp_offload_type {
     DP_OFFLOAD_FLOW,
     DP_OFFLOAD_FLUSH,
     DP_OFFLOAD_CT,
+    DP_OFFLOAD_STATS_CLEAR,
 };
 
 enum {
@@ -3095,6 +3096,8 @@ dp_netdev_free_offload(struct dp_offload_thread_item *offload)
     case DP_OFFLOAD_FLOW:
         dp_netdev_free_flow_offload(offload);
         break;
+    case DP_OFFLOAD_STATS_CLEAR:
+        /* Fallthrough */
     case DP_OFFLOAD_FLUSH:
         free(offload);
         break;
@@ -3750,6 +3753,10 @@ dp_netdev_flow_offload_main(void *arg)
             case DP_OFFLOAD_FLOW:
                 dp_offload_flow(offload);
                 break;
+            case DP_OFFLOAD_STATS_CLEAR:
+                mov_avg_cma_init(&ofl_thread->cma);
+                mov_avg_ema_init(&ofl_thread->ema, 100);
+                break;
             case DP_OFFLOAD_FLUSH:
                 dp_offload_flush(offload);
                 break;
@@ -4069,7 +4076,8 @@ queue_netdev_flow_put(struct dp_netdev_pmd_thread *pmd,
 
 static void
 dp_netdev_pmd_remove_flow(struct dp_netdev_pmd_thread *pmd,
-                          struct dp_netdev_flow *flow)
+                          struct dp_netdev_flow *flow,
+                          bool offloaded)
     OVS_REQUIRES(pmd->flow_mutex)
 {
     struct cmap_node *node = CONST_CAST(struct cmap_node *, &flow->node);
@@ -4082,7 +4090,9 @@ dp_netdev_pmd_remove_flow(struct dp_netdev_pmd_thread *pmd,
     dp_netdev_simple_match_remove(pmd, flow);
     cmap_remove(&pmd->flow_table, node, dp_netdev_flow_hash(&flow->ufid));
     ccmap_dec(&pmd->n_flows, odp_to_u32(in_port));
-    queue_netdev_flow_del(pmd, flow);
+    if (offloaded) {
+        queue_netdev_flow_del(pmd, flow);
+    }
     flow->dead = true;
 
     if (OVS_UNLIKELY(!VLOG_DROP_DBG((&upcall_rl)))) {
@@ -4185,13 +4195,22 @@ dp_netdev_offload_flush(struct dp_netdev *dp,
 }
 
 static void
+get_dpif_flow_status(const struct dp_netdev *dp,
+                     const struct dp_netdev_flow *netdev_flow_,
+                     struct dpif_flow_stats *stats,
+                     struct dpif_flow_attrs *attrs);
+
+static void
 dp_netdev_pmd_flow_flush(struct dp_netdev_pmd_thread *pmd)
 {
     struct dp_netdev_flow *netdev_flow;
 
     ovs_mutex_lock(&pmd->flow_mutex);
     CMAP_FOR_EACH (netdev_flow, node, &pmd->flow_table) {
-        dp_netdev_pmd_remove_flow(pmd, netdev_flow);
+        struct dpif_flow_attrs attrs;
+
+        get_dpif_flow_status(pmd->dp, netdev_flow, NULL, &attrs);
+        dp_netdev_pmd_remove_flow(pmd, netdev_flow, attrs.offloaded);
     }
     ovs_mutex_unlock(&pmd->flow_mutex);
 }
@@ -4733,22 +4752,26 @@ get_dpif_flow_status(const struct dp_netdev *dp,
 
     netdev_flow = CONST_CAST(struct dp_netdev_flow *, netdev_flow_);
 
-    atomic_read_relaxed(&netdev_flow->stats.packet_count, &n);
-    stats->n_packets = n;
-    atomic_read_relaxed(&netdev_flow->stats.byte_count, &n);
-    stats->n_bytes = n;
-    atomic_read_relaxed(&netdev_flow->stats.used, &used);
-    stats->used = used;
-    atomic_read_relaxed(&netdev_flow->stats.tcp_flags, &flags);
-    stats->tcp_flags = flags;
+    if (stats) {
+        atomic_read_relaxed(&netdev_flow->stats.packet_count, &n);
+        stats->n_packets = n;
+        atomic_read_relaxed(&netdev_flow->stats.byte_count, &n);
+        stats->n_bytes = n;
+        atomic_read_relaxed(&netdev_flow->stats.used, &used);
+        stats->used = used;
+        atomic_read_relaxed(&netdev_flow->stats.tcp_flags, &flags);
+        stats->tcp_flags = flags;
+    }
 
     if (!dpif_netdev_get_flow_offload_status(dp, netdev_flow,
                                              &offload_stats, &offload_attrs,
                                              time_msec(), 0)) {
-        stats->n_packets += offload_stats.n_packets;
-        stats->n_bytes += offload_stats.n_bytes;
-        stats->used = MAX(stats->used, offload_stats.used);
-        stats->tcp_flags |= offload_stats.tcp_flags;
+        if (stats) {
+            stats->n_packets += offload_stats.n_packets;
+            stats->n_bytes += offload_stats.n_bytes;
+            stats->used = MAX(stats->used, offload_stats.used);
+            stats->tcp_flags |= offload_stats.tcp_flags;
+        }
         if (attrs) {
             attrs->offloaded = offload_attrs.offloaded;
             attrs->dp_layer = offload_attrs.dp_layer;
@@ -5239,9 +5262,7 @@ flow_put_on_pmd(struct dp_netdev_pmd_thread *pmd,
                                   DP_NETDEV_FLOW_OFFLOAD_OP_MOD);
             log_netdev_flow_change(netdev_flow, match, old_actions);
 
-            if (stats) {
-                get_dpif_flow_status(pmd->dp, netdev_flow, stats, NULL);
-            }
+            get_dpif_flow_status(pmd->dp, netdev_flow, stats, NULL);
             if (put->flags & DPIF_FP_ZERO_STATS) {
                 /* XXX: The userspace datapath uses thread local statistics
                  * (for flows), which should be updated only by the owning
@@ -5361,16 +5382,15 @@ flow_del_on_pmd(struct dp_netdev_pmd_thread *pmd,
                 const struct dpif_flow_del *del)
 {
     struct dp_netdev_flow *netdev_flow;
+    struct dpif_flow_attrs attrs;
     int error = 0;
 
     ovs_mutex_lock(&pmd->flow_mutex);
     netdev_flow = dp_netdev_pmd_find_flow(pmd, del->ufid, del->key,
                                           del->key_len);
     if (netdev_flow) {
-        if (stats) {
-            get_dpif_flow_status(pmd->dp, netdev_flow, stats, NULL);
-        }
-        dp_netdev_pmd_remove_flow(pmd, netdev_flow);
+        get_dpif_flow_status(pmd->dp, netdev_flow, stats, &attrs);
+        dp_netdev_pmd_remove_flow(pmd, netdev_flow, attrs.offloaded);
     } else {
         error = ENOENT;
     }
@@ -5962,6 +5982,30 @@ dpif_netdev_offload_stats_get(struct dpif *dpif,
         snprintf(stats->counters[i].name, sizeof(stats->counters[i].name),
                  "  Total %s", cur_stats->name);
         stats->counters[i].value = cur_stats->total;
+    }
+
+    return 0;
+}
+
+static int
+dpif_netdev_offload_stats_clear(struct dpif *dpif OVS_UNUSED)
+{
+    struct dp_netdev *dp = get_dp_netdev(dpif);
+    unsigned int tid;
+
+    if (!netdev_is_flow_api_enabled()) {
+        return EINVAL;
+    }
+
+    for (tid = 0; tid < netdev_offload_thread_nb(); tid++) {
+        struct dp_offload_thread_item *item;
+
+        item = xmalloc(sizeof *item);
+        item->type = DP_OFFLOAD_STATS_CLEAR;
+        item->dp = dp;
+        item->timestamp = time_usec();
+
+        dp_netdev_append_offload(item, tid);
     }
 
     return 0;
@@ -12558,6 +12602,7 @@ const struct dpif_class dpif_netdev_class = {
     dpif_netdev_dump_e2e_flows,
     dpif_netdev_operate,
     dpif_netdev_offload_stats_get,
+    dpif_netdev_offload_stats_clear,
     NULL,                       /* recv_set */
     NULL,                       /* handlers_set */
     NULL,                       /* number_handlers_required */
