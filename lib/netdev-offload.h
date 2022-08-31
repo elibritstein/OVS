@@ -22,6 +22,7 @@
 #include "openvswitch/types.h"
 #include "dp-packet.h"
 #include "dpif.h"
+#include "ovs-atomic.h"
 #include "ovs-rcu.h"
 #include "ovs-thread.h"
 #include "packets.h"
@@ -47,7 +48,7 @@ struct ovs_action_push_tnl;
 /* Offload-capable (HW) netdev information */
 struct netdev_hw_info {
     bool oor;		/* Out of Offload Resources ? */
-    bool miss_api_supported;  /* hw_miss_packet_recover() supported.*/
+    atomic_bool miss_api_supported;  /* hw_miss_packet_recover() supported.*/
     int offload_count;  /* Pending (non-offloaded) flow count */
     int pending_count;  /* Offloaded flow count */
     OVSRCU_TYPE(void *) offload_data; /* Offload metadata. */

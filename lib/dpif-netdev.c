@@ -11542,8 +11542,11 @@ dp_netdev_hw_flow(const struct dp_netdev_pmd_thread *pmd,
 #ifdef ALLOW_EXPERIMENTAL_API /* Packet restoration API required. */
     /* Restore the packet if HW processing was terminated before completion. */
     struct dp_netdev_rxq *rxq = pmd->ctx.last_rxq;
+    bool miss_api_supported;
 
-    if (rxq->port->netdev->hw_info.miss_api_supported) {
+    atomic_read_relaxed(&rxq->port->netdev->hw_info.miss_api_supported,
+                        &miss_api_supported);
+    if (miss_api_supported) {
         int err = netdev_hw_miss_packet_recover(rxq->port->netdev, packet,
                                                 skip_actions, &sflow_attr);
 
