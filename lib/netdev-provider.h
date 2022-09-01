@@ -66,7 +66,7 @@ struct netdev {
      * netdev.  Otherwise, Open vSwitch is allowed to override it. */
     bool mtu_user_config;
 
-    int ref_cnt;                        /* Times this devices was opened. */
+    struct ovs_refcount refcount; /* Times this device was opened. */
 
     /* A sequence number which indicates changes in one of 'netdev''s
      * properties.   It must be nonzero so that users have a value which

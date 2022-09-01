@@ -434,6 +434,8 @@ netdev_open(const char *name, const char *type, struct netdev **netdevp)
 
                 ovs_list_init(&netdev->saved_flags_list);
 
+                ovs_refcount_init(&netdev->refcount);
+
                 error = rc->class->construct(netdev);
                 if (!error) {
                     netdev_change_seq_changed(netdev);
@@ -453,10 +455,11 @@ netdev_open(const char *name, const char *type, struct netdev **netdevp)
                       name, type);
             error = EAFNOSUPPORT;
         }
+    } else {
+        ovs_refcount_ref(&netdev->refcount);
     }
 
     if (!error) {
-        netdev->ref_cnt++;
         *netdevp = netdev;
     } else {
         *netdevp = NULL;
@@ -470,15 +473,11 @@ netdev_open(const char *name, const char *type, struct netdev **netdevp)
  * 'netdev_' is null. */
 struct netdev *
 netdev_ref(const struct netdev *netdev_)
-    OVS_EXCLUDED(netdev_mutex)
 {
     struct netdev *netdev = CONST_CAST(struct netdev *, netdev_);
 
     if (netdev) {
-        ovs_mutex_lock(&netdev_mutex);
-        ovs_assert(netdev->ref_cnt > 0);
-        netdev->ref_cnt++;
-        ovs_mutex_unlock(&netdev_mutex);
+        ovs_refcount_ref(&netdev->refcount);
     }
     return netdev;
 }
@@ -567,29 +566,42 @@ netdev_get_numa_id(const struct netdev *netdev)
 }
 
 static void
-netdev_unref(struct netdev *dev)
-    OVS_RELEASES(netdev_mutex)
+netdev_destroy(struct netdev *dev)
+    OVS_REQUIRES(netdev_mutex)
 {
-    ovs_assert(dev->ref_cnt);
-    if (!--dev->ref_cnt) {
-        const struct netdev_class *class = dev->netdev_class;
-        struct netdev_registered_class *rc;
+    const struct netdev_class *class = dev->netdev_class;
+    struct netdev_registered_class *rc;
 
-        netdev_uninit_flow_api(dev);
+    netdev_uninit_flow_api(dev);
 
-        dev->netdev_class->destruct(dev);
+    dev->netdev_class->destruct(dev);
 
-        if (dev->node) {
-            shash_delete(&netdev_shash, dev->node);
-        }
-        free(dev->name);
-        seq_destroy(dev->reconfigure_seq);
-        dev->netdev_class->dealloc(dev);
-        ovs_mutex_unlock(&netdev_mutex);
+    if (dev->node) {
+        shash_delete(&netdev_shash, dev->node);
+    }
+    free(dev->name);
+    seq_destroy(dev->reconfigure_seq);
+    dev->netdev_class->dealloc(dev);
 
-        rc = netdev_lookup_class(class->type);
-        ovs_refcount_unref(&rc->refcnt);
-    } else {
+    rc = netdev_lookup_class(class->type);
+    ovs_refcount_unref(&rc->refcnt);
+}
+
+static void
+netdev_unref_protected(struct netdev *dev)
+    OVS_REQUIRES(netdev_mutex)
+{
+    if (ovs_refcount_unref(&dev->refcount) == 1) {
+        netdev_destroy(dev);
+    }
+}
+
+static void
+netdev_unref(struct netdev *dev)
+{
+    if (ovs_refcount_unref(&dev->refcount) == 1) {
+        ovs_mutex_lock(&netdev_mutex);
+        netdev_destroy(dev);
         ovs_mutex_unlock(&netdev_mutex);
     }
 }
@@ -600,7 +612,6 @@ netdev_close(struct netdev *netdev)
     OVS_EXCLUDED(netdev_mutex)
 {
     if (netdev) {
-        ovs_mutex_lock(&netdev_mutex);
         netdev_unref(netdev);
     }
 }
@@ -623,7 +634,8 @@ netdev_remove(struct netdev *netdev)
             netdev->node = NULL;
             netdev_change_seq_changed(netdev);
         }
-        netdev_unref(netdev);
+        netdev_unref_protected(netdev);
+        ovs_mutex_unlock(&netdev_mutex);
     }
 }
 
@@ -1432,7 +1444,7 @@ do_update_flags(struct netdev *netdev, enum netdev_flags off,
             sf->saved_flags = changed_flags;
             sf->saved_values = changed_flags & new_flags;
 
-            netdev->ref_cnt++;
+            netdev_ref(netdev);
             ovs_mutex_unlock(&netdev_mutex);
         }
     }
@@ -1511,7 +1523,8 @@ netdev_restore_flags(struct netdev_saved_flags *sf)
         ovs_mutex_lock(&netdev_mutex);
         ovs_list_remove(&sf->node);
         free(sf);
-        netdev_unref(netdev);
+        netdev_unref_protected(netdev);
+        ovs_mutex_unlock(&netdev_mutex);
     }
 }
 
@@ -2015,7 +2028,7 @@ netdev_from_name(const char *name)
     ovs_mutex_lock(&netdev_mutex);
     netdev = shash_find_data(&netdev_shash, name);
     if (netdev) {
-        netdev->ref_cnt++;
+        netdev_ref(netdev);
     }
     ovs_mutex_unlock(&netdev_mutex);
 
@@ -2038,7 +2051,7 @@ netdev_get_devices(const struct netdev_class *netdev_class,
         struct netdev *dev = node->data;
 
         if (dev->netdev_class == netdev_class) {
-            dev->ref_cnt++;
+            netdev_ref(dev);
             shash_add(device_list, node->name, node->data);
         }
     }
@@ -2069,7 +2082,7 @@ netdev_get_vports(size_t *size)
         struct netdev *dev = node->data;
 
         if (netdev_vport_is_vport_class(dev->netdev_class)) {
-            dev->ref_cnt++;
+            netdev_ref(dev);
             vports[n] = dev;
             n++;
         }
@@ -2097,7 +2110,7 @@ netdev_get_type_from_name(const char *name)
 struct netdev *
 netdev_rxq_get_netdev(const struct netdev_rxq *rx)
 {
-    ovs_assert(rx->netdev->ref_cnt > 0);
+    ovs_assert(ovs_refcount_read(&rx->netdev->refcount) > 0);
     return rx->netdev;
 }
 
