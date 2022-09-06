@@ -290,3 +290,21 @@ ct_dist_exec(struct conntrack *conntrack,
                       pmd->ctx.now, tp_id);
     return false;
 }
+
+unsigned int
+ct_dist_hash_to_thread_id(uint32_t hash)
+{
+    return fastrange32(hash, n_threads);
+}
+
+void
+send_pkt_to_ct_thread(struct dp_packet *packet, uint32_t hash)
+{
+    struct ct_exec *e = &packet->ct_exec;
+    struct ct_thread *thread;
+    unsigned int tid;
+
+    tid = ct_dist_hash_to_thread_id(hash);
+    thread = &e->ct->threads[tid];
+    mpsc_queue_insert(&thread->queue, &packet->node);
+}

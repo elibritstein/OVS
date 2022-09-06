@@ -25,6 +25,7 @@
 struct conntrack;
 struct dp_netdev_flow;
 struct dp_netdev_pmd_thread;
+struct dp_packet;
 struct dp_packet_batch;
 struct flow;
 struct nlattr;
@@ -69,6 +70,10 @@ ct_dist_exec(struct conntrack *conntrack,
              const struct nlattr *actions,
              size_t actions_len,
              uint32_t depth);
+unsigned int
+ct_dist_hash_to_thread_id(uint32_t hash);
+void
+send_pkt_to_ct_thread(struct dp_packet *pkt, uint32_t hash);
 
 #ifdef  __cplusplus
 }
