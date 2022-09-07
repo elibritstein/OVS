@@ -97,6 +97,9 @@ struct conn_key {
     uint8_t nw_proto;
 };
 
+/* Verify that nw_proto stays uint8_t as it's used to index into l4_protos[] */
+BUILD_ASSERT_DECL(MEMBER_SIZEOF(struct conn_key, nw_proto) == sizeof(uint8_t));
+
 enum nat_action_e {
     NAT_ACTION_SRC = 1 << 0,
     NAT_ACTION_SRC_PORT = 1 << 1,
@@ -122,51 +125,6 @@ struct ct_match {
     odp_port_t odp_port;
     odp_port_t orig_in_port;
     struct conn_key key;
-};
-
-struct ct_flow_offload_item {
-    int  op;
-    ovs_u128 ufid;
-    void *dp;
-    uintptr_t ctid_key;
-    long long int timestamp;
-
-    /* matches */
-    struct ct_match ct_match;
-
-    /* actions */
-    uint8_t ct_state;
-    ovs_u128 label_key;
-    ovs_u128 label_mask;
-    uint32_t mark_key;
-    uint32_t mark_mask;
-
-    /* Pre-created CT actions */
-    bool ct_actions_set;
-    struct nlattr *actions;
-    size_t actions_size;
-
-    struct {
-        uint8_t mod_flags;
-        struct conn_key  key;
-    } nat;
-
-    /* refcnt is used to handle a scenario in which a connection issued an
-     * offload request and was removed before the offload request is processed.
-     */
-    struct ovs_refcount *refcnt;
-};
-
-/* hw-offload callbacks */
-struct conntrack_offload_class {
-    void (*conn_get_ufid)(struct ct_flow_offload_item *, ovs_u128 *);
-    void (*conn_add)(struct ct_flow_offload_item *);
-    void (*conn_del)(struct ct_flow_offload_item *);
-    int (*conn_active)(struct ct_flow_offload_item *, long long now,
-                       long long prev_now);
-    void (*conn_e2e_add)(struct ct_flow_offload_item *);
-    void (*conn_e2e_del)(ovs_u128 *, void *dp, long long int now);
-    bool (*queue_full)(void);
 };
 
 struct conntrack *conntrack_init(void *dp);
@@ -229,10 +187,5 @@ struct conntrack_zone_limit zone_limit_get(struct conntrack *ct,
                                            int32_t zone);
 int zone_limit_update(struct conntrack *ct, int32_t zone, uint32_t limit);
 int zone_limit_delete(struct conntrack *ct, uint16_t zone);
-void conntrack_set_offload_class(struct conntrack *,
-                                 struct conntrack_offload_class *);
-void
-conntrack_offload_del_conn(struct conntrack *ct,
-                           struct conn *conn);
 
 #endif /* conntrack.h */

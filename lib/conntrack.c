@@ -24,6 +24,7 @@
 
 #include "bitmap.h"
 #include "conntrack.h"
+#include "conntrack-offload.h"
 #include "conntrack-private.h"
 #include "conntrack-tp.h"
 #include "coverage.h"
@@ -32,7 +33,6 @@
 #include "dp-packet.h"
 #include "flow.h"
 #include "netdev.h"
-#include "netdev-offload.h"
 #include "odp-netlink.h"
 #include "openvswitch/hmap.h"
 #include "openvswitch/vlog.h"
@@ -53,8 +53,6 @@ COVERAGE_DEFINE(conntrack_clean_10s_latency);
 COVERAGE_DEFINE(conntrack_clean_5s_latency);
 COVERAGE_DEFINE(conntrack_clean_2s_latency);
 COVERAGE_DEFINE(conntrack_clean_1s_latency);
-
-static bool ct_e2e_cache_enabled = false;
 
 struct conn_lookup_ctx {
     struct conn_key key;
@@ -295,81 +293,6 @@ ct_print_conn_info(const struct conn *c, const char *log_msg,
     }
 }
 
-static uintptr_t
-conntrack_offload_get_ctid_key(struct conn *conn)
-{
-    return (uintptr_t) (conn->master_conn ? conn->master_conn : conn);
-}
-
-static bool
-conntrack_offload_fill_item_common(struct ct_flow_offload_item *item,
-                                   struct conn *conn,
-                                   int dir)
-{
-    item->ufid = conn->offloads.dir_info[dir].ufid;
-    item->ct_match.odp_port = conn->offloads.dir_info[dir].port;
-    item->dp = conn->offloads.dir_info[dir].dp;
-    item->ctid_key = conntrack_offload_get_ctid_key(conn);
-    item->ct_actions_set = false;
-    item->actions = NULL;
-    item->actions_size = 0;
-
-    return dir == CT_DIR_REP
-           ? !!(conn->offloads.flags & CT_OFFLOAD_REP)
-           : !!(conn->offloads.flags & CT_OFFLOAD_INIT);
-}
-
-void
-conntrack_offload_del_conn(struct conntrack *ct,
-                           struct conn *conn)
-    OVS_REQUIRES(conn->lock, ct->ct_lock)
-{
-    struct conntrack_offload_class *offload_class;
-    struct ct_flow_offload_item item[CT_DIR_NUM];
-    struct conn *conn_dir;
-    long long int now = time_usec();
-    void *dp;
-    int dir;
-
-    offload_class = ovsrcu_get(struct conntrack_offload_class *,
-                               &ct->offload_class);
-    if (!offload_class || !offload_class->conn_del) {
-        return;
-    }
-
-    if (!ct_e2e_cache_enabled &&
-        (!conn->offloads.refcnt ||
-         ovs_refcount_unref(conn->offloads.refcnt) > 1)) {
-        return;
-    }
-
-    for (dir = 0; dir < CT_DIR_NUM; dir ++) {
-        if (conn->nat_conn &&
-            conn->nat_conn->offloads.dir_info[dir].dp) {
-            conn_dir = conn->nat_conn;
-        } else {
-            conn_dir = conn;
-        }
-        if (!conntrack_offload_fill_item_common(&item[dir], conn_dir, dir)) {
-            continue;
-        }
-        if (ct_e2e_cache_enabled) {
-            dp = conn_dir->offloads.dir_info[dir].dp;
-            offload_class->conn_e2e_del(&item[dir].ufid, dp, now);
-        }
-        /* Set connection's status to terminated to indicate that the offload
-         * of the connection is deleted, but should still bypass tcp seq
-         * checking.
-         */
-        conn_dir->offloads.flags |= CT_OFFLOAD_TERMINATED | CT_OFFLOAD_SKIP;
-        conn_dir->offloads.flags &= ~CT_OFFLOAD_BOTH;
-    }
-    item[CT_DIR_INIT].timestamp = now;
-    item[CT_DIR_INIT].refcnt = conn->offloads.refcnt;
-    item[CT_DIR_REP].refcnt = NULL;
-    offload_class->conn_del(item);
-}
-
 /* Initializes the connection tracker 'ct'.  The caller is responsible for
  * calling 'conntrack_destroy()', when the instance is not needed anymore */
 struct conntrack *
@@ -567,9 +490,7 @@ conn_clean_cmn(struct conntrack *ct, struct conn *conn)
         expectation_clean(ct, &conn->key);
     }
 
-    if (netdev_is_flow_api_enabled()) {
-        conntrack_offload_del_conn(ct, conn);
-    }
+    conntrack_offload_del_conn(ct, conn);
 
     uint32_t hash = conn_key_hash(&conn->key, ct->hash_basis);
     cmap_remove(&ct->conns, &conn->cm_node, hash);
@@ -1612,233 +1533,6 @@ process_one(struct conntrack *ct, struct dp_packet *pkt,
     set_cached_conn(nat_action_info, ctx, conn, pkt);
 }
 
-static void
-conntrack_swap_conn_key(const struct conn_key *key,
-                        struct conn_key *swapped)
-{
-    memcpy(swapped, key, sizeof *swapped);
-    swapped->src = key->dst;
-    swapped->dst = key->src;
-}
-
-static void
-conntrack_offload_fill_item_add(struct ct_flow_offload_item *item,
-                                struct conn *conn,
-                                int dir,
-                                long long int now)
-{
-    /* nat_conn has opposite directions. */
-    bool reply = !!conn->master_conn ^ dir;
-
-    if (reply) {
-        item->ct_match.key = conn->rev_key;
-        conntrack_swap_conn_key(&conn->key, &item->nat.key);
-    } else {
-        item->ct_match.key = conn->key;
-        conntrack_swap_conn_key(&conn->rev_key, &item->nat.key);
-    }
-
-    item->nat.mod_flags = 0;
-    if (memcmp(&item->nat.key.src.addr, &item->ct_match.key.src.addr,
-               sizeof item->nat.key.src)) {
-        item->nat.mod_flags |= NAT_ACTION_SRC;
-    }
-    if (item->nat.key.src.port != item->ct_match.key.src.port) {
-        item->nat.mod_flags |= NAT_ACTION_SRC_PORT;
-    }
-    if (memcmp(&item->nat.key.dst.addr, &item->ct_match.key.dst.addr,
-               sizeof item->nat.key.dst)) {
-        item->nat.mod_flags |= NAT_ACTION_DST;
-    }
-    if (item->nat.key.dst.port != item->ct_match.key.dst.port) {
-        item->nat.mod_flags |= NAT_ACTION_DST_PORT;
-    }
-
-    conntrack_offload_fill_item_common(item, conn, dir);
-    item->ct_state = conn->offloads.dir_info[dir].pkt_ct_state;
-    item->mark_key = conn->offloads.dir_info[dir].pkt_ct_mark[0];
-    item->mark_mask = conn->offloads.dir_info[dir].pkt_ct_mark[1];
-    item->label_key = conn->offloads.dir_info[dir].pkt_ct_label[0];
-    item->label_mask = conn->offloads.dir_info[dir].pkt_ct_label[1];
-    item->timestamp = now;
-}
-
-static void
-conntrack_offload_prepare_add(struct conn *conn,
-                              struct dp_packet *packet,
-                              void *dp,
-                              bool reply)
-{
-    int dir = ct_get_packet_dir(reply);
-
-    conn->offloads.dir_info[dir].port = packet->md.orig_in_port;
-    conn->offloads.dir_info[dir].dp = dp;
-    conn->offloads.dir_info[dir].pkt_ct_state = packet->md.ct_state;
-}
-
-#ifdef E2E_CACHE_ENABLED
-static inline void
-e2e_cache_trace_add_ct(struct conntrack *ct,
-                       struct dp_packet *p,
-                       struct conn *conn,
-                       bool reply,
-                       long long int now)
-{
-    struct conntrack_offload_class *offload_class;
-    uint32_t e2e_trace_size = p->e2e_trace_size;
-    struct ct_flow_offload_item item;
-    struct ct_dir_info *dir_info;
-    uint8_t e2e_seen_pkts;
-    int dir;
-
-    offload_class = ovsrcu_get(struct conntrack_offload_class *,
-                               &ct->offload_class);
-    if (!offload_class || !offload_class->conn_get_ufid ||
-        !offload_class->conn_e2e_add) {
-        return;
-    }
-
-    if (OVS_UNLIKELY(e2e_trace_size >= E2E_CACHE_MAX_TRACE)) {
-        p->e2e_trace_flags |= E2E_CACHE_TRACE_FLAG_OVERFLOW;
-        return;
-    }
-
-    dir = ct_get_packet_dir(reply);
-    if (conn->nat_conn &&
-        conn->nat_conn->offloads.dir_info[dir].dp) {
-        conn = conn->nat_conn;
-    } else if (conn->master_conn &&
-               conn->master_conn->offloads.dir_info[dir].dp) {
-        conn = conn->master_conn;
-    }
-    conntrack_offload_fill_item_add(&item, conn, dir, now);
-    item.ct_match.odp_port = p->md.in_port.odp_port;
-    item.ct_match.orig_in_port = p->md.orig_in_port;
-
-    dir_info = &conn->offloads.dir_info[dir];
-    dir = ct_get_packet_dir(!reply);
-    if (conn->nat_conn &&
-        conn->nat_conn->offloads.dir_info[dir].dp) {
-        conn = conn->nat_conn;
-    } else if (conn->master_conn &&
-               conn->master_conn->offloads.dir_info[dir].dp) {
-        conn = conn->master_conn;
-    }
-    if (!dir_info->e2e_flow) {
-        dir_info->e2e_flow = true;
-        offload_class->conn_get_ufid(&item, &dir_info->ufid);
-        item.ufid = dir_info->ufid;
-        offload_class->conn_e2e_add(&item);
-    }
-
-    /* Prevent sending E2E trace messages for every packet. Send only
-     * when number of seen packets is equal to 2^x.
-     */
-    e2e_seen_pkts = dir_info->e2e_seen_pkts++;
-    if ((e2e_seen_pkts & (e2e_seen_pkts - 1u)) != 0) {
-        p->e2e_trace_flags |= E2E_CACHE_TRACE_FLAG_THROTTLED;
-        return;
-    }
-
-    p->e2e_trace_ct_ufids |= 1 << e2e_trace_size;
-    p->e2e_trace[e2e_trace_size] = dir_info->ufid;
-    p->e2e_trace_size = e2e_trace_size + 1;
-
-    if (!conn->offloads.dir_info[dir].e2e_flow) {
-        p->e2e_trace_flags |= E2E_CACHE_TRACE_FLAG_ABORT;
-        return;
-    }
-    e2e_trace_size++;
-    p->e2e_trace_ct_ufids |= 1 << e2e_trace_size;
-    p->e2e_trace[e2e_trace_size] = conn->offloads.dir_info[dir].ufid;
-    p->e2e_trace_size = e2e_trace_size + 1;
-}
-#else
-#define e2e_cache_trace_add_ct(ct, p, conn, r, n) do { } while (0)
-#endif
-
-static void
-conntrack_offload_add_conn(struct conntrack *ct,
-                           struct dp_packet *packet,
-                           struct conn *conn,
-                           bool reply, long long now_us)
-{
-    struct conntrack_offload_class *offload_class;
-    struct ct_flow_offload_item item[CT_DIR_NUM];
-    uint8_t flags;
-    int dir;
-
-    /* CT doesn't handle alg */
-    offload_class = ovsrcu_get(struct conntrack_offload_class *,
-                               &ct->offload_class);
-    if (conn->alg || conn->alg_related || !offload_class ||
-        !offload_class->conn_add || !offload_class->conn_get_ufid ||
-        !offload_class->queue_full) {
-        conn->offloads.flags |= CT_OFFLOAD_SKIP;
-        return;
-    }
-
-    if (offload_class->queue_full()) {
-        /* Try again later. */
-        return;
-    }
-
-    if ((reply && !(conn->offloads.flags & CT_OFFLOAD_REP)) ||
-        (!reply && !(conn->offloads.flags & CT_OFFLOAD_INIT))) {
-        conntrack_offload_prepare_add(conn, packet, ct->dp, reply);
-        conn->offloads.flags |= reply ? CT_OFFLOAD_REP : CT_OFFLOAD_INIT;
-        if (conn->master_conn) {
-            conn->master_conn->offloads.flags |= reply
-                ? CT_OFFLOAD_REP : CT_OFFLOAD_INIT;
-        }
-    }
-
-    flags = conn->offloads.flags;
-    if (conn->nat_conn) {
-        flags |= conn->nat_conn->offloads.flags;
-    } else if (conn->master_conn) {
-        flags |= conn->master_conn->offloads.flags;
-    }
-    if ((flags & CT_OFFLOAD_BOTH) == CT_OFFLOAD_BOTH) {
-        struct ovs_refcount *refcnt;
-        ovs_u128 *ufid[CT_DIR_NUM];
-
-        for (dir = 0; dir < CT_DIR_NUM; dir ++) {
-            if (conn->nat_conn &&
-                conn->nat_conn->offloads.dir_info[dir].dp) {
-                conn = conn->nat_conn;
-            } else if (conn->master_conn &&
-                       conn->master_conn->offloads.dir_info[dir].dp) {
-                conn = conn->master_conn;
-            }
-            conntrack_offload_fill_item_add(&item[dir], conn, dir, now_us);
-            ufid[dir] = &conn->offloads.dir_info[dir].ufid;
-        }
-        offload_class->conn_get_ufid(&item[CT_DIR_INIT],
-                                     &item[CT_DIR_INIT].ufid);
-        offload_class->conn_get_ufid(&item[CT_DIR_REP],
-                                     &item[CT_DIR_REP].ufid);
-        *ufid[CT_DIR_INIT] = item[CT_DIR_INIT].ufid;
-        *ufid[CT_DIR_REP] = item[CT_DIR_REP].ufid;
-        refcnt = xmalloc(sizeof *refcnt);
-        ovs_refcount_init(refcnt);
-        ovs_refcount_ref(refcnt);
-        item[CT_DIR_INIT].refcnt = refcnt;
-        item[CT_DIR_REP].refcnt = NULL;
-        offload_class->conn_add(item);
-        conn->offloads.flags |= CT_OFFLOAD_SKIP;
-        if (conn->nat_conn) {
-            conn->nat_conn->offloads.flags |= CT_OFFLOAD_SKIP;
-            conn->offloads.refcnt = refcnt;
-        } else if (conn->master_conn) {
-            conn->master_conn->offloads.flags |= CT_OFFLOAD_SKIP;
-            conn->master_conn->offloads.refcnt = refcnt;
-        } else {
-            conn->offloads.refcnt = refcnt;
-        }
-    }
-}
-
 /* Sends the packets in '*pkt_batch' through the connection tracker 'ct'.  All
  * the packets must have the same 'dl_type' (IPv4 or IPv6) and should have
  * the l3 and and l4 offset properly set.  Performs fragment reassembly with
@@ -1887,40 +1581,8 @@ conntrack_execute(struct conntrack *ct, struct dp_packet_batch *pkt_batch,
                         tp_id);
         }
         conn = packet->md.conn ? packet->md.conn : ctx.conn;
-        if ((packet->md.ct_state & CS_ESTABLISHED) && conn) {
-            if (netdev_is_flow_api_enabled() &&
-                !(conn->offloads.flags & CT_OFFLOAD_SKIP)) {
-                ovs_u128 updated_label_bits = ovs_u128_xor(packet->md.ct_label,
-                                                           orig_label);
-                uint32_t updated_mark_bits = packet->md.ct_mark ^ orig_mark;
-                int dir = ctx.reply ? CT_DIR_REP : CT_DIR_INIT;
-                struct conn *actual_conn = conn;
-
-                if (conn->nat_conn &&
-                    conn->nat_conn->offloads.dir_info[dir].dp) {
-                    actual_conn = conn->nat_conn;
-                } else if (conn->master_conn &&
-                           conn->master_conn->offloads.dir_info[dir].dp) {
-                    actual_conn = conn->master_conn;
-                }
-
-                actual_conn->offloads.dir_info[dir].pkt_ct_mark[0] =
-                    packet->md.ct_mark;
-                actual_conn->offloads.dir_info[dir].pkt_ct_mark[1] =
-                    updated_mark_bits;
-
-                actual_conn->offloads.dir_info[dir].pkt_ct_label[0] =
-                    packet->md.ct_label;
-                actual_conn->offloads.dir_info[dir].pkt_ct_label[1] =
-                    updated_label_bits;
-
-                conntrack_offload_add_conn(ct, packet, conn, ctx.reply,
-                                           now_us);
-            }
-            if (ct_e2e_cache_enabled) {
-                e2e_cache_trace_add_ct(ct, packet, conn, ctx.reply, now_us);
-            }
-        }
+        process_one_ct_offload(ct, packet, conn, ctx.reply, now_us, orig_mark,
+                               orig_label);
     }
 
     ipf_postprocess_conntrack(ct->ipf, pkt_batch, now_ms, dl_type);
@@ -2003,52 +1665,6 @@ conn_batch_clean(struct conntrack *ct,
     *batch_count = 0;
 }
 
-static int
-conn_hw_update(struct conntrack *ct,
-               struct conntrack_offload_class *offload_class,
-               struct conn *conn,
-               enum ct_timeout tm,
-               long long now)
-{
-    struct ct_flow_offload_item item;
-    bool updated = false;
-    int ret = 0;
-    int dir;
-
-    for (dir = 0; dir < CT_DIR_NUM; dir++) {
-        if (!updated &&
-            conn->offloads.dir_info[dir].dp &&
-            conntrack_offload_fill_item_common(&item, conn, dir)) {
-            ret = offload_class->conn_active(&item, now,
-                                             conn->prev_query);
-            if (!ret) {
-                conn_lock(conn);
-                conn_update_expiration(ct, conn, tm, now);
-                conn_unlock(conn);
-                updated = true;
-                break;
-            }
-        }
-        if (!updated && conn->nat_conn &&
-            conn->nat_conn->offloads.dir_info[dir].dp &&
-            conntrack_offload_fill_item_common(&item, conn->nat_conn,
-                                               dir)) {
-            ret = offload_class->conn_active(&item, now,
-                                             conn->prev_query);
-            if (!ret) {
-                conn_lock(conn);
-                conn_update_expiration(ct, conn, tm, now);
-                conn_unlock(conn);
-                updated = true;
-                break;
-            }
-        }
-    }
-    atomic_flag_test_and_set(&conn->exp.reschedule);
-    conn->prev_query = now;
-    return ret;
-}
-
 #define CT_SWEEP_BATCH_SIZE 32
 #define CT_SWEEP_QUIESCE_INTERVAL_MS 10
 #define CT_SWEEP_TIMEOUT_MS (1000 - CT_SWEEP_QUIESCE_INTERVAL_MS - 1)
@@ -2115,7 +1731,7 @@ rcu_quiesce:
             }
 
             rv_active = conn_hw_update(ct, offload_class, conn,
-                                       conn->exp.tm, now);
+                                       &conn->exp.tm, now);
             if (rv_active == EAGAIN) {
                 /* Impossible to query offload status, try later. */
                 conn_expire_push_front(ct, conn);
@@ -4110,12 +3726,4 @@ handle_tftp_ctl(struct conntrack *ct,
     expectation_create(ct, conn_for_expectation->key.src.port,
                        conn_for_expectation,
                        !!(pkt->md.ct_state & CS_REPLY_DIR), false, false);
-}
-
-void
-conntrack_set_offload_class(struct conntrack *ct,
-                            struct conntrack_offload_class *cls)
-{
-    ovsrcu_set(&ct->offload_class, cls);
-    ct_e2e_cache_enabled = netdev_is_e2e_cache_enabled();
 }

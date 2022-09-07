@@ -38,6 +38,7 @@
 
 #include <config.h>
 #include "conntrack.h"
+#include "conntrack-offload.h"
 #include "conntrack-private.h"
 #include "conntrack-tp.h"
 #include "coverage.h"

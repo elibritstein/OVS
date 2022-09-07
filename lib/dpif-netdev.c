@@ -38,6 +38,7 @@
 #include "ccmap.h"
 #include "cmap.h"
 #include "conntrack.h"
+#include "conntrack-offload.h"
 #include "conntrack-tp.h"
 #include "coverage.h"
 #include "ct-dpif.h"
