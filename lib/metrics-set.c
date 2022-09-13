@@ -62,9 +62,37 @@ metrics_set_check(struct metrics_node *node)
     }
 }
 
+static void
+metrics_set_read_values(struct metrics_node *node,
+                        struct metrics_visitor_context *ctx OVS_UNUSED,
+                        double *values)
+{
+    struct metrics_set *set = metrics_node_cast(node);
+
+    set->read(values);
+}
+
+static void
+metrics_set_format_values(struct metrics_node *node,
+                          struct metrics_visitor_context *ctx,
+                          double *values)
+{
+    struct metrics_set *set = metrics_node_cast(node);
+    struct format_aux *aux = ctx->ops_aux;
+    struct metrics_header *hdr;
+    size_t i;
+
+    for (i = 0; i < set->n_entries; i++) {
+        hdr = metrics_header_find(aux, node, &set->entries[i]);
+        metrics_header_add_line(hdr, NULL, ctx, values[i]);
+    }
+}
+
 struct metrics_class metrics_class_set = {
     .init = NULL,
     .size = metrics_set_size,
     .n_values = metrics_set_n_values,
     .check = metrics_set_check,
+    .read_values = metrics_set_read_values,
+    .format_values = metrics_set_format_values,
 };

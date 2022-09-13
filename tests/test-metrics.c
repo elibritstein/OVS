@@ -37,7 +37,7 @@
 METRICS_SUBSYSTEM(test);
 
 enum TEST_METRICS_NAMES {
-    M, N, O, P,
+    M, N, O, P, NAME,
 };
 
 static void
@@ -47,6 +47,7 @@ flat_entries_read_value(double *values)
     values[N] = 24.48;
     values[O] = 0xbaadfeed;
     values[P] = 3.14;
+    values[NAME] = 1.0;
 }
 
 METRICS_ENTRIES(test, flat_entries,
@@ -55,6 +56,7 @@ METRICS_ENTRIES(test, flat_entries,
     [N] = METRICS_COUNTER(n, "Count the number of n"),
     [O] = METRICS_GAUGE(o, "Gauge the number of o"),
     [P] = METRICS_GAUGE(p, "Gauge the number of p"),
+    [NAME] = METRICS_GAUGE(, "A 'header' entry with the set name."),
 );
 
 static struct histogram *
@@ -80,8 +82,11 @@ METRICS_HISTOGRAM(test, linear_histogram,
 static void
 metrics_test_main(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
 {
+    struct ds s = DS_EMPTY_INITIALIZER;
     uint64_t n_values;
     size_t size;
+
+    metrics_init();
 
     METRICS_REGISTER(flat_entries);
     METRICS_REGISTER(linear_histogram);
@@ -90,6 +95,10 @@ metrics_test_main(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
     metrics_tree_check();
 
     /* Read and output the test metrics. */
+    metrics_values_format(&s);
+    printf("%s", ds_cstr(&s));
+    ds_destroy(&s);
+
     n_values = metrics_values_count();
     size = metrics_tree_size();
 

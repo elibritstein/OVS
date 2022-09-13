@@ -18,12 +18,15 @@
 #define METRICS_PRIVATE_H
 
 #include "metrics.h"
+#include "openvswitch/dynamic-string.h"
 #include "openvswitch/util.h"
 #include "util.h"
 
 #define METRICS_ROOT METRICS_PTR(root)
 
 #define METRICS_MAX_DEPTH 20
+
+extern unsigned int n_failed_histogram_reads;
 
 static inline void *
 metrics_node_cast(struct metrics_node *node)
@@ -50,9 +53,16 @@ struct metrics_class {
     size_t (*size)(struct metrics_node *node);
     size_t (*n_values)(struct metrics_node *node);
     void (*check)(struct metrics_node *node);
+    void (*read_values)(struct metrics_node *node,
+                        struct metrics_visitor_context *ctx,
+                        double *values);
+    void (*format_values)(struct metrics_node *node,
+                          struct metrics_visitor_context *ctx,
+                          double *values);
 };
 #define METRICS_CLASS_DEFAULT_INITIALIZER { \
     .init = NULL, .size = NULL, .n_values = NULL, .check = NULL, \
+    .read_values = NULL, .format_values = NULL, \
 }
 
 extern struct metrics_class metrics_class_set;
@@ -68,6 +78,7 @@ metrics_ops(struct metrics_node *node)
 unsigned int metrics_values_count(void);
 size_t metrics_tree_size(void);
 void metrics_tree_check(void);
+void metrics_values_format(struct ds *s);
 
 void metrics_visitor_dfs(struct metrics_visitor_context *ctx,
                          struct metrics_node *node);
@@ -77,5 +88,46 @@ void metrics_node_size(struct metrics_node *node,
                        struct metrics_visitor_context *ctx);
 void metrics_node_check(struct metrics_node *node,
                         struct metrics_visitor_context *ctx);
+
+struct metrics_line {
+    struct ovs_list next; /* next in 'lines'. */
+    struct ds s; /* formatted value. */
+};
+
+/* Structure allowing access to
+ *  - help string
+ *  - entry type
+ *  - entry full name
+ * Several value may follow, linked
+ * by the 'lines' head of list.
+ */
+struct metrics_header {
+    struct metrics_entry *entry;
+    struct ds full_name;
+    struct ovs_list lines;
+};
+
+struct format_aux {
+    struct {
+        struct metrics_header **buf;
+        size_t capacity;
+        size_t n;
+    } hdrs;
+};
+
+struct metrics_header *
+metrics_header_create(struct format_aux *aux,
+                      const char *full_name,
+                      struct metrics_entry *entry);
+struct metrics_header *
+metrics_header_find(struct format_aux *aux,
+                    struct metrics_node *node,
+                    struct metrics_entry *entry);
+void metrics_header_add_line(struct metrics_header *hdr,
+                             const char *prefix,
+                             struct metrics_visitor_context *ctx,
+                             double value);
+void metrics_node_format(struct metrics_node *node,
+                         struct metrics_visitor_context *ctx);
 
 #endif /* METRICS_PRIVATE_H */

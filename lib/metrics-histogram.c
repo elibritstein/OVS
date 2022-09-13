@@ -24,6 +24,8 @@
 #include "openvswitch/util.h"
 #include "util.h"
 
+unsigned int n_failed_histogram_reads;
+
 static size_t
 metrics_histogram_size(struct metrics_node *node OVS_UNUSED)
 {
@@ -45,9 +47,68 @@ metrics_histogram_check(struct metrics_node *node)
     ovs_assert(hist->get != NULL);
 }
 
+static void
+metrics_histogram_read_values(struct metrics_node *node,
+                              struct metrics_visitor_context *ctx OVS_UNUSED,
+                              double *values)
+{
+    struct metrics_histogram *hist = metrics_node_cast(node);
+    uint64_t buckets[HISTOGRAM_N_BINS] = {0};
+    struct histogram *histogram;
+    unsigned int n_read_retries = 10;
+    uint64_t count = 0, sum = 0;
+    size_t i;
+
+    histogram = hist->get();
+    /* Make sure we read a 'count' consistent with the buckets:
+     * first load the buckets locally, then count them independently from
+     * potential subsystem changes.
+     */
+    while (n_read_retries-- && sum != histogram->sum) {
+        sum = histogram->sum;
+        memcpy(buckets, histogram->bin, sizeof buckets);
+    }
+    if (sum != histogram->sum) {
+        n_failed_histogram_reads++;
+    }
+
+    for (i = 0; i < HISTOGRAM_N_BINS; i++) {
+        values[i] = count += buckets[i];
+    }
+    values[i++] = sum;
+    values[i] = count;
+}
+
+static void
+metrics_histogram_format_values(struct metrics_node *node,
+                                struct metrics_visitor_context *ctx,
+                                double *values)
+{
+    struct metrics_histogram *hist = metrics_node_cast(node);
+    struct format_aux *aux = ctx->ops_aux;
+    struct metrics_header *hdr;
+    size_t i;
+
+    hdr = metrics_header_find(aux, node, &hist->entry);
+
+    for (i = 0; i < HISTOGRAM_N_BINS - 1; i++) {
+        metrics_header_add_line(hdr, "_buckets", ctx, values[i]);
+    }
+    /* +Inf bucket */
+    metrics_header_add_line(hdr, "_buckets", ctx, values[i++]);
+
+    /* Sum field */
+    metrics_header_add_line(hdr, "_sum", ctx, values[i++]);
+
+    /* Count field */
+    metrics_header_add_line(hdr, "_count", ctx, values[i++]);
+}
+
 struct metrics_class metrics_class_histogram = {
     .init = NULL,
     .size = metrics_histogram_size,
     .n_values = metrics_histogram_n_values,
     .check = metrics_histogram_check,
+    .read_values = metrics_histogram_read_values,
+    .format_values = metrics_histogram_format_values,
 };

@@ -99,3 +99,142 @@ metrics_node_check(struct metrics_node *node,
         metrics_ops(node)->check(node);
     }
 }
+
+static void
+metrics_entry_name(struct metrics_node *node,
+                   struct metrics_entry *entry,
+                   struct ds *s)
+{
+    struct metrics_node *stack[METRICS_MAX_DEPTH];
+    struct metrics_node *n;
+    int head = -1;
+
+    for (n = node; n != NULL; n = n->up) {
+        if (n->display_name != NULL &&
+            n->display_name[0] != '\0') {
+            ovs_assert(head < METRICS_MAX_DEPTH);
+            stack[++head] = n;
+        }
+    }
+
+    while (head >= 0) {
+        if (s->length > 0) {
+            ds_put_char(s, '_');
+        }
+        ds_put_cstr(s, stack[head--]->display_name);
+    }
+    if (strlen(entry->name) > 0) {
+        if (s->length > 0) {
+            ds_put_char(s, '_');
+        }
+        ds_put_cstr(s, entry->name);
+    }
+}
+
+static int
+metrics_header_cmp(const void *a, const void *b)
+{
+    struct metrics_header **hdr1 = (void *) a;
+    struct metrics_header **hdr2 = (void *) b;
+
+    return strcmp(ds_cstr(&hdr1[0]->full_name),
+                  ds_cstr(&hdr2[0]->full_name));
+}
+
+struct metrics_header *
+metrics_header_create(struct format_aux *aux,
+                      const char *full_name,
+                      struct metrics_entry *entry)
+{
+    struct metrics_header *hdr;
+
+    hdr = xcalloc(1, sizeof *hdr);
+    ds_init(&hdr->full_name);
+    ds_put_cstr(&hdr->full_name, full_name);
+    hdr->entry = entry;
+    ovs_list_init(&hdr->lines);
+
+    if (aux->hdrs.n == aux->hdrs.capacity) {
+        aux->hdrs.buf = x2nrealloc(aux->hdrs.buf,
+                                   &aux->hdrs.capacity,
+                                   sizeof(aux->hdrs.buf[0]));
+    }
+    aux->hdrs.buf[aux->hdrs.n++] = hdr;
+
+    qsort(aux->hdrs.buf, aux->hdrs.n,
+          sizeof aux->hdrs.buf[0],
+          metrics_header_cmp);
+
+    return hdr;
+}
+
+struct metrics_header *
+metrics_header_find(struct format_aux *aux,
+                    struct metrics_node *node,
+                    struct metrics_entry *entry)
+{
+    struct metrics_header hdr_s = {
+        .full_name = DS_EMPTY_INITIALIZER,
+        .entry = entry,
+    }, *hdr = &hdr_s, **lookup;
+
+    metrics_entry_name(node, entry, &hdr_s.full_name);
+    lookup = bsearch(&hdr, aux->hdrs.buf, aux->hdrs.n,
+                     sizeof aux->hdrs.buf[0],
+                     metrics_header_cmp);
+
+    if (lookup == NULL) {
+        hdr = metrics_header_create(aux,
+                                    ds_cstr(&hdr_s.full_name),
+                                    entry);
+    } else {
+        hdr = *lookup;
+    }
+    ds_destroy(&hdr_s.full_name);
+
+    return hdr;
+}
+
+void
+metrics_header_add_line(struct metrics_header *hdr,
+                        const char *prefix,
+                        struct metrics_visitor_context *ctx OVS_UNUSED,
+                        double value)
+{
+    struct metrics_line *line;
+
+    line = xcalloc(1, sizeof *line);
+
+    ds_init(&line->s);
+    if (prefix) {
+        ds_put_cstr(&line->s, prefix);
+    }
+    ds_put_format(&line->s, " %.10g\n", value);
+
+    ovs_list_init(&line->next);
+    ovs_list_push_back(&hdr->lines, &line->next);
+}
+
+void
+metrics_node_format(struct metrics_node *node,
+                    struct metrics_visitor_context *ctx)
+{
+    struct metrics_class *cls = metrics_ops(node);
+    size_t n_values;
+    double *values;
+
+    if (cls->n_values == NULL ||
+        cls->read_values == NULL ||
+        cls->format_values == NULL) {
+        /* Require all these ops available to proceed. */
+        return;
+    }
+
+    n_values = cls->n_values(node);
+    values = xmalloc(n_values * sizeof(values[0]));
+
+    cls->read_values(node, ctx, values);
+    cls->format_values(node, ctx, values);
+
+    free(values);
+}
