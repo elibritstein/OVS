@@ -3881,6 +3881,7 @@ netdev_dpdk_get_status(const struct netdev *netdev, struct smap *args)
     smap_add_format(args, "numa_id", "%d",
                            rte_eth_dev_socket_id(dev->port_id));
     smap_add_format(args, "driver_name", "%s", dev_info.driver_name);
+    smap_add_format(args, "driver_version", "%s", rte_version());
     smap_add_format(args, "min_rx_bufsize", "%u", dev_info.min_rx_bufsize);
     smap_add_format(args, "max_rx_pktlen", "%u", dev->max_packet_len);
     smap_add_format(args, "max_rx_queues", "%u", dev_info.max_rx_queues);
