@@ -3599,6 +3599,25 @@ netdev_dpdk_set_policing(struct netdev* netdev, uint32_t policer_rate,
 }
 
 static int
+netdev_dpdk_get_policing(struct netdev *netdev,
+                         uint32_t *kbits_rate, uint32_t *kbits_burst,
+                         uint32_t *kpkts_rate, uint32_t *kpkts_burst)
+{
+    struct netdev_dpdk *dev = netdev_dpdk_cast(netdev);
+
+    ovs_mutex_lock(&dev->mutex);
+
+    *kbits_rate = dev->policer_rate;
+    *kbits_burst = dev->policer_burst;
+    *kpkts_rate = 0;
+    *kpkts_burst = 0;
+
+    ovs_mutex_unlock(&dev->mutex);
+
+    return 0;
+}
+
+static int
 netdev_dpdk_get_ifindex(const struct netdev *netdev)
 {
     struct netdev_dpdk *dev = netdev_dpdk_cast(netdev);
@@ -5948,6 +5967,7 @@ netdev_dpdk_meter_unref(uint32_t meter_id)
     .get_carrier_resets = netdev_dpdk_get_carrier_resets,   \
     .set_miimon_interval = netdev_dpdk_set_miimon,          \
     .set_policing = netdev_dpdk_set_policing,               \
+    .get_policing = netdev_dpdk_get_policing,               \
     .get_qos_types = netdev_dpdk_get_qos_types,             \
     .get_qos = netdev_dpdk_get_qos,                         \
     .set_qos = netdev_dpdk_set_qos,                         \

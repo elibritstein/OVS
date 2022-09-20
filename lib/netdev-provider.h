@@ -525,6 +525,11 @@ struct netdev_class {
                         unsigned int kbits_burst, unsigned int kpkts_rate,
                         unsigned int kpkts_burst);
 
+    /* Read the input rate limiting (policing) policy, if possible. */
+    int (*get_policing)(struct netdev *netdev,
+                        uint32_t *kbits_rate, uint32_t *kbits_burst,
+                        uint32_t *kpkts_rate, uint32_t *kpkts_burst);
+
     /* Adds to 'types' all of the forms of QoS supported by 'netdev', or leaves
      * it empty if 'netdev' does not support QoS.  Any names added to 'types'
      * should be documented as valid for the "type" column in the "QoS" table

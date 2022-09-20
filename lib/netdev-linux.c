@@ -2838,6 +2838,25 @@ out:
 }
 
 static int
+netdev_linux_get_policing(struct netdev *netdev_,
+                          uint32_t *kbits_rate, uint32_t *kbits_burst,
+                          uint32_t *kpkts_rate, uint32_t *kpkts_burst)
+{
+    struct netdev_linux *netdev = netdev_linux_cast(netdev_);
+
+    ovs_mutex_lock(&netdev->mutex);
+
+    *kbits_rate = netdev->kbits_rate;
+    *kbits_burst = netdev->kbits_burst;
+    *kpkts_rate = netdev->kpkts_rate;
+    *kpkts_burst = netdev->kpkts_burst;
+
+    ovs_mutex_unlock(&netdev->mutex);
+
+    return 0;
+}
+
+static int
 netdev_linux_get_qos_types(const struct netdev *netdev OVS_UNUSED,
                            struct sset *types)
 {
@@ -3605,6 +3624,7 @@ exit:
     .set_miimon_interval = netdev_linux_set_miimon_interval,    \
     .set_advertisements = netdev_linux_set_advertisements,      \
     .set_policing = netdev_linux_set_policing,                  \
+    .get_policing = netdev_linux_get_policing,                  \
     .get_qos_types = netdev_linux_get_qos_types,                \
     .get_qos_capabilities = netdev_linux_get_qos_capabilities,  \
     .get_qos = netdev_linux_get_qos,                            \

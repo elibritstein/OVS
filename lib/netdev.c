@@ -1654,6 +1654,24 @@ netdev_set_policing(struct netdev *netdev, uint32_t kbits_rate,
             : EOPNOTSUPP);
 }
 
+
+/* Read the input rate limiting (policing) policy, if possible. */
+int
+netdev_get_policing(struct netdev *netdev,
+                    uint32_t *kbits_rate, uint32_t *kbits_burst,
+                    uint32_t *kpkts_rate, uint32_t *kpkts_burst)
+{
+    *kbits_rate = 0;
+    *kbits_burst = 0;
+    *kpkts_rate = 0;
+    *kpkts_burst = 0;
+
+    return (netdev->netdev_class->get_policing
+            ? netdev->netdev_class->get_policing(netdev,
+                    kbits_rate, kbits_burst, kpkts_rate, kpkts_burst)
+            : EOPNOTSUPP);
+}
+
 /* Adds to 'types' all of the forms of QoS supported by 'netdev', or leaves it
  * empty if 'netdev' does not support QoS.  Any names added to 'types' should
  * be documented as valid for the "type" column in the "QoS" table in
