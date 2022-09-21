@@ -49,6 +49,7 @@
 #include "dpif.h"
 #include "fail-open.h"
 #include "hmapx.h"
+#include "metrics.h"
 #include "odp-util.h"
 #include "id-pool.h"
 #include "ovs-thread.h"
@@ -403,5 +404,10 @@ bool ofproto_dpif_ct_zone_timeout_policy_get_name(
     uint8_t nw_proto, char **tp_name, bool *unwildcard);
 
 bool ovs_explicit_drop_action_supported(struct ofproto_dpif *);
+
+void ofproto_dpif_metrics_register(void);
+
+METRICS_DECLARE(ofproto_dpif);
+METRICS_DECLARE(foreach_dpif_backer);
 
 #endif /* ofproto-dpif.h */

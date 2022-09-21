@@ -29,6 +29,7 @@
 #include "fail-open.h"
 #include "guarded-list.h"
 #include "latch.h"
+#include "metrics.h"
 #include "openvswitch/list.h"
 #include "netlink.h"
 #include "openvswitch/ofpbuf.h"
@@ -37,6 +38,7 @@
 #include "ofproto-dpif-xlate.h"
 #include "ofproto-dpif-xlate-cache.h"
 #include "ofproto-dpif-trace.h"
+#include "ofproto-dpif.h"
 #include "ovs-rcu.h"
 #include "packets.h"
 #include "openvswitch/poll-loop.h"
@@ -3664,3 +3666,74 @@ udpif_flow_unprogram(struct udpif *udpif, struct udpif_key *ukey,
 
     return opsp->error;
 }
+
+static void
+do_foreach_udpif(metrics_visitor_fn visitor,
+                 struct metrics_visitor_context *ctx,
+                 struct metrics_node *node,
+                 struct metrics_label *labels,
+                 size_t n_labels OVS_UNUSED)
+{
+    struct udpif *udpif;
+
+    LIST_FOR_EACH (udpif, list_node, &all_udpifs) {
+        ctx->it = udpif;
+        labels[0].value = dpif_name(udpif->dpif);
+        visitor(ctx, node);
+    }
+}
+
+METRICS_COLLECTION(ofproto_dpif, foreach_udpif,
+                   do_foreach_udpif, "name");
+
+enum {
+    OF_DPIF_N_PACKETS,
+    OF_DPIF_N_BYTES,
+    OF_DPIF_N_OFL_PACKETS,
+    OF_DPIF_N_OFL_BYTES,
+    OF_DPIF_N_HANDLERS,
+    OF_DPIF_N_REVALIDATORS,
+};
+
+static void
+udpif_read_value(double *values, void *it)
+{
+    uint64_t n_packets, n_ofl_packets;
+    uint64_t n_bytes, n_ofl_bytes;
+    struct udpif *udpif = it;
+    size_t i;
+
+    n_packets = n_ofl_packets = 0;
+    n_bytes = n_ofl_bytes = 0;
+    for (i = 0; i < udpif->n_revalidators; i++) {
+        ovs_mutex_lock(&udpif->revalidators[i].stats_lock);
+        n_packets += udpif->revalidators[i].n_packets;
+        n_bytes += udpif->revalidators[i].n_bytes;
+        n_ofl_packets += udpif->revalidators[i].n_offloaded_packets;
+        n_ofl_bytes += udpif->revalidators[i].n_offloaded_bytes;
+        ovs_mutex_unlock(&udpif->revalidators[i].stats_lock);
+    }
+
+    values[OF_DPIF_N_PACKETS] = n_packets;
+    values[OF_DPIF_N_BYTES] = n_bytes;
+    values[OF_DPIF_N_OFL_PACKETS] = n_ofl_packets;
+    values[OF_DPIF_N_OFL_BYTES] = n_ofl_bytes;
+    values[OF_DPIF_N_HANDLERS] = udpif->n_handlers;
+    values[OF_DPIF_N_REVALIDATORS] = udpif->n_revalidators;
+}
+
+METRICS_ENTRIES(foreach_udpif, udpif_entries,
+    "dpif", udpif_read_value,
+    [OF_DPIF_N_PACKETS] = METRICS_COUNTER(n_packets,
+        "Number of packets processed in total on this datapath."),
+    [OF_DPIF_N_OFL_PACKETS] = METRICS_COUNTER(n_offloaded_packets,
+        "Number of packets processed in hardware on this datapath."),
+    [OF_DPIF_N_BYTES] = METRICS_COUNTER(n_bytes,
+        "Number of bytes processed in total on this datapath."),
+    [OF_DPIF_N_OFL_BYTES] = METRICS_COUNTER(n_offloaded_bytes,
+        "Number of bytes processed in hardware on this datapath."),
+    [OF_DPIF_N_HANDLERS] = METRICS_GAUGE(n_handlers,
+        "Number of upcall handler threads."),
+    [OF_DPIF_N_REVALIDATORS] = METRICS_GAUGE(n_revalidators,
+        "Number of revalidator threads."),
+);

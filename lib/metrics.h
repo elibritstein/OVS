@@ -427,4 +427,16 @@ void metrics_register(struct metrics_node *node);
  * be differentiated by metrics consumers. */
 void metrics_unixctl_register(const char *metrics_root_name);
 
+/* Some OVS generic stats functions expects a provider to fill
+ * with 0xfffs the unused stats. Those are interpreted instead
+ * as 'zero' for metrics purposes. Use this macro to cleanly
+ * read those fields.
+ */
+#define MAX_IS_ZERO(v) \
+    ((sizeof v == 1) ? (v == UINT8_MAX ? 0 : v) \
+    :(sizeof v == 2) ? (v == UINT16_MAX ? 0 : v) \
+    :(sizeof v == 4) ? (v == UINT32_MAX ? 0 : v) \
+    :(sizeof v == 8) ? (v == UINT64_MAX ? 0 : v) \
+    : 0)
+
 #endif /* METRICS_H */

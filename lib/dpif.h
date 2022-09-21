@@ -378,6 +378,7 @@
 
 #include "dpdk.h"
 #include "dp-packet.h"
+#include "metrics.h"
 #include "netdev.h"
 #include "openflow/openflow.h"
 #include "openvswitch/ofp-meter.h"
@@ -1003,6 +1004,11 @@ void log_flow_get_message(const struct dpif *,
                           const struct vlog_module *,
                           const struct dpif_flow_get *,
                           int error);
+
+METRICS_DECLARE(dpif);
+METRICS_DECLARE(foreach_dpif);
+METRICS_DECLARE(foreach_dpif_nolabel);
+
 #ifdef  __cplusplus
 }
 #endif
