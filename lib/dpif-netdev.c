@@ -12091,6 +12091,9 @@ dp_netdev_recirculate(struct dp_netdev_pmd_thread *pmd,
 struct dp_netdev_execute_aux {
     struct dp_netdev_pmd_thread *pmd;
     const struct flow *flow;
+    struct dp_netdev_flow *dp_flow;
+    const struct nlattr *actions;
+    size_t actions_len;
 };
 
 static void
@@ -12498,141 +12501,13 @@ dp_execute_cb(void *aux_, struct dp_packet_batch *packets_,
         VLOG_WARN("Packet dropped. Max recirculation depth exceeded.");
         break;
 
-    case OVS_ACTION_ATTR_CT: {
-        const struct nlattr *b;
-        bool force = false;
-        bool commit = false;
-        unsigned int left;
-        uint16_t zone = 0;
-        uint32_t tp_id = 0;
-        const char *helper = NULL;
-        const uint32_t *setmark = NULL;
-        const struct ovs_key_ct_labels *setlabel = NULL;
-        struct nat_action_info_t nat_action_info;
-        struct nat_action_info_t *nat_action_info_ref = NULL;
-        bool nat_config = false;
-
-        NL_ATTR_FOR_EACH_UNSAFE (b, left, nl_attr_get(a),
-                                 nl_attr_get_size(a)) {
-            enum ovs_ct_attr sub_type = nl_attr_type(b);
-
-            switch(sub_type) {
-            case OVS_CT_ATTR_FORCE_COMMIT:
-                force = true;
-                /* fall through. */
-            case OVS_CT_ATTR_COMMIT:
-                commit = true;
-                break;
-            case OVS_CT_ATTR_ZONE:
-                zone = nl_attr_get_u16(b);
-                break;
-            case OVS_CT_ATTR_HELPER:
-                helper = nl_attr_get_string(b);
-                break;
-            case OVS_CT_ATTR_MARK:
-                setmark = nl_attr_get(b);
-                break;
-            case OVS_CT_ATTR_LABELS:
-                setlabel = nl_attr_get(b);
-                break;
-            case OVS_CT_ATTR_EVENTMASK:
-                /* Silently ignored, as userspace datapath does not generate
-                 * netlink events. */
-                break;
-            case OVS_CT_ATTR_TIMEOUT:
-                if (!str_to_uint(nl_attr_get_string(b), 10, &tp_id)) {
-                    VLOG_WARN("Invalid Timeout Policy ID: %s.",
-                              nl_attr_get_string(b));
-                    tp_id = DEFAULT_TP_ID;
-                }
-                break;
-            case OVS_CT_ATTR_NAT: {
-                const struct nlattr *b_nest;
-                unsigned int left_nest;
-                bool ip_min_specified = false;
-                bool proto_num_min_specified = false;
-                bool ip_max_specified = false;
-                bool proto_num_max_specified = false;
-                memset(&nat_action_info, 0, sizeof nat_action_info);
-                nat_action_info_ref = &nat_action_info;
-
-                NL_NESTED_FOR_EACH_UNSAFE (b_nest, left_nest, b) {
-                    enum ovs_nat_attr sub_type_nest = nl_attr_type(b_nest);
-
-                    switch (sub_type_nest) {
-                    case OVS_NAT_ATTR_SRC:
-                    case OVS_NAT_ATTR_DST:
-                        nat_config = true;
-                        nat_action_info.nat_action |=
-                            ((sub_type_nest == OVS_NAT_ATTR_SRC)
-                                ? NAT_ACTION_SRC : NAT_ACTION_DST);
-                        break;
-                    case OVS_NAT_ATTR_IP_MIN:
-                        memcpy(&nat_action_info.min_addr,
-                               nl_attr_get(b_nest),
-                               nl_attr_get_size(b_nest));
-                        ip_min_specified = true;
-                        break;
-                    case OVS_NAT_ATTR_IP_MAX:
-                        memcpy(&nat_action_info.max_addr,
-                               nl_attr_get(b_nest),
-                               nl_attr_get_size(b_nest));
-                        ip_max_specified = true;
-                        break;
-                    case OVS_NAT_ATTR_PROTO_MIN:
-                        nat_action_info.min_port =
-                            nl_attr_get_u16(b_nest);
-                        proto_num_min_specified = true;
-                        break;
-                    case OVS_NAT_ATTR_PROTO_MAX:
-                        nat_action_info.max_port =
-                            nl_attr_get_u16(b_nest);
-                        proto_num_max_specified = true;
-                        break;
-                    case OVS_NAT_ATTR_PERSISTENT:
-                    case OVS_NAT_ATTR_PROTO_HASH:
-                    case OVS_NAT_ATTR_PROTO_RANDOM:
-                        break;
-                    case OVS_NAT_ATTR_UNSPEC:
-                    case __OVS_NAT_ATTR_MAX:
-                        OVS_NOT_REACHED();
-                    }
-                }
-
-                if (ip_min_specified && !ip_max_specified) {
-                    nat_action_info.max_addr = nat_action_info.min_addr;
-                }
-                if (proto_num_min_specified && !proto_num_max_specified) {
-                    nat_action_info.max_port = nat_action_info.min_port;
-                }
-                if (proto_num_min_specified || proto_num_max_specified) {
-                    if (nat_action_info.nat_action & NAT_ACTION_SRC) {
-                        nat_action_info.nat_action |= NAT_ACTION_SRC_PORT;
-                    } else if (nat_action_info.nat_action & NAT_ACTION_DST) {
-                        nat_action_info.nat_action |= NAT_ACTION_DST_PORT;
-                    }
-                }
-                break;
-            }
-            case OVS_CT_ATTR_UNSPEC:
-            case __OVS_CT_ATTR_MAX:
-                OVS_NOT_REACHED();
-            }
+    case OVS_ACTION_ATTR_CT:
+        if (ct_dist_exec(pmd->dp->conntrack, aux->pmd, aux->flow, packets_, a,
+                         aux->dp_flow, aux->actions, aux->actions_len,
+                         *depth)) {
+            return;
         }
-
-        /* We won't be able to function properly in this case, hence
-         * complain loudly. */
-        if (nat_config && !commit) {
-            static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 5);
-            VLOG_WARN_RL(&rl, "NAT specified without commit.");
-        }
-
-        conntrack_execute(dp->conntrack, packets_, aux->flow->dl_type, force,
-                          commit, zone, setmark, setlabel, aux->flow->tp_src,
-                          aux->flow->tp_dst, helper, nat_action_info_ref,
-                          pmd->ctx.now, tp_id);
         break;
-    }
 
     case OVS_ACTION_ATTR_METER:
         dp_netdev_run_meter(pmd->dp, packets_, nl_attr_get_u32(a),
@@ -12684,7 +12559,13 @@ dp_netdev_execute_actions(struct dp_netdev_pmd_thread *pmd,
                           bool should_steal, const struct flow *flow,
                           const struct nlattr *actions, size_t actions_len)
 {
-    struct dp_netdev_execute_aux aux = { pmd, flow };
+    struct dp_netdev_execute_aux aux = {
+        .pmd = pmd,
+        .flow = flow,
+        .dp_flow = NULL,
+        .actions = actions,
+        .actions_len = actions_len,
+    };
 
     odp_execute_actions(&aux, packets, should_steal, actions,
                         actions_len, dp_execute_cb);

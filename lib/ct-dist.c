@@ -24,6 +24,8 @@
 #include "dpif.h"
 #include "dpif-netdev-private.h"
 #include "mpsc-queue.h"
+#include "netlink.h"
+#include "openvswitch/flow.h"
 #include "openvswitch/vlog.h"
 #include "ovs-atomic.h"
 #include "ovs-rcu.h"
@@ -140,4 +142,151 @@ ct_thread_main(void *arg)
 
     mpsc_queue_release(&thread->queue);
     return NULL;
+}
+
+bool
+ct_dist_exec(struct conntrack *conntrack,
+             struct dp_netdev_pmd_thread *pmd,
+             const struct flow *flow,
+             struct dp_packet_batch *packets_,
+             const struct nlattr *ct_action,
+             struct dp_netdev_flow *dp_flow OVS_UNUSED,
+             const struct nlattr *actions OVS_UNUSED,
+             size_t actions_len OVS_UNUSED,
+             uint32_t depth OVS_UNUSED)
+{
+    const struct ovs_key_ct_labels *setlabel = NULL;
+    struct nat_action_info_t *nat_action_info_ref;
+    struct nat_action_info_t nat_action_info;
+    const uint32_t *setmark = NULL;
+    const char *helper = NULL;
+    bool nat_config = false;
+    const struct nlattr *b;
+    bool commit = false;
+    bool force = false;
+    uint32_t tp_id = 0;
+    unsigned int left;
+    uint16_t zone = 0;
+
+    nat_action_info_ref = NULL;
+    NL_ATTR_FOR_EACH_UNSAFE (b, left, nl_attr_get(ct_action),
+                             nl_attr_get_size(ct_action)) {
+        enum ovs_ct_attr sub_type = nl_attr_type(b);
+
+        switch(sub_type) {
+        case OVS_CT_ATTR_FORCE_COMMIT:
+            force = true;
+            /* fall through. */
+        case OVS_CT_ATTR_COMMIT:
+            commit = true;
+            break;
+        case OVS_CT_ATTR_ZONE:
+            zone = nl_attr_get_u16(b);
+            break;
+        case OVS_CT_ATTR_HELPER:
+            helper = nl_attr_get_string(b);
+            break;
+        case OVS_CT_ATTR_MARK:
+            setmark = nl_attr_get(b);
+            break;
+        case OVS_CT_ATTR_LABELS:
+            setlabel = nl_attr_get(b);
+            break;
+        case OVS_CT_ATTR_EVENTMASK:
+            /* Silently ignored, as userspace datapath does not generate
+             * netlink events. */
+            break;
+        case OVS_CT_ATTR_TIMEOUT:
+            if (!str_to_uint(nl_attr_get_string(b), 10, &tp_id)) {
+                VLOG_WARN("Invalid Timeout Policy ID: %s.",
+                          nl_attr_get_string(b));
+                tp_id = DEFAULT_TP_ID;
+            }
+            break;
+        case OVS_CT_ATTR_NAT: {
+            const struct nlattr *b_nest;
+            unsigned int left_nest;
+            bool ip_min_specified = false;
+            bool proto_num_min_specified = false;
+            bool ip_max_specified = false;
+            bool proto_num_max_specified = false;
+            memset(&nat_action_info, 0, sizeof nat_action_info);
+            nat_action_info_ref = &nat_action_info;
+
+            NL_NESTED_FOR_EACH_UNSAFE (b_nest, left_nest, b) {
+                enum ovs_nat_attr sub_type_nest = nl_attr_type(b_nest);
+
+                switch (sub_type_nest) {
+                case OVS_NAT_ATTR_SRC:
+                case OVS_NAT_ATTR_DST:
+                    nat_config = true;
+                    nat_action_info.nat_action |=
+                        ((sub_type_nest == OVS_NAT_ATTR_SRC)
+                            ? NAT_ACTION_SRC : NAT_ACTION_DST);
+                    break;
+                case OVS_NAT_ATTR_IP_MIN:
+                    memcpy(&nat_action_info.min_addr,
+                           nl_attr_get(b_nest),
+                           nl_attr_get_size(b_nest));
+                    ip_min_specified = true;
+                    break;
+                case OVS_NAT_ATTR_IP_MAX:
+                    memcpy(&nat_action_info.max_addr,
+                           nl_attr_get(b_nest),
+                           nl_attr_get_size(b_nest));
+                    ip_max_specified = true;
+                    break;
+                case OVS_NAT_ATTR_PROTO_MIN:
+                    nat_action_info.min_port =
+                        nl_attr_get_u16(b_nest);
+                    proto_num_min_specified = true;
+                    break;
+                case OVS_NAT_ATTR_PROTO_MAX:
+                    nat_action_info.max_port =
+                        nl_attr_get_u16(b_nest);
+                    proto_num_max_specified = true;
+                    break;
+                case OVS_NAT_ATTR_PERSISTENT:
+                case OVS_NAT_ATTR_PROTO_HASH:
+                case OVS_NAT_ATTR_PROTO_RANDOM:
+                    break;
+                case OVS_NAT_ATTR_UNSPEC:
+                case __OVS_NAT_ATTR_MAX:
+                    OVS_NOT_REACHED();
+                }
+            }
+
+            if (ip_min_specified && !ip_max_specified) {
+                nat_action_info.max_addr = nat_action_info.min_addr;
+            }
+            if (proto_num_min_specified && !proto_num_max_specified) {
+                nat_action_info.max_port = nat_action_info.min_port;
+            }
+            if (proto_num_min_specified || proto_num_max_specified) {
+                if (nat_action_info.nat_action & NAT_ACTION_SRC) {
+                    nat_action_info.nat_action |= NAT_ACTION_SRC_PORT;
+                } else if (nat_action_info.nat_action & NAT_ACTION_DST) {
+                    nat_action_info.nat_action |= NAT_ACTION_DST_PORT;
+                }
+            }
+            break;
+        }
+        case OVS_CT_ATTR_UNSPEC:
+        case __OVS_CT_ATTR_MAX:
+            OVS_NOT_REACHED();
+        }
+    }
+
+    /* We won't be able to function properly in this case, hence
+     * complain loudly. */
+    if (nat_config && !commit) {
+        static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 5);
+        VLOG_WARN_RL(&rl, "NAT specified without commit.");
+    }
+
+    conntrack_execute(conntrack, packets_, flow->dl_type, force,
+                      commit, zone, setmark, setlabel, flow->tp_src,
+                      flow->tp_dst, helper, nat_action_info_ref,
+                      pmd->ctx.now, tp_id);
+    return false;
 }

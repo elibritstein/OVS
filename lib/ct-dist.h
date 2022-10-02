@@ -23,6 +23,11 @@
 #include "util.h"
 
 struct conntrack;
+struct dp_netdev_flow;
+struct dp_netdev_pmd_thread;
+struct dp_packet_batch;
+struct flow;
+struct nlattr;
 struct smap;
 
 #define DEFAULT_CT_DIST_THREAD_NB 0
@@ -53,6 +58,17 @@ ct_thread_id(void)
 
     return id;
 }
+
+bool
+ct_dist_exec(struct conntrack *conntrack,
+             struct dp_netdev_pmd_thread *pmd,
+             const struct flow *flow,
+             struct dp_packet_batch *packets_,
+             const struct nlattr *ct_action,
+             struct dp_netdev_flow *dp_flow,
+             const struct nlattr *actions,
+             size_t actions_len,
+             uint32_t depth);
 
 #ifdef  __cplusplus
 }
