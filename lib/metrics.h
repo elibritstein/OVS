@@ -79,12 +79,22 @@ struct metrics_add_label {
     const char **keys;
 };
 
+struct metrics_iterator_frame {
+    void *handle; /* The iterator handle. */
+    struct metrics_node *node; /* The metrics node that set the handle. */
+};
+
 struct metrics_visitor_context {
     metrics_node_fn ops;
     void *ops_aux;
+    void *it; /* Current 'active' iterator. */
     bool inspect; /* Run the visitor to 'inspect' the tree:
                    * callbacks are not executed, the tree is fully visited. */
-    void *it;
+    struct {
+        struct metrics_iterator_frame *stack;
+        size_t capacity;
+        size_t n_its;
+    } iterators;
     struct {
         struct metrics_label_array *stack;
         size_t capacity;

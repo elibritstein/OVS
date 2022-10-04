@@ -48,6 +48,68 @@ find_child_label(struct metrics_collection *coll)
     return NULL;
 }
 
+static struct metrics_node *
+metrics_iterator_last_it(struct metrics_visitor_context *ctx)
+{
+    size_t n = ctx->iterators.n_its;
+
+    return n > 0 ? ctx->iterators.stack[n - 1].handle : NULL;
+}
+
+static struct metrics_node *
+metrics_iterator_last_node(struct metrics_visitor_context *ctx)
+{
+    size_t n = ctx->iterators.n_its;
+
+    return n > 0 ? ctx->iterators.stack[n - 1].node : NULL;
+}
+
+static void
+metrics_iterator_push(struct metrics_visitor_context *ctx,
+                      struct metrics_node *src,
+                      void *it)
+{
+    size_t n = ctx->iterators.n_its;
+
+    /* Need to update current stored top 'it' to latest value. */
+    if (metrics_iterator_last_node(ctx) == src &&
+        metrics_iterator_last_it(ctx) != it) {
+        ctx->iterators.stack[n - 1].handle = it;
+        return;
+    }
+
+    /* The top 'it' already has the correct info, nothing to do. */
+    if (metrics_iterator_last_it(ctx) == it) {
+        return;
+    }
+
+    /* Allocate a new frame with its own (node,it) tuple. */
+
+    if (n == ctx->iterators.capacity) {
+        ctx->iterators.stack = x2nrealloc(ctx->iterators.stack,
+                                          &ctx->iterators.capacity,
+                                          sizeof(ctx->iterators.stack[0]));
+    }
+    ctx->iterators.stack[n].handle = it;
+    ctx->iterators.stack[n].node = src;
+    ctx->iterators.n_its++;
+}
+
+static void
+metrics_iterator_pop(struct metrics_visitor_context *ctx)
+{
+    if (ctx->iterators.n_its == 0) {
+        return;
+    }
+    ctx->iterators.n_its--;
+    if (ctx->iterators.n_its == 0) {
+        free(ctx->iterators.stack);
+        ctx->iterators.stack = NULL;
+        ctx->iterators.capacity = 0;
+    }
+    ctx->it = metrics_iterator_last_it(ctx);
+}
+
 /* Depth-First Search on the tree. */
 void
 metrics_visitor_dfs(struct metrics_visitor_context *ctx,
@@ -55,9 +117,12 @@ metrics_visitor_dfs(struct metrics_visitor_context *ctx,
 {
     const struct metrics_label *last_labels = metrics_visitor_last_label(ctx);
 
-    /* Execute the operation only the first time
-     * we see the COLLECTION node. */
-    if (node->type != METRICS_NODE_TYPE_COLLECTION || ctx->it == NULL) {
+    if (!ctx->inspect) {
+        metrics_iterator_push(ctx, node, ctx->it);
+    }
+
+    if (node->type != METRICS_NODE_TYPE_COLLECTION ||
+        metrics_iterator_last_node(ctx) != node) {
         ctx->ops(node, ctx);
     }
 
@@ -83,15 +148,13 @@ metrics_visitor_dfs(struct metrics_visitor_context *ctx,
 
     if (!ctx->inspect &&
         node->type == METRICS_NODE_TYPE_COLLECTION &&
-        ctx->it == NULL) {
+        metrics_iterator_last_node(ctx) != node) {
         struct metrics_collection *coll = metrics_node_cast(node);
         struct metrics_add_label *add_label = find_child_label(coll);
 
         coll->iterate(metrics_visitor_dfs, ctx, node,
                       add_label->array.labels, add_label->array.n_labels);
-        /* Cleanup eventual collection iterator that might have
-         * been leftover by the 'iterate' call. */
-        ctx->it = NULL;
+        metrics_iterator_pop(ctx);
     } else {
         struct metrics_node *child;
 

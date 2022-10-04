@@ -126,12 +126,18 @@ static void
 objects_read_value(double *values,
                    void *it)
 {
+    static unsigned int nb_obj_read = 0;
     size_t *iptr = it, i = *iptr;
 
     values[M] = objects[i].m;
     values[N] = objects[i].n;
     values[O] = objects[i].o;
     values[P] = objects[i].p;
+
+    /* Number of time the objects were read. Should
+     * be exactly the number of object iterations. */
+    nb_obj_read++;
+    ovs_assert(nb_obj_read <= ARRAY_SIZE(objects));
 }
 
 METRICS_COLLECTION(test, foreach_objects, do_foreach_objects, "obj");
@@ -267,6 +273,87 @@ METRICS_ENTRIES(iface_labels, iface_driver_name,
 );
 
 static void
+do_foreach_nested_it_x(metrics_visitor_fn visitor,
+                       struct metrics_visitor_context *ctx,
+                       struct metrics_node *node,
+                       struct metrics_label *labels,
+                       size_t n OVS_UNUSED)
+{
+    static char x[64];
+    int i;
+
+    labels[0].value = x;
+    ctx->it = &i;
+    for (i = 0; i < 3; i++) {
+        snprintf(x, sizeof x, "%d", i);
+        ovs_assert(ctx->it == &i);
+        visitor(ctx, node);
+        ovs_assert(ctx->it == &i);
+    }
+}
+
+METRICS_COLLECTION(test, foreach_nested_it_x,
+    do_foreach_nested_it_x, "x");
+
+static void
+do_foreach_nested_it_y(metrics_visitor_fn visitor,
+                       struct metrics_visitor_context *ctx,
+                       struct metrics_node *node,
+                       struct metrics_label *labels,
+                       size_t n OVS_UNUSED)
+{
+    static char y[64];
+    int i;
+
+    labels[0].value = y;
+    ctx->it = &i;
+    for (i = 0; i < 3; i++) {
+        snprintf(y, sizeof y, "%d", i);
+        ovs_assert(ctx->it == &i);
+        visitor(ctx, node);
+        ovs_assert(ctx->it == &i);
+    }
+}
+
+METRICS_COLLECTION(foreach_nested_it_x, foreach_nested_it_y,
+    do_foreach_nested_it_y, "y");
+
+METRICS_ENTRIES(foreach_nested_it_y, xy_entries, "nested_it",
+    metrics_set_read_one,
+    METRICS_GAUGE(, "Verify nested iteration correctness."),
+);
+
+static void
+do_foreach_nested_it_z(metrics_visitor_fn visitor,
+                       struct metrics_visitor_context *ctx,
+                       struct metrics_node *node,
+                       struct metrics_label *labels,
+                       size_t n OVS_UNUSED)
+{
+    static char z[64];
+    int i;
+
+    labels[0].value = z;
+    /* Verify nested iterations, this time with
+     * the context iterator being set to NULL. */
+    ctx->it = NULL;
+    for (i = 0; i < 2; i++) {
+        snprintf(z, sizeof z, "%d", i);
+        ovs_assert(ctx->it == NULL);
+        visitor(ctx, node);
+        ovs_assert(ctx->it == NULL);
+    }
+}
+
+METRICS_COLLECTION(foreach_nested_it_y, foreach_nested_it_z,
+    do_foreach_nested_it_z, "z");
+
+METRICS_ENTRIES(foreach_nested_it_z, xyz_entries, "nulled_nested_it",
+    metrics_set_read_one,
+    METRICS_GAUGE(, "Verify nested iteration correctness."),
+);
+
+static void
 metrics_test_main(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
 {
     struct ds s = DS_EMPTY_INITIALIZER;
@@ -282,6 +369,8 @@ metrics_test_main(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
     METRICS_REGISTER(objects_entries);
     METRICS_REGISTER(iface_entries);
     METRICS_REGISTER(iface_driver_name);
+    METRICS_REGISTER(xy_entries);
+    METRICS_REGISTER(xyz_entries);
 
     /* Sanity checks. */
     metrics_tree_check();
