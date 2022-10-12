@@ -427,6 +427,12 @@ void metrics_register(struct metrics_node *node);
  * be differentiated by metrics consumers. */
 void metrics_unixctl_register(const char *metrics_root_name);
 
+/* Helpers available for 'METRICS_COND' that will
+ * report whether the current metrics access requested
+ * the extended and/or debug entries. */
+bool metrics_ext_enabled(void *it);
+bool metrics_dbg_enabled(void *it);
+
 /* Some OVS generic stats functions expects a provider to fill
  * with 0xfffs the unused stats. Those are interpreted instead
  * as 'zero' for metrics purposes. Use this macro to cleanly

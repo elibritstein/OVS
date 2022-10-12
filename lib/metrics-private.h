@@ -17,6 +17,8 @@
 #ifndef METRICS_PRIVATE_H
 #define METRICS_PRIVATE_H
 
+#include <stdbool.h>
+
 #include "metrics.h"
 #include "openvswitch/dynamic-string.h"
 #include "openvswitch/util.h"
@@ -27,6 +29,8 @@
 #define METRICS_MAX_DEPTH 20
 
 extern unsigned int n_failed_histogram_reads;
+extern bool metrics_show_extended;
+extern bool metrics_show_debug;
 
 static inline void *
 metrics_node_cast(struct metrics_node *node)

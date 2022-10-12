@@ -248,6 +248,18 @@ metrics_add_label_init(struct metrics_node *node)
     }
 }
 
+bool
+metrics_ext_enabled(void *it OVS_UNUSED)
+{
+    return metrics_show_extended;
+}
+
+bool
+metrics_dbg_enabled(void *it OVS_UNUSED)
+{
+    return metrics_show_debug;
+}
+
 struct metrics_class metrics_class_add_label = {
     .init = metrics_add_label_init,
 };
