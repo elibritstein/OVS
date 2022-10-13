@@ -3756,7 +3756,7 @@ udpif_read_value(double *values, void *it)
 }
 
 METRICS_ENTRIES(foreach_udpif, udpif_entries,
-    "dpif", udpif_read_value,
+    "datapath", udpif_read_value,
     [OF_DPIF_N_PACKETS] = METRICS_COUNTER(n_packets,
         "Number of packets processed in total on this datapath."),
     [OF_DPIF_N_OFL_PACKETS] = METRICS_COUNTER(n_offloaded_packets,
