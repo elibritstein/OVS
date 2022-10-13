@@ -170,7 +170,6 @@ conntrack_offload_prepare_add(struct conn *conn,
     conn->offloads.dir_info[dir].pkt_ct_state = packet->md.ct_state;
 }
 
-#ifdef E2E_CACHE_ENABLED
 static inline void
 e2e_cache_trace_add_ct(struct conntrack *ct,
                        struct dp_packet *p,
@@ -247,9 +246,6 @@ e2e_cache_trace_add_ct(struct conntrack *ct,
     p->e2e_trace[e2e_trace_size] = conn->offloads.dir_info[dir].ufid;
     p->e2e_trace_size = e2e_trace_size + 1;
 }
-#else
-#define e2e_cache_trace_add_ct(ct, p, conn, r, n) do { } while (0)
-#endif
 
 static void
 conntrack_offload_add_conn(struct conntrack *ct,

@@ -154,12 +154,10 @@ static struct odp_support dp_netdev_support = {
 };
 
 static bool dp_netdev_e2e_cache_enabled = false;
-#ifdef E2E_CACHE_ENABLED
 static uint32_t dp_netdev_e2e_cache_size = 0;
 #define E2E_CACHE_MAX_TRACE_Q_SIZE   (10000u)
 static uint32_t dp_netdev_e2e_cache_trace_q_size = E2E_CACHE_MAX_TRACE_Q_SIZE;
 #define INVALID_OFFLOAD_THREAD_NB (MAX_OFFLOAD_THREAD_NB + 1)
-#endif
 
 
 /* Simple non-wildcarding single-priority classifier. */
@@ -469,8 +467,6 @@ struct dp_offload_thread {
 static unsigned long long int offload_queue_size =
     HW_OFFLOAD_DEFAULT_QUEUE_SIZE;
 
-#ifdef E2E_CACHE_ENABLED
-
 enum {
     E2E_UFID_MSG_PUT = 1,
     E2E_UFID_MSG_DEL = 2,
@@ -493,8 +489,6 @@ struct e2e_cache_ufid_msg {
         struct ct_match ct_match[0];
     };
 };
-
-#endif /* E2E_CACHE_ENABLED */
 
 static struct dp_offload_thread *dp_offload_threads = NULL;
 static void *dp_netdev_flow_offload_main(void *arg);
@@ -6127,7 +6121,6 @@ dpif_netdev_set_config(struct dpif *dpif, const struct smap *other_config)
     }
 
     dp_netdev_e2e_cache_enabled = netdev_is_e2e_cache_enabled();
-#ifdef E2E_CACHE_ENABLED
     dp_netdev_e2e_cache_size = netdev_get_e2e_cache_size();
     if (dp_netdev_e2e_cache_enabled) {
         static bool done = false;
@@ -6147,7 +6140,6 @@ dpif_netdev_set_config(struct dpif *dpif, const struct smap *other_config)
             done = true;
         }
     }
-#endif
 
     if (dp->pmd_rxq_assign_type != pmd_rxq_assign_type) {
         dp->pmd_rxq_assign_type = pmd_rxq_assign_type;
@@ -6233,14 +6225,12 @@ dpif_netdev_set_config(struct dpif *dpif, const struct smap *other_config)
         if (read_depth < DEFAULT_MAX_RECIRC_DEPTH) {
             read_depth = DEFAULT_MAX_RECIRC_DEPTH;
         }
-#ifdef E2E_CACHE_ENABLED
         if (netdev_is_e2e_cache_enabled()
             && read_depth > E2E_CACHE_MAX_TRACE) {
             VLOG_INFO("max recirc depth is %d if e2e-cache is enabled",
                       E2E_CACHE_MAX_TRACE);
             read_depth = E2E_CACHE_MAX_TRACE;
         }
-#endif
         if (max_recirc_depth != read_depth) {
             max_recirc_depth = read_depth;
             VLOG_INFO("max recirc depth set to %u", read_depth);
@@ -9270,8 +9260,6 @@ packet_enqueue_to_flow_map(struct dp_packet *packet,
     map->tcp_flags = tcp_flags;
 }
 
-#ifdef E2E_CACHE_ENABLED
-
 static struct hmap counter_map = HMAP_INITIALIZER(&counter_map);
 
 static inline int
@@ -10883,48 +10871,6 @@ out:
     ovs_mutex_unlock(&flows_map_mutex);
     return rv;
 }
-
-#else
-#define e2e_cache_trace_add_flow(p, ufid) do { } while (0)
-#define e2e_cache_trace_msg_enqueue(m, t) do { } while (0)
-#define e2e_cache_dispatch_trace_message(d, b, n) do { } while (0)
-#define e2e_cache_trace_tnl_pop(p) do { } while (0)
-OVS_UNUSED
-static int
-e2e_cache_flow_put(bool is_ct OVS_UNUSED,
-                   const ovs_u128 *ufid OVS_UNUSED,
-                   const void *match OVS_UNUSED,
-                   const struct nlattr *actions OVS_UNUSED,
-                   size_t actions_len OVS_UNUSED,
-                   long long int now OVS_UNUSED)
-{
-    return 0;
-}
-static int
-e2e_cache_flow_del(const ovs_u128 *ufid OVS_UNUSED,
-                   struct dp_netdev *dp OVS_UNUSED,
-                   long long int now OVS_UNUSED)
-{
-    return 0;
-}
-static bool
-e2e_cache_get_merged_flows_stats(struct netdev *netdev OVS_UNUSED,
-                                 struct match *match OVS_UNUSED,
-                                 struct nlattr **actions OVS_UNUSED,
-                                 const ovs_u128 *mt_ufid OVS_UNUSED,
-                                 struct dpif_flow_stats *stats OVS_UNUSED,
-                                 struct ofpbuf *buf OVS_UNUSED,
-                                 long long now OVS_UNUSED,
-                                 long long prev_now OVS_UNUSED)
-{
-}
-static void
-dpif_netdev_dump_e2e_flows(struct hmap *portno_names OVS_UNUSED,
-                           struct ofputil_port_map *port_map OVS_UNUSED,
-                           struct ds *s OVS_UNUSED)
-{
-}
-#endif /* E2E_CACHE_ENABLED */
 
 /* SMC lookup function for a batch of packets.
  * By doing batching SMC lookup, we can use prefetch
@@ -13140,7 +13086,6 @@ dpcls_lookup(struct dpcls *cls, const struct netdev_flow_key *keys[],
     return false;
 }
 
-#ifdef E2E_CACHE_ENABLED
 static inline bool
 e2e_cache_set_action_is_valid(struct nlattr *a)
 {
@@ -13550,4 +13495,3 @@ ct2ct_merge_flows(struct e2e_cache_ovs_flow **flows,
     e2e_stats->succ_ct2ct_merges++;
     return 0;
 }
-#endif /* E2E_CACHE_ENABLED */
