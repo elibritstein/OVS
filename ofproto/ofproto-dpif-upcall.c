@@ -114,6 +114,7 @@ struct revalidator {
     uint64_t n_bytes;
     uint64_t n_offloaded_packets;
     uint64_t n_offloaded_bytes;
+    struct histogram flow_del_latency;
 };
 
 /* An upcall handler for ofproto_dpif.
@@ -1047,6 +1048,8 @@ udpif_revalidator(void *arg)
     revalidator->n_offloaded_bytes = 0;
     revalidator->n_packets = 0;
     revalidator->n_bytes = 0;
+    histogram_walls_set_log(&revalidator->flow_del_latency,
+                            1, 10000);
 
     revalidator->id = ovsthread_id_self();
     for (;;) {
@@ -2942,6 +2945,10 @@ revalidate(struct revalidator *revalidator)
             }
             if (kill_them_all || (used && used < now - max_idle)) {
                 result = UKEY_DELETE;
+                if (used && used < now - max_idle) {
+                    histogram_add_sample(&revalidator->flow_del_latency,
+                                         (now - max_idle) - used);
+                }
             } else {
                 result = revalidate_ukey(udpif, ukey, &stats, &odp_actions,
                                          reval_seq, &recircs,
@@ -3819,3 +3826,42 @@ METRICS_HISTOGRAM(foreach_udpif_dbg, revalidator_dump_duration,
                   "A distribution of the flow dump duration of each datapath "
                   "in milliseconds.",
                   udpif_sweep_duration_get);
+
+
+static void
+do_foreach_revalidator(metrics_visitor_fn visitor,
+                       struct metrics_visitor_context *ctx,
+                       struct metrics_node *node,
+                       struct metrics_label *labels,
+                       size_t n_labels OVS_UNUSED)
+{
+    struct udpif *udpif = ctx->it;
+    struct revalidator *r;
+    char id[30];
+    size_t i;
+
+    labels[0].value = id;
+
+    for (i = 0; i < udpif->n_revalidators; i++) {
+        r = &udpif->revalidators[i];
+        snprintf(id, sizeof id, "%u", r->id);
+        ctx->it = r;
+        visitor(ctx, node);
+    }
+}
+
+METRICS_COLLECTION(foreach_udpif_dbg, foreach_revalidator_dbg,
+                   do_foreach_revalidator, "id");
+
+static struct histogram *
+revalidator_flow_del_latency_get(void *it)
+{
+    struct revalidator *r = it;
+
+    return &r->flow_del_latency;
+}
+
+METRICS_HISTOGRAM(foreach_revalidator_dbg, revalidator_flow_del_latency,
+                  "A distribution of flow deletion orders latency for this "
+                  "revalidator in milliseconds.",
+                  revalidator_flow_del_latency_get);

@@ -94,6 +94,7 @@ METRICS_ENTRIES(foreach_dpif_backer, datapath_entries,
 METRICS_DECLARE(udpif_entries);
 METRICS_DECLARE(udpif_total_entries);
 METRICS_DECLARE(revalidator_dump_duration);
+METRICS_DECLARE(revalidator_flow_del_latency);
 
 void
 ofproto_dpif_metrics_register(void)
@@ -108,4 +109,5 @@ ofproto_dpif_metrics_register(void)
     METRICS_REGISTER(udpif_entries);
     METRICS_REGISTER(udpif_total_entries);
     METRICS_REGISTER(revalidator_dump_duration);
+    METRICS_REGISTER(revalidator_flow_del_latency);
 }
