@@ -28,6 +28,7 @@
 #include "openvswitch/dynamic-string.h"
 #include "fail-open.h"
 #include "guarded-list.h"
+#include "histogram.h"
 #include "latch.h"
 #include "metrics.h"
 #include "openvswitch/list.h"
@@ -151,6 +152,7 @@ struct udpif {
     struct ovs_barrier reval_barrier;  /* Barrier used by revalidators. */
     struct dpif_flow_dump *dump;       /* DPIF flow dump state. */
     long long int dump_duration;       /* Duration of the last flow dump. */
+    struct histogram dump_durations;   /* A distribution of dump durations */
     struct seq *dump_seq;              /* Increments each dump iteration. */
     atomic_bool enable_ufid;           /* If true, skip dumping flow attrs. */
 
@@ -613,6 +615,7 @@ udpif_start_threads(struct udpif *udpif, uint32_t n_handlers_,
 
         ovs_barrier_init(&udpif->reval_barrier, udpif->n_revalidators);
         ovs_barrier_init(&udpif->pause_barrier, udpif->n_revalidators + 1);
+        histogram_walls_set_log(&udpif->dump_durations, 1, 4000);
         udpif->reval_exit = false;
         udpif->pause = false;
         udpif->offload_rebalance_time = time_msec();
@@ -1112,6 +1115,7 @@ udpif_revalidator(void *arg)
 
             duration = MAX(time_msec() - start_time, 1);
             udpif->dump_duration = duration;
+            histogram_add_sample(&udpif->dump_durations, duration);
             if (duration > 2000) {
                 flow_limit /= duration / 1000;
             } else if (duration > 1300) {
@@ -3800,3 +3804,18 @@ METRICS_ENTRIES(foreach_udpif, udpif_entries,
     [OF_DPIF_N_REVALIDATORS] = METRICS_GAUGE(n_revalidators,
         "Number of revalidator threads."),
 );
+
+METRICS_COND(foreach_udpif, foreach_udpif_dbg, metrics_dbg_enabled);
+
+static struct histogram *
+udpif_sweep_duration_get(void *it)
+{
+    struct udpif *udpif = it;
+
+    return &udpif->dump_durations;
+}
+
+METRICS_HISTOGRAM(foreach_udpif_dbg, revalidator_dump_duration,
+                  "A distribution of the flow dump duration of each datapath "
+                  "in milliseconds.",
+                  udpif_sweep_duration_get);
