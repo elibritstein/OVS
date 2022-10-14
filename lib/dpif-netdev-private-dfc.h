@@ -110,6 +110,7 @@ struct smc_bucket {
 
 /* Signature match cache, differentiate from EMC cache */
 struct smc_cache {
+    atomic_count n_entries;
     struct smc_bucket buckets[SMC_BUCKET_CNT];
 };
 
@@ -191,6 +192,12 @@ struct dp_netdev_flow *
 smc_lookup_single(struct dp_netdev_pmd_thread *pmd,
                   struct dp_packet *packet,
                   struct netdev_flow_key *key);
+
+static inline unsigned int
+smc_cache_count(struct smc_cache *smc)
+{
+    return atomic_count_get(&smc->n_entries);
+}
 
 #ifdef  __cplusplus
 }

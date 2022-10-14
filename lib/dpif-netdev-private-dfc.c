@@ -61,6 +61,7 @@ smc_cache_init(struct smc_cache *smc_cache)
             smc_cache->buckets[i].flow_idx[j] = UINT16_MAX;
         }
     }
+    atomic_count_init(&smc_cache->n_entries, 0);
 }
 
 void
@@ -91,6 +92,7 @@ smc_cache_uninit(struct smc_cache *smc)
             smc_clear_entry(&(smc->buckets[i]), j);
         }
     }
+    atomic_count_set(&smc->n_entries, 0);
 }
 
 void

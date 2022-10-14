@@ -4777,6 +4777,7 @@ smc_insert(struct dp_netdev_pmd_thread *pmd,
         if (bucket->flow_idx[i] == UINT16_MAX) {
             bucket->sig[i] = sig;
             bucket->flow_idx[i] = index;
+            atomic_count_inc(&smc_cache->n_entries);
             return;
         }
     }
@@ -4784,6 +4785,7 @@ smc_insert(struct dp_netdev_pmd_thread *pmd,
     i = random_uint32() % SMC_ENTRY_PER_BUCKET;
     bucket->sig[i] = sig;
     bucket->flow_idx[i] = index;
+    atomic_count_inc(&smc_cache->n_entries);
 }
 
 inline void
