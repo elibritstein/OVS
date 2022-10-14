@@ -25,6 +25,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "ovs-atomic.h"
+
 #ifdef  __cplusplus
 extern "C" {
 #endif
@@ -98,6 +100,7 @@ struct emc_entry {
 struct emc_cache {
     struct emc_entry entries[EM_FLOW_HASH_ENTRIES];
     int sweep_idx;                /* For emc_cache_slow_sweep(). */
+    atomic_count n_entries;
 };
 
 struct smc_bucket {
@@ -130,6 +133,12 @@ void dfc_cache_uninit(struct dfc_cache *flow_cache);
 /* Check and clear dead flow references slowly (one entry at each
  * invocation).  */
 void emc_cache_slow_sweep(struct emc_cache *flow_cache);
+
+static inline unsigned int
+emc_cache_count(struct emc_cache *flow_cache)
+{
+    return atomic_count_get(&flow_cache->n_entries);
+}
 
 static inline bool
 emc_entry_alive(struct emc_entry *ce)

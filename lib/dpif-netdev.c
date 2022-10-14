@@ -4691,7 +4691,10 @@ emc_insert(struct emc_cache *cache, const struct netdev_flow_key *key,
     }
     /* We didn't find the miniflow in the cache.
      * The 'to_be_replaced' entry is where the new flow will be stored */
-
+    if (!emc_entry_alive(to_be_replaced)) {
+        /* Only count as new insertion if 'to_be_replaced' was not alive. */
+        atomic_count_inc(&cache->n_entries);
+    }
     emc_change_entry(to_be_replaced, flow, key);
 }
 

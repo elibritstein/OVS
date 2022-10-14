@@ -20,13 +20,15 @@
 
 #include "dpif-netdev-private-dfc.h"
 
-static void
+static bool
 emc_clear_entry(struct emc_entry *ce)
 {
     if (ce->flow) {
         dp_netdev_flow_unref(ce->flow);
         ce->flow = NULL;
+        return true;
     }
+    return false;
 }
 
 static void
@@ -47,6 +49,7 @@ emc_cache_init(struct emc_cache *flow_cache)
         flow_cache->entries[i].key.len = sizeof(struct miniflow);
         flowmap_init(&flow_cache->entries[i].key.mf.map);
     }
+    atomic_count_init(&flow_cache->n_entries, 0);
 }
 
 static void
@@ -75,6 +78,7 @@ emc_cache_uninit(struct emc_cache *flow_cache)
     for (i = 0; i < ARRAY_SIZE(flow_cache->entries); i++) {
         emc_clear_entry(&flow_cache->entries[i]);
     }
+    atomic_count_set(&flow_cache->n_entries, 0);
 }
 
 static void
@@ -104,7 +108,9 @@ emc_cache_slow_sweep(struct emc_cache *flow_cache)
     struct emc_entry *entry = &flow_cache->entries[flow_cache->sweep_idx];
 
     if (!emc_entry_alive(entry)) {
-        emc_clear_entry(entry);
+        if (emc_clear_entry(entry)) {
+            atomic_count_dec(&flow_cache->n_entries);
+        }
     }
     flow_cache->sweep_idx = (flow_cache->sweep_idx + 1) & EM_FLOW_HASH_MASK;
 }
