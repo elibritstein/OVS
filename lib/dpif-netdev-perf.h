@@ -63,6 +63,9 @@ enum pmd_stat_type {
     PMD_STAT_EXACT_HIT,     /* Packets that had an exact match (emc). */
     PMD_STAT_SMC_HIT,       /* Packets that had a sig match hit (SMC). */
     PMD_STAT_MASKED_HIT,    /* Packets that matched in the flow table. */
+    PMD_STAT_SIMPLE_MISS,   /* Packets that had a simple match miss. */
+    PMD_STAT_EXACT_MISS,    /* Packets that had an exact match miss (EMC). */
+    PMD_STAT_SMC_MISS,      /* Packets that had a sig match miss (SMC). */
     PMD_STAT_MISS,          /* Packets that did not match and upcall was ok. */
     PMD_STAT_LOST,          /* Packets that did not match and upcall failed. */
                             /* The above statistics account for the total

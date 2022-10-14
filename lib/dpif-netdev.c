@@ -11206,6 +11206,7 @@ smc_lookup_batch(struct dp_netdev_pmd_thread *pmd,
     }
 
     pmd_perf_update_counter(&pmd->perf_stats, PMD_STAT_SMC_HIT, n_smc_hit);
+    pmd_perf_update_counter(&pmd->perf_stats, PMD_STAT_SMC_MISS, n_missed);
 }
 
 struct dp_netdev_flow *
@@ -11342,6 +11343,7 @@ dfc_processing(struct dp_netdev_pmd_thread *pmd,
     const size_t cnt = dp_packet_batch_size(packets_);
     size_t n_missed = 0, n_emc_hit = 0, n_phwol_hit = 0;
     size_t n_mfex_opt_hit = 0, n_simple_hit = 0;
+    size_t n_emc_miss = 0, n_simple_miss = 0;
     struct dfc_cache *cache = &pmd->flow_cache;
     struct netdev_flow_key *key = &keys[0];
     struct dp_packet *packet;
@@ -11420,6 +11422,8 @@ dfc_processing(struct dp_netdev_pmd_thread *pmd,
                     e2e_cache_trace_add_flow(packet, &flow->mega_ufid);
                 }
                 continue;
+            } else {
+                n_simple_miss++;
             }
         }
 
@@ -11442,6 +11446,9 @@ dfc_processing(struct dp_netdev_pmd_thread *pmd,
                 e2e_cache_trace_add_flow(packet, &flow->mega_ufid);
             }
         } else {
+            if (cur_min != 0) {
+                n_emc_miss++;
+            }
             /* Exact match cache missed. Group missed packets together at
              * the beginning of the 'packets' array. */
             dp_packet_batch_refill(packets_, packet, i);
@@ -11470,7 +11477,10 @@ dfc_processing(struct dp_netdev_pmd_thread *pmd,
                             n_mfex_opt_hit);
     pmd_perf_update_counter(&pmd->perf_stats, PMD_STAT_SIMPLE_HIT,
                             n_simple_hit);
+    pmd_perf_update_counter(&pmd->perf_stats, PMD_STAT_SIMPLE_MISS,
+                            n_simple_miss);
     pmd_perf_update_counter(&pmd->perf_stats, PMD_STAT_EXACT_HIT, n_emc_hit);
+    pmd_perf_update_counter(&pmd->perf_stats, PMD_STAT_EXACT_MISS, n_emc_miss);
 
     if (!smc_enable_db) {
         return dp_packet_batch_size(packets_);
