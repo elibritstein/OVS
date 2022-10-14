@@ -2713,11 +2713,88 @@ METRICS_ENTRIES(foreach_poll_threads_dbg, poll_threads_dbg_entries,
         "Average number of idle CPU cycles."),
 );
 
+enum {
+    PMD_METRICS_SIMPLE_N_ENTRIES,
+    PMD_METRICS_SIMPLE_N_HIT,
+    PMD_METRICS_SIMPLE_N_MISS,
+    PMD_METRICS_SIMPLE_N_UPDATES,
+    PMD_METRICS_EMC_N_ENTRIES,
+    PMD_METRICS_EMC_N_HIT,
+    PMD_METRICS_EMC_N_MISS,
+    PMD_METRICS_EMC_N_UPDATES,
+    PMD_METRICS_SMC_N_ENTRIES,
+    PMD_METRICS_SMC_N_HIT,
+    PMD_METRICS_SMC_N_MISS,
+    PMD_METRICS_SMC_N_UPDATES,
+};
+
+static void
+poll_threads_cache_read_value(double *values, void *it)
+{
+    struct dp_netdev_pmd_thread *pmd = it;
+    uint64_t stats[PMD_N_STATS];
+
+    for (int i = 0; i < PMD_N_STATS; i++) {
+        atomic_read_relaxed(&pmd->perf_stats.counters.n[i], &stats[i]);
+    }
+
+    values[PMD_METRICS_SIMPLE_N_ENTRIES] =
+        cmap_count(&pmd->simple_match_table);
+    values[PMD_METRICS_SIMPLE_N_HIT] = stats[PMD_STAT_SIMPLE_HIT];
+    values[PMD_METRICS_SIMPLE_N_MISS] = stats[PMD_STAT_SIMPLE_MISS];
+    values[PMD_METRICS_SIMPLE_N_UPDATES] = stats[PMD_STAT_SIMPLE_UPDATE];
+
+    values[PMD_METRICS_EMC_N_ENTRIES] =
+        emc_cache_count(&(pmd->flow_cache).emc_cache);
+    values[PMD_METRICS_EMC_N_HIT] = stats[PMD_STAT_EXACT_HIT];
+    values[PMD_METRICS_EMC_N_MISS] = stats[PMD_STAT_EXACT_MISS];
+    values[PMD_METRICS_EMC_N_UPDATES] = stats[PMD_STAT_EXACT_UPDATE];
+
+    values[PMD_METRICS_SMC_N_ENTRIES] =
+        smc_cache_count(&(pmd->flow_cache).smc_cache);
+    values[PMD_METRICS_SMC_N_HIT] = stats[PMD_STAT_SMC_HIT];
+    values[PMD_METRICS_SMC_N_MISS] = stats[PMD_STAT_SMC_MISS];
+    values[PMD_METRICS_SMC_N_UPDATES] = stats[PMD_STAT_SMC_UPDATE];
+}
+
+METRICS_ENTRIES(foreach_poll_threads_ext, poll_threads_cache_entries,
+    "poll_threads_cache", poll_threads_cache_read_value,
+    /* Simple match cache. */
+    [PMD_METRICS_SIMPLE_N_ENTRIES] = METRICS_GAUGE(simple_n_entries,
+        "Number of entries in the simple match cache."),
+    [PMD_METRICS_SIMPLE_N_HIT] = METRICS_COUNTER(simple_n_hit,
+        "Number of lookup hit in the simple match cache."),
+    [PMD_METRICS_SIMPLE_N_MISS] = METRICS_COUNTER(simple_n_miss,
+        "Number of lookup miss in the simple match cache."),
+    [PMD_METRICS_SIMPLE_N_UPDATES] = METRICS_COUNTER(simple_n_updates,
+        "Number of updates of the simple match cache."),
+    /* Exact match cache. */
+    [PMD_METRICS_EMC_N_ENTRIES] = METRICS_GAUGE(emc_n_entries,
+        "Number of entries in the exact match cache."),
+    [PMD_METRICS_EMC_N_HIT] = METRICS_COUNTER(emc_n_hit,
+        "Number of lookup hit in the exact match cache."),
+    [PMD_METRICS_EMC_N_MISS] = METRICS_COUNTER(emc_n_miss,
+        "Number of lookup miss in the exact match cache."),
+    [PMD_METRICS_EMC_N_UPDATES] = METRICS_COUNTER(emc_n_updates,
+        "Number of updates of the exact match cache."),
+    /* Signature match cache. */
+    [PMD_METRICS_SMC_N_ENTRIES] = METRICS_GAUGE(smc_n_entries,
+        "Number of entries in the signature match cache."),
+    [PMD_METRICS_SMC_N_HIT] = METRICS_COUNTER(smc_n_hit,
+        "Number of lookup hit in the signature match cache."),
+    [PMD_METRICS_SMC_N_MISS] = METRICS_COUNTER(smc_n_miss,
+        "Number of lookup miss in the signature match cache."),
+    [PMD_METRICS_SMC_N_UPDATES] = METRICS_COUNTER(smc_n_updates,
+        "Number of updates of the signature match cache."),
+);
+
+
 static void
 dpif_netdev_metrics_register(void)
 {
     METRICS_REGISTER(poll_threads_entries);
     METRICS_REGISTER(poll_threads_dbg_entries);
+    METRICS_REGISTER(poll_threads_cache_entries);
 }
 
 static void
