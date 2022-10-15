@@ -75,6 +75,9 @@ enum pmd_stat_type {
     PMD_STAT_MASKED_LOOKUP, /* Number of subtable lookups for flow table
                                hits. Each MASKED_HIT hit will have >= 1
                                MASKED_LOOKUP(s). */
+    PMD_STAT_SIMPLE_UPDATE, /* Updates on the simple match cache. */
+    PMD_STAT_EXACT_UPDATE,  /* Updates on the exact match cache (EMC). */
+    PMD_STAT_SMC_UPDATE,    /* Updates on the sig match cache (SMC). */
     PMD_STAT_RECV,          /* Packets entering the datapath pipeline from an
                              * interface. */
     PMD_STAT_RECIRC,        /* Packets reentering the datapath pipeline due to
