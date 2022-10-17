@@ -16,8 +16,10 @@
 
 #include <config.h>
 
-#include "metrics.h"
+#include "coverage.h"
+#include "dpif-metrics.h"
 #include "dpif.h"
+#include "metrics.h"
 #include "sset.h"
 
 METRICS_SUBSYSTEM(dpif);
@@ -58,3 +60,87 @@ do_foreach_dpif(metrics_visitor_fn visitor,
 
 METRICS_COLLECTION(dpif, foreach_dpif, do_foreach_dpif, "datapath");
 METRICS_COLLECTION(dpif, foreach_dpif_nolabel, do_foreach_dpif, NULL);
+
+enum {
+    DPIF_N_DESTROY,
+    DPIF_N_PORT_ADD,
+    DPIF_N_PORT_DEL,
+    DPIF_N_FLOW_FLUSH,
+    DPIF_N_FLOW_GET,
+    DPIF_N_FLOW_PUT,
+    DPIF_N_FLOW_DEL,
+    DPIF_N_EXECUTE,
+    DPIF_N_PURGE,
+    DPIF_N_EXECUTE_WITH_HELP,
+    DPIF_N_METER_SET,
+    DPIF_N_METER_GET,
+    DPIF_N_METER_DEL,
+};
+
+static void
+dpif_read_value(double *values, void *it OVS_UNUSED)
+{
+    char *names[] = {
+        [DPIF_N_DESTROY] = "dpif_destroy",
+        [DPIF_N_PORT_ADD] = "dpif_port_add",
+        [DPIF_N_PORT_DEL] = "dpif_port_del",
+        [DPIF_N_FLOW_FLUSH] = "dpif_flow_flush",
+        [DPIF_N_FLOW_GET] = "dpif_flow_get",
+        [DPIF_N_FLOW_PUT] = "dpif_flow_put",
+        [DPIF_N_FLOW_DEL] = "dpif_flow_del",
+        [DPIF_N_EXECUTE] = "dpif_execute",
+        [DPIF_N_PURGE] = "dpif_purge",
+        [DPIF_N_EXECUTE_WITH_HELP] = "dpif_execute_with_help",
+        [DPIF_N_METER_SET] = "dpif_meter_set",
+        [DPIF_N_METER_GET] = "dpif_meter_get",
+        [DPIF_N_METER_DEL] = "dpif_meter_del",
+    };
+    size_t i;
+
+    for (i = 0; i < ARRAY_SIZE(names); i++) {
+        unsigned long long int count;
+
+        if (coverage_read_counter(names[i], &count)) {
+            values[i] = count;
+        } else {
+            values[i] = 0;
+        }
+    }
+}
+
+METRICS_COND(dpif, dpif_dbg, metrics_dbg_enabled);
+METRICS_ENTRIES(dpif_dbg, dpif_entries,
+    "dpif", dpif_read_value,
+    [DPIF_N_DESTROY] = METRICS_COUNTER(n_destroy,
+        "Number of datapath deletion done."),
+    [DPIF_N_PORT_ADD] = METRICS_COUNTER(n_port_add,
+        "Number of port add operations done in all dpif."),
+    [DPIF_N_PORT_DEL] = METRICS_COUNTER(n_port_del,
+        "Number of port del operations done in all dpif."),
+    [DPIF_N_FLOW_FLUSH] = METRICS_COUNTER(n_flow_flush,
+        "Number of flow flush operations done in all dpif."),
+    [DPIF_N_FLOW_GET] = METRICS_COUNTER(n_flow_get,
+        "Number of flow queries done in all dpif."),
+    [DPIF_N_FLOW_PUT] = METRICS_COUNTER(n_flow_put,
+        "Number of flow addition or modification in all dpif."),
+    [DPIF_N_FLOW_DEL] = METRICS_COUNTER(n_flow_del,
+        "Number of flow deletion operations done in all dpif."),
+    [DPIF_N_EXECUTE] = METRICS_COUNTER(n_execute,
+        "Number of 'execute' calls made on packets in all dpif."),
+    [DPIF_N_PURGE] = METRICS_COUNTER(n_purge,
+        "Number of purge done in all dpif."),
+    [DPIF_N_EXECUTE_WITH_HELP] = METRICS_COUNTER(n_execute_with_help,
+        "Number of 'execute' split between userspace and dpif for all dpif."),
+    [DPIF_N_METER_SET] = METRICS_COUNTER(n_meter_set,
+        "Number of addition or modification of a meter in all dpif."),
+    [DPIF_N_METER_GET] = METRICS_COUNTER(n_meter_get,
+        "Number of meter queries in all dpif."),
+    [DPIF_N_METER_DEL] = METRICS_COUNTER(n_meter_del,
+        "Number of meter deletions in all dpif."),
+);
+
+void
+dpif_metrics_register(void)
+{
+    METRICS_REGISTER(dpif_entries);
+}

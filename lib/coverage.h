@@ -91,4 +91,7 @@ void coverage_clear(void);
 void coverage_try_clear(void);
 void coverage_run(void);
 
+bool coverage_read_counter(const char *name,
+                           unsigned long long int *count);
+
 #endif /* coverage.h */

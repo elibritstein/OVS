@@ -26,6 +26,7 @@
 #include "coverage.h"
 #include "dp-packet.h"
 #include "dpctl.h"
+#include "dpif-metrics.h"
 #include "dpif-netdev.h"
 #include "flow.h"
 #include "netdev-provider.h"
@@ -117,6 +118,7 @@ dp_initialize(void)
 
         tnl_conf_seq = seq_create();
         dpctl_unixctl_register();
+        dpif_metrics_register();
         tnl_port_map_init();
         tnl_neigh_cache_init();
         route_table_init();

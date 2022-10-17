@@ -44,8 +44,6 @@ static unsigned int idx_count = 0;
 static void coverage_read(struct svec *);
 static unsigned int coverage_array_sum(const unsigned int *arr,
                                        const unsigned int len);
-static bool coverage_read_counter(const char *name,
-                                  unsigned long long int *count);
 
 /* Registers a coverage counter with the coverage core */
 void
@@ -396,7 +394,7 @@ coverage_array_sum(const unsigned int *arr, const unsigned int len)
     return sum;
 }
 
-static bool
+bool
 coverage_read_counter(const char *name, unsigned long long int *count)
 {
     for (size_t i = 0; i < n_coverage_counters; i++) {
