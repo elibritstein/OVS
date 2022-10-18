@@ -92,6 +92,7 @@ METRICS_ENTRIES(foreach_dpif_backer, datapath_entries,
 );
 
 METRICS_DECLARE(udpif_entries);
+METRICS_DECLARE(udpif_total_entries);
 
 void
 ofproto_dpif_metrics_register(void)
@@ -104,4 +105,5 @@ ofproto_dpif_metrics_register(void)
 
     METRICS_REGISTER(datapath_entries);
     METRICS_REGISTER(udpif_entries);
+    METRICS_REGISTER(udpif_total_entries);
 }

@@ -3700,6 +3700,36 @@ udpif_flow_unprogram(struct udpif *udpif, struct udpif_key *ukey,
     return opsp->error;
 }
 
+enum {
+    OF_DPIF_TOTAL_HANDLERS,
+    OF_DPIF_TOTAL_REVALIDATORS,
+};
+
+static void
+udpif_total_read_value(double *values, void *it OVS_UNUSED)
+{
+    uint32_t n_handlers_, n_revalidators_;
+    struct udpif *udpif;
+
+    n_handlers_ = 0;
+    n_revalidators_ = 0;
+    LIST_FOR_EACH (udpif, list_node, &all_udpifs) {
+        n_handlers_ += udpif->n_handlers;
+        n_revalidators_ += udpif->n_revalidators;
+    }
+
+    values[OF_DPIF_TOTAL_HANDLERS] = n_handlers_;
+    values[OF_DPIF_TOTAL_REVALIDATORS] = n_revalidators_;
+}
+
+METRICS_ENTRIES(ofproto_dpif, udpif_total_entries,
+    "", udpif_total_read_value,
+    [OF_DPIF_TOTAL_HANDLERS] = METRICS_GAUGE(handler_n_threads,
+        "Number of upcall handler threads in total."),
+    [OF_DPIF_TOTAL_REVALIDATORS] = METRICS_GAUGE(revalidator_n_threads,
+        "Number of revalidator threads in total."),
+);
+
 static void
 do_foreach_udpif(metrics_visitor_fn visitor,
                  struct metrics_visitor_context *ctx,
