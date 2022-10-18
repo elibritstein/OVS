@@ -424,6 +424,11 @@ metrics_header_add_line(struct metrics_header *hdr,
                         struct metrics_visitor_context *ctx,
                         double value)
 {
+    /* If possible, do not format the values using the exponent
+     * form, as it will lose information.
+     * The full mantissa is at most 53 bits,
+     *   log(2**53) ~= 16
+     */
     struct metrics_line *line;
 
     line = xcalloc(1, sizeof *line);
@@ -433,7 +438,8 @@ metrics_header_add_line(struct metrics_header *hdr,
         ds_put_cstr(&line->s, prefix);
     }
     metrics_visitor_labels_format(ctx, &line->s);
-    ds_put_format(&line->s, " %.10g\n", value);
+    /* Request FP-formatting as integer up to 16 digits. */
+    ds_put_format(&line->s, " %.16g\n", value);
 
     ovs_list_init(&line->next);
     ovs_list_push_back(&hdr->lines, &line->next);

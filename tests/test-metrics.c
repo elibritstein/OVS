@@ -44,8 +44,11 @@ static void
 flat_entries_read_value(double *values,
                         void *it OVS_UNUSED)
 {
-    values[M] = 42;
-    values[N] = 24.48;
+    /* Test formatting of values up to 2**53: */
+    /* This one should be written as integer. */
+    values[M] = 9007199254740992.0;
+    /* This one should be written in exponent form. */
+    values[N] = 9007199254740992.0 * 2.0;
     values[O] = 0xbaadfeed;
     values[P] = 3.14;
     values[NAME] = 1.0;
