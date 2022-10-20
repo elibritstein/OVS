@@ -4110,13 +4110,11 @@ map_sflow_attr(struct flow_actions *actions,
             cookie = nl_attr_get(nla);
             if (cookie->type == USER_ACTION_COOKIE_SFLOW) {
                 sflow_attr->userdata_len = nl_attr_get_size(nla);
+                memset(&sflow_ctx, 0, sizeof sflow_ctx);
                 sflow_ctx.sflow_attr = *sflow_attr;
                 sflow_ctx.cookie = *cookie;
                 if (act_vars->tnl_type != TNL_TYPE_NONE) {
                     memcpy(&sflow_ctx.sflow_tnl, act_vars->tnl_key,
-                           sizeof sflow_ctx.sflow_tnl);
-                } else {
-                    memset(&sflow_ctx.sflow_tnl, 0,
                            sizeof sflow_ctx.sflow_tnl);
                 }
                 if (!get_sflow_id(&sflow_ctx, &act_resources->sflow_id) &&
@@ -4704,9 +4702,8 @@ add_tnl_pop_action(struct netdev *netdev,
         return -1;
     }
     port = nl_attr_get_odp_port(nla);
+    memset(&miss_ctx, 0, sizeof miss_ctx);
     miss_ctx.vport = port;
-    miss_ctx.recirc_id = 0;
-    memset(&miss_ctx.tnl, 0, sizeof miss_ctx.tnl);
     miss_ctx.skip_actions = act_vars->pre_ct_cnt;
     if (get_table_id(port, 0, netdev, act_vars->is_e2e_cache,
                      &act_resources->next_table_id)) {
@@ -4735,14 +4732,13 @@ add_recirc_action(struct netdev *netdev,
         VLOG_DBG_RL(&rl, "cannot offload sFlow with jump");
         return -1;
     }
+    memset(&miss_ctx, 0, sizeof miss_ctx);
     miss_ctx.vport = act_vars->vport;
     miss_ctx.recirc_id = nl_attr_get_u32(nla);
     miss_ctx.skip_actions = act_vars->pre_ct_cnt;
     if (act_vars->vport != ODPP_NONE) {
         get_tnl_masked(&miss_ctx.tnl, NULL, act_vars->tnl_key,
                        &act_vars->tnl_mask);
-    } else {
-        memset(&miss_ctx.tnl, 0, sizeof miss_ctx.tnl);
     }
     if (get_table_id(act_vars->vport, miss_ctx.recirc_id,
                      netdev, act_vars->is_e2e_cache,
