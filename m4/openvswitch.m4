@@ -691,3 +691,13 @@ AC_DEFUN([OVS_CHECK_UNWIND],
    fi
    AM_CONDITIONAL([HAVE_UNWIND], [test "$HAVE_UNWIND" = yes])
    AC_SUBST([HAVE_UNWIND])])
+
+dnl Checks for dl library.
+AC_DEFUN([OVS_CHECK_DL],
+  [AC_CHECK_LIB(dl, dlopen, [HAVE_DL=yes], [HAVE_DL=no])
+   if test "$HAVE_DL" = yes; then
+     AC_DEFINE([HAVE_DL], [1], [Define to 1 if dl is detected.])
+     LIBS="$LIBS -ldl"
+   fi
+   AM_CONDITIONAL([HAVE_DL], [test "$HAVE_DL" = yes])
+   AC_SUBST([HAVE_DL])])
