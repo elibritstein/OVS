@@ -57,4 +57,11 @@ void memory_wait(void);
 bool memory_should_report(void);
 void memory_report(const struct simap *usage);
 
+/* If the in-use memory measure is available,
+ * returns true and set 'n_bytes' to the amount
+ * of currently allocated dynamic memory.
+ * Returns false if not available. */
+bool memory_in_use(size_t *n_bytes);
+bool memory_frag_factor(double *frag);
+
 #endif /* memory.h */

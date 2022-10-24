@@ -15,10 +15,16 @@
  */
 
 #include <config.h>
+
+#ifdef __linux__
+#include <unistd.h>
+#endif
+
 #include "memory.h"
 #include <stdbool.h>
 #include <sys/time.h>
 #include <sys/resource.h>
+#include "introspect.h"
 #include "openvswitch/dynamic-string.h"
 #include "openvswitch/poll-loop.h"
 #include "simap.h"
@@ -179,3 +185,107 @@ memory_init(void)
         next_check = time_boot_msec() + MEMORY_CHECK_INTERVAL;
     }
 }
+
+#if defined(__linux__) && defined(__GLIBC__)
+
+struct memory_measure {
+    size_t vms; /* Total size in bytes. */
+    size_t rss; /* RSS in bytes. */
+    size_t shared; /* Resident shared pages: RssFile+RssShmem in bytes. */
+    size_t text; /* Text size of the process (code) in bytes. */
+    size_t data; /* (data + stack) size of the process in bytes. */
+    size_t in_use; /* Internal measure of used memory in bytes. */
+};
+
+static bool
+introspect_enabled(void *it OVS_UNUSED)
+{
+    return introspect_used_memory(NULL);
+}
+
+static bool
+memory_read_statm(struct memory_measure *m)
+{
+    size_t pagesize = get_page_size();
+    FILE *stream;
+    int n;
+
+    stream = fopen("/proc/self/statm", "r");
+    if (!stream) {
+        return false;
+    }
+
+    n = fscanf(stream,
+            "%lu"  /* vmSize */
+            "%lu"  /* RSSize */
+            "%lu"  /* Shared */
+            "%lu"  /* Text */
+            "%*d"  /* (lib) */
+            "%lu"  /* Data + stack */
+            "%*d"  /* (dirty pages) */
+            , &m->vms, &m->rss,
+            &m->shared, &m->text, &m->data);
+
+    fclose(stream);
+
+    if (n != 5) {
+        return false;
+    }
+
+    m->vms *= pagesize;
+    m->rss *= pagesize;
+    m->shared *= pagesize;
+    m->text *= pagesize;
+    m->data *= pagesize;
+
+    return true;
+}
+
+static void
+memory_measure_read(struct memory_measure *m)
+{
+    memset(m, 0, sizeof(*m));
+    memory_read_statm(m);
+    memory_in_use(&m->in_use);
+}
+
+bool
+memory_in_use(size_t *n_bytes)
+{
+    return introspect_used_memory(n_bytes);
+}
+
+bool
+memory_frag_factor(double *frag)
+{
+    struct memory_measure m;
+
+    if (!introspect_enabled(NULL)) {
+        return false;
+    }
+
+    memory_measure_read(&m);
+
+    if (m.in_use > 0.0) {
+        *frag = (double) m.rss / (double) m.in_use;
+    } else {
+        *frag = 0.0;
+    }
+    return true;
+}
+
+#else /* !__linux__ || !__GLIBC__ */
+
+bool
+memory_in_use(size_t *n_bytes OVS_UNUSED)
+{
+    return false;
+}
+
+bool
+memory_frag_factor(double *frag OVS_UNUSED)
+{
+    return false;
+}
+
+#endif /* __linux__ && __GLIBC__ */

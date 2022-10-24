@@ -473,6 +473,7 @@ tests_ovstest_SOURCES = \
 	tests/test-jsonrpc.c \
 	tests/test-list.c \
 	tests/test-lockfile.c \
+	tests/test-memory.c \
 	tests/test-metrics.c \
 	tests/test-multipath.c \
 	tests/test-mpsc-queue.c \

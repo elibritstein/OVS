@@ -292,3 +292,9 @@ AT_CLEANUP
 AT_SETUP([metrics framework])
 AT_CHECK([ovstest test-metrics > /dev/null], [0], [])
 AT_CLEANUP
+
+AT_SETUP([memory introspection])
+AT_SKIP_IF([test "$IS_WIN32" = "yes"])
+AT_SKIP_IF([test "$IS_BSD" = "yes"])
+AT_CHECK([ovstest test-memory], [0])
+AT_CLEANUP
