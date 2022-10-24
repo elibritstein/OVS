@@ -27,6 +27,7 @@
 #include "introspect.h"
 #include "openvswitch/dynamic-string.h"
 #include "openvswitch/poll-loop.h"
+#include "metrics.h"
 #include "simap.h"
 #include "timeval.h"
 #include "unixctl.h"
@@ -173,6 +174,9 @@ memory_unixctl_show(struct unixctl_conn *conn, int argc OVS_UNUSED,
 }
 
 static void
+memory_metrics_register(void);
+
+static void
 memory_init(void)
 {
     static bool inited = false;
@@ -181,6 +185,7 @@ memory_init(void)
         inited = true;
         unixctl_command_register("memory/show", "", 0, 0,
                                  memory_unixctl_show, NULL);
+        memory_metrics_register();
 
         next_check = time_boot_msec() + MEMORY_CHECK_INTERVAL;
     }
@@ -274,6 +279,68 @@ memory_frag_factor(double *frag)
     return true;
 }
 
+METRICS_SUBSYSTEM(memory);
+
+enum {
+    MEMORY_VMS,
+    MEMORY_RSS,
+    MEMORY_DATA,
+};
+
+static void
+memory_read_value(double *values, void *it OVS_UNUSED)
+{
+    struct memory_measure m;
+
+    memory_measure_read(&m);
+
+    values[MEMORY_VMS] = m.vms;
+    values[MEMORY_RSS] = m.rss;
+    values[MEMORY_DATA] = m.data;
+}
+
+METRICS_ENTRIES(memory, memory_entries,
+    "memory", memory_read_value,
+    [MEMORY_VMS] = METRICS_GAUGE(vmsize,
+        "The process virtual memory size in bytes."),
+    [MEMORY_RSS] = METRICS_GAUGE(rss,
+        "The process resident set size in bytes."),
+    [MEMORY_DATA] = METRICS_GAUGE(data,
+        "The process sum of data and stack size in bytes."),
+);
+
+enum {
+    MEMORY_IN_USE,
+    MEMORY_FRAG_FACTOR,
+};
+
+static void
+memory_introspect_read_value(double *values, void *it OVS_UNUSED)
+{
+    struct memory_measure m;
+    double frag = 0.0;
+
+    memory_measure_read(&m);
+
+    if (m.in_use > 0.0) {
+        frag = (double) m.rss / (double) m.in_use;
+    }
+
+    values[MEMORY_IN_USE] = m.in_use;
+    values[MEMORY_FRAG_FACTOR] = frag;
+}
+
+METRICS_COND(memory, memory_introspect,
+             introspect_enabled);
+METRICS_ENTRIES(memory_introspect, memory_introspect_entries,
+    "memory", memory_introspect_read_value,
+    [MEMORY_IN_USE] = METRICS_GAUGE(in_use,
+        "The amount of memory currently allocated in bytes."),
+    [MEMORY_FRAG_FACTOR] = METRICS_GAUGE(frag_factor,
+        "The fragmentation factor of the process dynamic memory, "
+        "defined as (rss/in_use)."),
+);
+
 #else /* !__linux__ || !__GLIBC__ */
 
 bool
@@ -289,3 +356,17 @@ memory_frag_factor(double *frag OVS_UNUSED)
 }
 
 #endif /* __linux__ && __GLIBC__ */
+
+static void
+memory_metrics_register(void)
+{
+    static bool inited = false;
+
+    if (!inited) {
+#if defined(__linux__) && defined(__GLIBC__)
+        METRICS_REGISTER(memory_entries);
+        METRICS_REGISTER(memory_introspect_entries);
+#endif
+        inited = true;
+    }
+}
