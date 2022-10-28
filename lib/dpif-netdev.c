@@ -194,6 +194,7 @@ struct dp_packet_flow_map {
 
 static void dpcls_init(struct dpcls *);
 static void dpcls_destroy(struct dpcls *);
+static unsigned int dpcls_count(struct dpcls *);
 static void dpcls_sort_subtable_vector(struct dpcls *);
 static uint32_t dpcls_subtable_lookup_reprobe(struct dpcls *cls);
 static void dpcls_insert(struct dpcls *, struct dpcls_rule *,
@@ -2726,6 +2727,10 @@ enum {
     PMD_METRICS_SMC_N_HIT,
     PMD_METRICS_SMC_N_MISS,
     PMD_METRICS_SMC_N_UPDATES,
+    PMD_METRICS_CLS_N_ENTRIES,
+    PMD_METRICS_CLS_N_HIT,
+    PMD_METRICS_CLS_N_MISS,
+    PMD_METRICS_CLS_N_UPDATES,
 };
 
 static void
@@ -2733,6 +2738,8 @@ poll_threads_cache_read_value(double *values, void *it)
 {
     struct dp_netdev_pmd_thread *pmd = it;
     uint64_t stats[PMD_N_STATS];
+    unsigned int pmd_n_cls_rules;
+    struct dpcls *cls;
 
     for (int i = 0; i < PMD_N_STATS; i++) {
         atomic_read_relaxed(&pmd->perf_stats.counters.n[i], &stats[i]);
@@ -2755,6 +2762,17 @@ poll_threads_cache_read_value(double *values, void *it)
     values[PMD_METRICS_SMC_N_HIT] = stats[PMD_STAT_SMC_HIT];
     values[PMD_METRICS_SMC_N_MISS] = stats[PMD_STAT_SMC_MISS];
     values[PMD_METRICS_SMC_N_UPDATES] = stats[PMD_STAT_SMC_UPDATE];
+
+    pmd_n_cls_rules = 0;
+    CMAP_FOR_EACH (cls, node, &pmd->classifiers) {
+        pmd_n_cls_rules += dpcls_count(cls);
+    }
+
+    values[PMD_METRICS_CLS_N_ENTRIES] = pmd_n_cls_rules;
+    values[PMD_METRICS_CLS_N_HIT] = stats[PMD_STAT_MASKED_HIT];
+    values[PMD_METRICS_CLS_N_MISS] = stats[PMD_STAT_MASKED_LOOKUP] -
+                                     stats[PMD_STAT_MASKED_HIT];
+    values[PMD_METRICS_CLS_N_UPDATES] = stats[PMD_STAT_MASKED_UPDATE];
 }
 
 METRICS_ENTRIES(foreach_poll_threads_ext, poll_threads_cache_entries,
@@ -2786,6 +2804,15 @@ METRICS_ENTRIES(foreach_poll_threads_ext, poll_threads_cache_entries,
         "Number of lookup miss in the signature match cache."),
     [PMD_METRICS_SMC_N_UPDATES] = METRICS_COUNTER(smc_n_updates,
         "Number of updates of the signature match cache."),
+    /* Datapath classifiers. */
+    [PMD_METRICS_CLS_N_ENTRIES] = METRICS_GAUGE(cls_n_entries,
+        "Number of entries in the datapath classifiers."),
+    [PMD_METRICS_CLS_N_HIT] = METRICS_COUNTER(cls_n_hit,
+        "Number of lookup hit in the datapath classifiers."),
+    [PMD_METRICS_CLS_N_MISS] = METRICS_COUNTER(cls_n_miss,
+        "Number of lookup miss in the datapath classifiers."),
+    [PMD_METRICS_CLS_N_UPDATES] = METRICS_COUNTER(cls_n_updates,
+        "Number of updates of the datapath classifiers."),
 );
 
 
@@ -13112,6 +13139,19 @@ dpcls_destroy(struct dpcls *cls)
         cmap_destroy(&cls->subtables_map);
         pvector_destroy(&cls->subtables);
     }
+}
+
+static unsigned int
+dpcls_count(struct dpcls *cls)
+{
+    struct dpcls_subtable *subtable;
+    unsigned int count = 0;
+
+    CMAP_FOR_EACH (subtable, cmap_node, &cls->subtables_map) {
+        count += cmap_count(&subtable->rules);
+    }
+
+    return count;
 }
 
 static struct dpcls_subtable *
