@@ -2490,6 +2490,9 @@ metrics_dpif_is_netdev(void *it)
 METRICS_COND(foreach_dpif_nolabel, foreach_dpif_netdev,
              metrics_dpif_is_netdev);
 
+METRICS_COND(foreach_dpif_netdev, foreach_dpif_netdev_ext,
+             metrics_ext_enabled);
+
 static void
 poll_threads_n_read_value(double *values, void *it)
 {
@@ -2519,7 +2522,7 @@ do_foreach_poll_threads(metrics_visitor_fn visitor,
     labels[1].value = numa;
     CMAP_FOR_EACH (pmd, node, &dp->poll_threads) {
         if (pmd->core_id == NON_PMD_CORE_ID &&
-            !metrics_ext_enabled(NULL)) {
+            !metrics_dbg_enabled(NULL)) {
             /* By definition, if the core ID is not one of a PMD,
              * then it is not a poll thread (i.e. 'main').
              * Do not iterate on it as if it was one. */
@@ -2735,6 +2738,7 @@ enum {
     PMD_METRICS_CLS_N_HIT,
     PMD_METRICS_CLS_N_MISS,
     PMD_METRICS_CLS_N_UPDATES,
+    PMD_METRICS_N_CACHE_ENTRIES,
 };
 
 static void
@@ -2779,46 +2783,72 @@ poll_threads_cache_read_value(double *values, void *it)
     values[PMD_METRICS_CLS_N_UPDATES] = stats[PMD_STAT_MASKED_UPDATE];
 }
 
-METRICS_ENTRIES(foreach_poll_threads_ext, poll_threads_cache_entries,
-    "poll_threads_cache", poll_threads_cache_read_value,
-    /* Simple match cache. */
-    [PMD_METRICS_SIMPLE_N_ENTRIES] = METRICS_GAUGE(simple_n_entries,
-        "Number of entries in the simple match cache."),
-    [PMD_METRICS_SIMPLE_N_HIT] = METRICS_COUNTER(simple_n_hit,
-        "Number of lookup hit in the simple match cache."),
-    [PMD_METRICS_SIMPLE_N_MISS] = METRICS_COUNTER(simple_n_miss,
-        "Number of lookup miss in the simple match cache."),
-    [PMD_METRICS_SIMPLE_N_UPDATES] = METRICS_COUNTER(simple_n_updates,
-        "Number of updates of the simple match cache."),
-    /* Exact match cache. */
-    [PMD_METRICS_EMC_N_ENTRIES] = METRICS_GAUGE(emc_n_entries,
-        "Number of entries in the exact match cache."),
-    [PMD_METRICS_EMC_N_HIT] = METRICS_COUNTER(emc_n_hit,
-        "Number of lookup hit in the exact match cache."),
-    [PMD_METRICS_EMC_N_MISS] = METRICS_COUNTER(emc_n_miss,
-        "Number of lookup miss in the exact match cache."),
-    [PMD_METRICS_EMC_N_UPDATES] = METRICS_COUNTER(emc_n_updates,
-        "Number of updates of the exact match cache."),
-    /* Signature match cache. */
-    [PMD_METRICS_SMC_N_ENTRIES] = METRICS_GAUGE(smc_n_entries,
-        "Number of entries in the signature match cache."),
-    [PMD_METRICS_SMC_N_HIT] = METRICS_COUNTER(smc_n_hit,
-        "Number of lookup hit in the signature match cache."),
-    [PMD_METRICS_SMC_N_MISS] = METRICS_COUNTER(smc_n_miss,
-        "Number of lookup miss in the signature match cache."),
-    [PMD_METRICS_SMC_N_UPDATES] = METRICS_COUNTER(smc_n_updates,
-        "Number of updates of the signature match cache."),
-    /* Datapath classifiers. */
-    [PMD_METRICS_CLS_N_ENTRIES] = METRICS_GAUGE(cls_n_entries,
-        "Number of entries in the datapath classifiers."),
-    [PMD_METRICS_CLS_N_HIT] = METRICS_COUNTER(cls_n_hit,
-        "Number of lookup hit in the datapath classifiers."),
-    [PMD_METRICS_CLS_N_MISS] = METRICS_COUNTER(cls_n_miss,
-        "Number of lookup miss in the datapath classifiers."),
-    [PMD_METRICS_CLS_N_UPDATES] = METRICS_COUNTER(cls_n_updates,
+/* Use a single point of definition for the cache entries to enforce
+ * strict alignment between 'datapath_cache' and 'poll_threads_cache'
+ * metrics. */
+#define PMD_METRICS_CACHE_ENTRIES                                      \
+    /* Simple match cache. */                                          \
+    [PMD_METRICS_SIMPLE_N_ENTRIES] = METRICS_GAUGE(simple_n_entries,   \
+        "Number of entries in the simple match cache."),               \
+    [PMD_METRICS_SIMPLE_N_HIT] = METRICS_COUNTER(simple_n_hit,         \
+        "Number of lookup hit in the simple match cache."),            \
+    [PMD_METRICS_SIMPLE_N_MISS] = METRICS_COUNTER(simple_n_miss,       \
+        "Number of lookup miss in the simple match cache."),           \
+    [PMD_METRICS_SIMPLE_N_UPDATES] = METRICS_COUNTER(simple_n_updates, \
+        "Number of updates of the simple match cache."),               \
+    /* Exact match cache. */                                           \
+    [PMD_METRICS_EMC_N_ENTRIES] = METRICS_GAUGE(emc_n_entries,         \
+        "Number of entries in the exact match cache."),                \
+    [PMD_METRICS_EMC_N_HIT] = METRICS_COUNTER(emc_n_hit,               \
+        "Number of lookup hit in the exact match cache."),             \
+    [PMD_METRICS_EMC_N_MISS] = METRICS_COUNTER(emc_n_miss,             \
+        "Number of lookup miss in the exact match cache."),            \
+    [PMD_METRICS_EMC_N_UPDATES] = METRICS_COUNTER(emc_n_updates,       \
+        "Number of updates of the exact match cache."),                \
+    /* Signature match cache. */                                       \
+    [PMD_METRICS_SMC_N_ENTRIES] = METRICS_GAUGE(smc_n_entries,         \
+        "Number of entries in the signature match cache."),            \
+    [PMD_METRICS_SMC_N_HIT] = METRICS_COUNTER(smc_n_hit,               \
+        "Number of lookup hit in the signature match cache."),         \
+    [PMD_METRICS_SMC_N_MISS] = METRICS_COUNTER(smc_n_miss,             \
+        "Number of lookup miss in the signature match cache."),        \
+    [PMD_METRICS_SMC_N_UPDATES] = METRICS_COUNTER(smc_n_updates,       \
+        "Number of updates of the signature match cache."),            \
+    /* Datapath classifiers. */                                        \
+    [PMD_METRICS_CLS_N_ENTRIES] = METRICS_GAUGE(cls_n_entries,         \
+        "Number of entries in the datapath classifiers."),             \
+    [PMD_METRICS_CLS_N_HIT] = METRICS_COUNTER(cls_n_hit,               \
+        "Number of lookup hit in the datapath classifiers."),          \
+    [PMD_METRICS_CLS_N_MISS] = METRICS_COUNTER(cls_n_miss,             \
+        "Number of lookup miss in the datapath classifiers."),         \
+    [PMD_METRICS_CLS_N_UPDATES] = METRICS_COUNTER(cls_n_updates,       \
         "Number of updates of the datapath classifiers."),
-);
 
+METRICS_ENTRIES(foreach_poll_threads_dbg, poll_threads_cache_dbg_entries,
+    "poll_threads_cache", poll_threads_cache_read_value, PMD_METRICS_CACHE_ENTRIES);
+
+static void
+datapath_cache_read_value(double *values, void *it)
+{
+    double pmd_values[PMD_METRICS_N_CACHE_ENTRIES];
+    struct dp_netdev *dp = get_dp_netdev(it);
+    struct dp_netdev_pmd_thread *pmd;
+    int i;
+
+    for (i = 0; i < ARRAY_SIZE(pmd_values); i++) {
+        values[i] = 0.0;
+    }
+
+    CMAP_FOR_EACH (pmd, node, &dp->poll_threads) {
+        poll_threads_cache_read_value(pmd_values, pmd);
+        for (i = 0; i < ARRAY_SIZE(pmd_values); i++) {
+            values[i] += pmd_values[i];
+        }
+    }
+}
+
+METRICS_ENTRIES(foreach_dpif_netdev_ext, datapath_cache_ext_entries,
+    "datapath_cache", datapath_cache_read_value, PMD_METRICS_CACHE_ENTRIES);
 
 METRICS_DECLARE(hw_offload_threads_dbg_entries);
 METRICS_DECLARE(hw_offload_latency);
@@ -2827,9 +2857,10 @@ METRICS_DECLARE(datapath_hw_offload_entries);
 static void
 dpif_netdev_metrics_register(void)
 {
+    METRICS_REGISTER(datapath_cache_ext_entries);
     METRICS_REGISTER(poll_threads_entries);
     METRICS_REGISTER(poll_threads_dbg_entries);
-    METRICS_REGISTER(poll_threads_cache_entries);
+    METRICS_REGISTER(poll_threads_cache_dbg_entries);
     METRICS_REGISTER(hw_offload_threads_dbg_entries);
     METRICS_REGISTER(hw_offload_latency);
     METRICS_REGISTER(datapath_hw_offload_entries);
