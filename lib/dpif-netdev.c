@@ -4407,6 +4407,7 @@ dp_netdev_pmd_remove_flow(struct dp_netdev_pmd_thread *pmd,
     cls = dp_netdev_pmd_lookup_dpcls(pmd, in_port);
     ovs_assert(cls != NULL);
     dpcls_remove(cls, &flow->cr);
+    pmd_perf_update_counter(&pmd->perf_stats, PMD_STAT_MASKED_UPDATE, 1);
     dp_netdev_simple_match_remove(pmd, flow);
     cmap_remove(&pmd->flow_table, node, dp_netdev_flow_hash(&flow->ufid));
     ccmap_dec(&pmd->n_flows, odp_to_u32(in_port));
@@ -5529,6 +5530,7 @@ dp_netdev_flow_add(struct dp_netdev_pmd_thread *pmd,
     /* Select dpcls for in_port. Relies on in_port to be exact match. */
     cls = dp_netdev_pmd_find_dpcls(pmd, in_port);
     dpcls_insert(cls, &flow->cr, &mask);
+    pmd_perf_update_counter(&pmd->perf_stats, PMD_STAT_MASKED_UPDATE, 1);
 
     ds_put_cstr(&extra_info, "miniflow_bits(");
     FLOWMAP_FOR_EACH_UNIT (unit) {
