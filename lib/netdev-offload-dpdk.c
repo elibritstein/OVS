@@ -5891,10 +5891,10 @@ static void
 ct_tables_uninit(struct netdev *netdev, unsigned int tid);
 
 static int
-netdev_offload_dpdk_flow_flush__(struct netdev *netdev)
+flush_netdev_flows_in_related(struct netdev *netdev, struct netdev *related)
 {
     unsigned int tid = netdev_offload_thread_id();
-    struct cmap *map = offload_data_map(netdev);
+    struct cmap *map = offload_data_map(related);
     struct ufid_to_rte_flow_data *data;
 
     if (!map) {
@@ -5949,9 +5949,24 @@ flush_esw_members_cb(struct netdev *netdev,
         return false;
     }
 
-    if (netdev_offload_dpdk_flow_flush__(netdev)) {
+    if (flush_netdev_flows_in_related(netdev, netdev)) {
         aux->ret = -1;
         return true;
+    }
+
+    return false;
+}
+
+static bool
+flush_in_vport_cb(struct netdev *vport,
+                  odp_port_t odp_port OVS_UNUSED,
+                  void *aux)
+{
+    struct netdev *netdev = aux;
+
+    /* Only vports are related to physical devices. */
+    if (netdev_vport_is_vport_class(vport->netdev_class)) {
+        flush_netdev_flows_in_related(netdev, vport);
     }
 
     return false;
@@ -5965,12 +5980,13 @@ netdev_offload_dpdk_flow_flush(struct netdev *netdev)
         .ret = 0,
     };
 
-    if (netdev_offload_dpdk_flow_flush__(netdev)) {
+    if (flush_netdev_flows_in_related(netdev, netdev)) {
         return -1;
     }
 
     if (!netdev_vport_is_vport_class(netdev->netdev_class)) {
         netdev_ports_traverse(netdev->dpif_type, flush_esw_members_cb, &aux);
+        netdev_ports_traverse(netdev->dpif_type, flush_in_vport_cb, netdev);
     }
 
     return aux.ret;
