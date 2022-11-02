@@ -2817,12 +2817,17 @@ METRICS_ENTRIES(foreach_poll_threads_ext, poll_threads_cache_entries,
 );
 
 
+METRICS_DECLARE(hw_offload_threads_dbg_entries);
+METRICS_DECLARE(datapath_hw_offload_entries);
+
 static void
 dpif_netdev_metrics_register(void)
 {
     METRICS_REGISTER(poll_threads_entries);
     METRICS_REGISTER(poll_threads_dbg_entries);
     METRICS_REGISTER(poll_threads_cache_entries);
+    METRICS_REGISTER(hw_offload_threads_dbg_entries);
+    METRICS_REGISTER(datapath_hw_offload_entries);
 }
 
 static void
@@ -6355,6 +6360,124 @@ dpif_netdev_offload_stats_get(struct dpif *dpif,
 
     return 0;
 }
+
+static bool
+dpif_netdev_offload_enabled(void *it OVS_UNUSED)
+{
+    return netdev_is_flow_api_enabled();
+}
+
+METRICS_COND(foreach_dpif_netdev, dpif_netdev_offload,
+             dpif_netdev_offload_enabled);
+
+struct hw_offload_it {
+    struct dp_netdev *dp;
+    unsigned int tid;
+};
+
+static void
+do_foreach_hw_offload_threads(metrics_visitor_fn visitor,
+                              struct metrics_visitor_context *ctx,
+                              struct metrics_node *node,
+                              struct metrics_label *labels,
+                              size_t n OVS_UNUSED)
+{
+    struct hw_offload_it it;
+    unsigned int tid;
+    char id[50];
+
+    it.dp = get_dp_netdev(ctx->it);
+    labels[0].value = id;
+    for (tid = 0; tid < netdev_offload_thread_nb(); tid++) {
+        snprintf(id, sizeof id, "%u", tid);
+        it.tid = tid;
+        ctx->it = &it;
+        visitor(ctx, node);
+    }
+}
+
+METRICS_COLLECTION(dpif_netdev_offload, foreach_hw_offload_threads,
+                   do_foreach_hw_offload_threads, "id");
+METRICS_COND(foreach_hw_offload_threads, foreach_hw_offload_threads_dbg,
+             metrics_dbg_enabled);
+
+enum {
+    HWOL_METRICS_ENQUEUED,
+    HWOL_METRICS_INSERTED,
+    HWOL_METRICS_CT_UNIDIR,
+    HWOL_METRICS_CT_BIDIR,
+    HWOL_METRICS_N_ENTRIES,
+};
+
+#define HWOL_METRICS_ENTRIES \
+    [HWOL_METRICS_ENQUEUED] = METRICS_GAUGE(n_enqueued,                  \
+        "Number of hardware offload requests waiting to be processed."), \
+    [HWOL_METRICS_INSERTED] = METRICS_GAUGE(n_inserted,                  \
+        "Number of hardware offload rules currently inserted."),         \
+    [HWOL_METRICS_CT_UNIDIR] = METRICS_GAUGE(n_ct_unidir,                \
+        "Number of uni-directional connections offloaded in hardware."), \
+    [HWOL_METRICS_CT_BIDIR] = METRICS_GAUGE(n_ct_bidir,                  \
+        "Number of bi-directional connections offloaded in hardware."),
+
+static void
+hw_offload_read_value(double *values, void *_it)
+{
+    struct hw_offload_it *it = _it;
+    unsigned int tid = it->tid;
+    struct dp_netdev *dp = it->dp;
+    struct dp_offload_thread *t = &dp_offload_threads[tid];
+    uint64_t nb_offloads[MAX_OFFLOAD_THREAD_NB];
+    struct dp_netdev_port *port;
+    uint64_t count;
+
+    atomic_read_relaxed(&t->enqueued_offload, &count);
+    values[HWOL_METRICS_ENQUEUED] = count;
+
+    count = 0;
+    memset(nb_offloads, 0, sizeof nb_offloads);
+    ovs_rwlock_rdlock(&dp->port_rwlock);
+    HMAP_FOR_EACH (port, node, &dp->ports) {
+        if (!netdev_flow_get_n_offloads(port->netdev, nb_offloads)) {
+            count += nb_offloads[tid];
+        }
+    }
+    ovs_rwlock_unlock(&dp->port_rwlock);
+
+    values[HWOL_METRICS_INSERTED] = count;
+
+    atomic_read_relaxed(&t->ct_uni_dir_connections, &count);
+    values[HWOL_METRICS_CT_UNIDIR] = count;
+
+    atomic_read_relaxed(&t->ct_bi_dir_connections, &count);
+    values[HWOL_METRICS_CT_BIDIR] = count;
+}
+
+METRICS_ENTRIES(foreach_hw_offload_threads_dbg, hw_offload_threads_dbg_entries,
+                "hw_offload", hw_offload_read_value, HWOL_METRICS_ENTRIES);
+
+static void
+datapath_hw_offload_read_value(double *values, void *_dp)
+{
+    double t_values[HWOL_METRICS_N_ENTRIES];
+    struct hw_offload_it it;
+    size_t i;
+
+    for (i = 0; i < HWOL_METRICS_N_ENTRIES; i++) {
+        values[i] = 0.0;
+    }
+
+    it.dp = get_dp_netdev(_dp);
+    for (it.tid = 0; it.tid < netdev_offload_thread_nb(); it.tid++) {
+        hw_offload_read_value(t_values, &it);
+        for (i = 0; i < HWOL_METRICS_N_ENTRIES; i++) {
+            values[i] += t_values[i];
+        }
+    }
+}
+
+METRICS_ENTRIES(dpif_netdev_offload, datapath_hw_offload_entries,
+                "datapath_hw_offload", datapath_hw_offload_read_value,
+                HWOL_METRICS_ENTRIES);
 
 static int
 dpif_netdev_offload_stats_clear(struct dpif *dpif OVS_UNUSED)
