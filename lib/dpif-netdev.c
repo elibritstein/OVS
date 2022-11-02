@@ -52,6 +52,7 @@
 #include "dummy.h"
 #include "fat-rwlock.h"
 #include "flow.h"
+#include "histogram.h"
 #include "hmapx.h"
 #include "id-pool.h"
 #include "id-fpool.h"
@@ -457,6 +458,7 @@ struct dp_offload_thread {
         struct cmap mark_to_flow;
         struct mov_avg_cma cma;
         struct mov_avg_ema ema;
+        struct histogram latency;
         atomic_uint64_t ct_uni_dir_connections;
         atomic_uint64_t ct_bi_dir_connections;
         struct mpsc_queue ufid_queue;
@@ -629,6 +631,7 @@ dp_netdev_offload_init(void)
         atomic_init(&thread->enqueued_ct_add, 0);
         mov_avg_cma_init(&thread->cma);
         mov_avg_ema_init(&thread->ema, 100);
+        histogram_walls_set_log(&thread->latency, 1, 2000);
         mpsc_queue_init(&thread->ufid_queue);
         mpsc_queue_init(&thread->trace_queue);
         dp_netdev_e2e_offload_init(&thread->e2e_stats);
@@ -2818,6 +2821,7 @@ METRICS_ENTRIES(foreach_poll_threads_ext, poll_threads_cache_entries,
 
 
 METRICS_DECLARE(hw_offload_threads_dbg_entries);
+METRICS_DECLARE(hw_offload_latency);
 METRICS_DECLARE(datapath_hw_offload_entries);
 
 static void
@@ -2827,6 +2831,7 @@ dpif_netdev_metrics_register(void)
     METRICS_REGISTER(poll_threads_dbg_entries);
     METRICS_REGISTER(poll_threads_cache_entries);
     METRICS_REGISTER(hw_offload_threads_dbg_entries);
+    METRICS_REGISTER(hw_offload_latency);
     METRICS_REGISTER(datapath_hw_offload_entries);
 }
 
@@ -4144,6 +4149,7 @@ dp_netdev_flow_offload_main(void *arg)
             latency_us = now - start;
             mov_avg_cma_update(&ofl_thread->cma, latency_us);
             mov_avg_ema_update(&ofl_thread->ema, latency_us);
+            histogram_add_sample(&ofl_thread->latency, latency_us / 1000);
         }
 
         /* Do RCU synchronization at fixed interval. */
@@ -6454,6 +6460,18 @@ hw_offload_read_value(double *values, void *_it)
 
 METRICS_ENTRIES(foreach_hw_offload_threads_dbg, hw_offload_threads_dbg_entries,
                 "hw_offload", hw_offload_read_value, HWOL_METRICS_ENTRIES);
+
+static struct histogram *
+hw_offload_latency_get(void *_it)
+{
+    struct hw_offload_it *it = _it;
+
+    return &dp_offload_threads[it->tid].latency;
+}
+
+METRICS_HISTOGRAM(foreach_hw_offload_threads_dbg, hw_offload_latency,
+                  "Latency in milliseconds between an offload request and its "
+                  "completion.", hw_offload_latency_get);
 
 static void
 datapath_hw_offload_read_value(double *values, void *_dp)
