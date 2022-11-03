@@ -225,7 +225,12 @@ enum ct_update_res {
     CT_UPDATE_VALID_NEW,
 };
 
+struct ct_thread;
+
 struct conntrack {
+    struct ct_thread *threads;
+    unsigned int n_threads;
+
     struct ovs_spin ct_lock; /* Protects 2 following fields. */
     struct cmap conns OVS_GUARDED;
     struct mpsc_queue exp_lists[N_CT_TM] OVS_GUARDED;

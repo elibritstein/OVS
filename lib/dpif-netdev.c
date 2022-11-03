@@ -41,6 +41,7 @@
 #include "conntrack-offload.h"
 #include "conntrack-tp.h"
 #include "coverage.h"
+#include "ct-dist.h"
 #include "ct-dpif.h"
 #include "csum.h"
 #include "dp-packet.h"
@@ -6789,6 +6790,9 @@ dpif_netdev_set_config(struct dpif *dpif, const struct smap *other_config)
 
     offload_queue_size = smap_get_ullong(other_config, "hw-offload-queue-size",
                                          HW_OFFLOAD_DEFAULT_QUEUE_SIZE);
+
+    ct_dist_init(dp->conntrack, other_config);
+
     return 0;
 }
 

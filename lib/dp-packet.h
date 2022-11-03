@@ -177,6 +177,8 @@ BUILD_ASSERT_DECL(E2E_CACHE_MAX_TRACE <= 16);
     uint16_t   e2e_trace_flags;
     uint16_t   e2e_trace_ct_ufids;
     ovs_u128   e2e_trace[E2E_CACHE_MAX_TRACE];
+    struct mpsc_queue_node node;
+    long long timestamp_ms;
 };
 
 #if HAVE_AF_XDP
