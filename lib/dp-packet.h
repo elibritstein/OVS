@@ -26,6 +26,7 @@
 #include <rte_flow.h>
 #endif
 
+#include "conntrack.h"
 #include "mpsc-queue.h"
 #include "netdev-afxdp.h"
 #include "netdev-dpdk.h"
@@ -139,6 +140,26 @@ struct e2e_cache_trace_message {
     OVS_ALIGNED_VAR((sizeof(void *))) struct e2e_cache_trace_info data[0];
 });
 
+enum ct_type {
+    CT_TYPE_EXEC,
+};
+
+struct ct_exec {
+    struct conntrack *ct;
+    ovs_be16 dl_type;
+    bool force;
+    bool commit;
+    uint16_t zone;
+    const uint32_t *setmark;
+    const struct ovs_key_ct_labels *setlabel;
+    ovs_be16 tp_src;
+    ovs_be16 tp_dst;
+    const char *helper;
+    struct nat_action_info_t nat_action_info;
+    struct nat_action_info_t *nat_action_info_ref;
+    uint32_t tp_id;
+};
+
 /* Buffer for holding packet data.  A dp_packet is automatically reallocated
  * as necessary if it grows too large for the available memory.
  * By default the packet type is set to Ethernet (PT_ETH).
@@ -179,6 +200,8 @@ BUILD_ASSERT_DECL(E2E_CACHE_MAX_TRACE <= 16);
     ovs_u128   e2e_trace[E2E_CACHE_MAX_TRACE];
     struct mpsc_queue_node node;
     long long timestamp_ms;
+    enum ct_type ct_type;
+    struct ct_exec ct_exec;
 };
 
 #if HAVE_AF_XDP
