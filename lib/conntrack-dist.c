@@ -19,14 +19,36 @@
 #include "conntrack.c"
 
 static void
-ctd_process_one(struct conntrack *ct, struct dp_packet *pkt,
-                struct conn_lookup_ctx *ctx, uint16_t zone,
-                bool force, bool commit, long long now, const uint32_t *setmark,
-                const struct ovs_key_ct_labels *setlabel,
-                const struct nat_action_info_t *nat_action_info,
-                ovs_be16 tp_src, ovs_be16 tp_dst, const char *helper,
-                uint32_t tp_id)
+ctd_process_one(struct dp_packet *pkt, struct conn_lookup_ctx *ctx)
 {
+    const struct nat_action_info_t *nat_action_info;
+    const struct ovs_key_ct_labels *setlabel;
+    const uint32_t *setmark;
+    struct conntrack *ct;
+    const char *helper;
+    struct ct_exec *e;
+    ovs_be16 tp_src;
+    ovs_be16 tp_dst;
+    uint32_t tp_id;
+    uint16_t zone;
+    long long now;
+    bool commit;
+    bool force;
+
+    e = &pkt->ct_exec;
+    ct = e->ct;
+    zone = e->zone;
+    force = e->force;
+    commit = e->commit;
+    now = pkt->timestamp_ms;
+    setmark = e->setmark;
+    setlabel = e->setlabel;
+    nat_action_info = e->nat_action_info_ref;
+    tp_src = e->tp_src;
+    tp_dst = e->tp_dst;
+    helper = e->helper;
+    tp_id = e->tp_id;
+
     /* Reset ct_state whenever entering a new zone. */
     if (pkt->md.ct_state && pkt->md.ct_zone != zone) {
         pkt->md.ct_state = 0;
@@ -142,49 +164,68 @@ ctd_process_one(struct conntrack *ct, struct dp_packet *pkt,
  * elements array containing a value and a mask to set the connection mark.
  * 'setlabel' behaves similarly for the connection label.*/
 int
-ctd_conntrack_execute(struct conntrack *ct, struct dp_packet_batch *pkt_batch,
-                      ovs_be16 dl_type, bool force, bool commit, uint16_t zone,
-                      const uint32_t *setmark,
-                      const struct ovs_key_ct_labels *setlabel,
-                      ovs_be16 tp_src, ovs_be16 tp_dst, const char *helper,
-                      const struct nat_action_info_t *nat_action_info,
-                      long long now_us, uint32_t tp_id)
+ctd_conntrack_execute(struct dp_packet *pkt)
 {
-    long long now_ms = now_us / 1000;
+    const struct nat_action_info_t *nat_action_info;
+    const struct ovs_key_ct_labels *setlabel;
+    struct dp_packet_batch pkt_batch;
+    struct conn_lookup_ctx ctx;
+    const uint32_t *setmark;
+    struct conntrack *ct;
+    ovs_u128 orig_label;
+    const char *helper;
+    uint32_t orig_mark;
+    struct conn *conn;
+    struct ct_exec *e;
+    long long now_us;
+    long long now_ms;
+    ovs_be16 dl_type;
+    ovs_be16 tp_src;
+    ovs_be16 tp_dst;
+    uint16_t zone;
+    bool force;
 
-    ipf_preprocess_conntrack(ct->ipf, pkt_batch, now_ms, dl_type, zone,
+    e = &pkt->ct_exec;
+    ct = e->ct;
+    dp_packet_batch_init_packet(&pkt_batch, pkt);
+    dl_type = e->dl_type;
+    zone = e->zone;
+    force = e->force;
+    setmark = e->setmark;
+    setlabel = e->setlabel;
+    tp_src = e->tp_src;
+    tp_dst = e->tp_dst;
+    helper = e->helper;
+    nat_action_info = e->nat_action_info_ref;
+    now_ms = pkt->timestamp_ms;
+
+    now_us = now_ms * 1000;
+    ipf_preprocess_conntrack(ct->ipf, &pkt_batch, now_ms, dl_type, zone,
                              ct->hash_basis);
 
-    struct dp_packet *packet;
-    struct conn_lookup_ctx ctx;
+    conn = pkt->md.conn;
+    orig_mark = pkt->md.ct_mark;
+    orig_label = pkt->md.ct_label;
 
-    DP_PACKET_BATCH_FOR_EACH (i, packet, pkt_batch) {
-        struct conn *conn = packet->md.conn;
-        uint32_t orig_mark = packet->md.ct_mark;
-        ovs_u128 orig_label = packet->md.ct_label;
-
-        ctx.conn = NULL;
-        if (OVS_UNLIKELY(packet->md.ct_state == CS_INVALID)) {
-            write_ct_md_alg_exp(packet, zone, NULL, NULL);
-        } else if (conn && conn->key.zone == zone && !force
-                   && !get_alg_ctl_type(packet, tp_src, tp_dst, helper)) {
-            process_one_fast(zone, setmark, setlabel, nat_action_info,
-                             conn, packet);
-        } else if (OVS_UNLIKELY(!conn_key_extract(ct, packet, dl_type, &ctx,
-                                zone))) {
-            packet->md.ct_state = CS_INVALID;
-            write_ct_md_alg_exp(packet, zone, NULL, NULL);
-        } else {
-            ctd_process_one(ct, packet, &ctx, zone, force, commit, now_ms,
-                            setmark, setlabel, nat_action_info, tp_src,
-                            tp_dst, helper, tp_id);
-        }
-        conn = packet->md.conn ? packet->md.conn : ctx.conn;
-        process_one_ct_offload(ct, packet, conn, ctx.reply, now_us, orig_mark,
-                               orig_label);
+    ctx.conn = NULL;
+    if (OVS_UNLIKELY(pkt->md.ct_state == CS_INVALID)) {
+        write_ct_md_alg_exp(pkt, zone, NULL, NULL);
+    } else if (conn && conn->key.zone == zone && !force
+               && !get_alg_ctl_type(pkt, tp_src, tp_dst, helper)) {
+        process_one_fast(zone, setmark, setlabel, nat_action_info,
+                         conn, pkt);
+    } else if (OVS_UNLIKELY(!conn_key_extract(ct, pkt, dl_type, &ctx,
+                            zone))) {
+        pkt->md.ct_state = CS_INVALID;
+        write_ct_md_alg_exp(pkt, zone, NULL, NULL);
+    } else {
+        ctd_process_one(pkt, &ctx);
     }
+    conn = pkt->md.conn ? pkt->md.conn : ctx.conn;
+    process_one_ct_offload(ct, pkt, conn, ctx.reply, now_us, orig_mark,
+                           orig_label);
 
-    ipf_postprocess_conntrack(ct->ipf, pkt_batch, now_ms, dl_type);
+    ipf_postprocess_conntrack(ct->ipf, &pkt_batch, now_ms, dl_type);
 
     return 0;
 }

@@ -190,12 +190,6 @@ int zone_limit_delete(struct conntrack *ct, uint16_t zone);
 
 
 int
-ctd_conntrack_execute(struct conntrack *ct, struct dp_packet_batch *pkt_batch,
-                      ovs_be16 dl_type, bool force, bool commit, uint16_t zone,
-                      const uint32_t *setmark,
-                      const struct ovs_key_ct_labels *setlabel,
-                      ovs_be16 tp_src, ovs_be16 tp_dst, const char *helper,
-                      const struct nat_action_info_t *nat_action_info,
-                      long long now_us, uint32_t tp_id);
+ctd_conntrack_execute(struct dp_packet *pkt);
 
 #endif /* conntrack.h */
