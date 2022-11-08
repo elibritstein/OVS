@@ -17,6 +17,7 @@
 #include <config.h>
 
 #include "coverage.h"
+#include "ct-dpif.h"
 #include "dpif-metrics.h"
 #include "dpif.h"
 #include "metrics.h"
@@ -139,8 +140,52 @@ METRICS_ENTRIES(dpif_dbg, dpif_entries,
         "Number of meter deletions in all dpif."),
 );
 
+static bool
+ct_stats_supported(void *dpif)
+{
+    uint32_t u32;
+
+    return ct_dpif_get_nconns(dpif, &u32) == 0;
+}
+
+METRICS_COND(foreach_dpif, if_ct_stats_supported, ct_stats_supported);
+
+enum {
+    CT_DPIF_METRICS_N_CONNECTIONS,
+    CT_DPIF_METRICS_CONNECTION_LIMIT,
+    CT_DPIF_METRICS_TCP_SEQ_CHK,
+};
+
+static void
+ct_dpif_read_value(double *values, void *_dpif)
+{
+    struct dpif *dpif = _dpif;
+    bool tcp_seq_chk;
+    uint32_t u32;
+
+    ct_dpif_get_nconns(dpif, &u32);
+    values[CT_DPIF_METRICS_N_CONNECTIONS] = u32;
+
+    ct_dpif_get_maxconns(dpif, &u32);
+    values[CT_DPIF_METRICS_CONNECTION_LIMIT] = u32;
+
+    ct_dpif_get_tcp_seq_chk(dpif, &tcp_seq_chk);
+    values[CT_DPIF_METRICS_TCP_SEQ_CHK] = tcp_seq_chk ? 1 : 0;
+}
+
+METRICS_ENTRIES(if_ct_stats_supported, ct_dpif_entries,
+        "conntrack", ct_dpif_read_value,
+    [CT_DPIF_METRICS_N_CONNECTIONS] = METRICS_GAUGE(n_connections,
+        "Number of tracked connections."),
+    [CT_DPIF_METRICS_CONNECTION_LIMIT] = METRICS_GAUGE(connection_limit,
+        "Maximum number of connections allowed."),
+    [CT_DPIF_METRICS_TCP_SEQ_CHK] = METRICS_GAUGE(tcp_seq_chk,
+        "The TCP sequence checking mode: disabled(0) or enabled(1)."),
+);
+
 void
 dpif_metrics_register(void)
 {
     METRICS_REGISTER(dpif_entries);
+    METRICS_REGISTER(ct_dpif_entries);
 }
