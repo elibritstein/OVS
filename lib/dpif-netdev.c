@@ -501,8 +501,7 @@ static struct dp_offload_thread *dp_offload_threads = NULL;
 static void *dp_netdev_flow_offload_main(void *arg);
 
 static void
-dp_netdev_ct_offload_get_ufid(struct ct_flow_offload_item *offload,
-                              ovs_u128 *ufid);
+dp_netdev_ct_offload_get_ufid(ovs_u128 *ufid);
 static void
 dp_netdev_ct_offload_add_item(struct ct_flow_offload_item *ct_offload);
 static void
@@ -4245,14 +4244,11 @@ dp_netdev_offload_ct_enqueue(struct dp_offload_thread_item *item)
 }
 
 static void
-dp_netdev_ct_offload_get_ufid(struct ct_flow_offload_item *offload,
-                              ovs_u128 *ufid)
+dp_netdev_ct_offload_get_ufid(ovs_u128 *ufid)
 {
-    struct match match;
-
-    dp_netdev_fill_ct_match(&match, &offload->ct_match);
-    match.flow.in_port.odp_port = ODPP_NONE;
-    dp_netdev_get_mega_ufid(&match, ufid);
+    ufid->u64.lo = (uint64_t) ufid;
+    ufid->u64.hi = (uint64_t) ufid;
+    uuid_set_bits_v4((struct uuid *) ufid, UUID_ATTR_1);
 }
 
 static int

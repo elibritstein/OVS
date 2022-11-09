@@ -219,7 +219,7 @@ e2e_cache_trace_add_ct(struct conntrack *ct,
     }
     if (!dir_info->e2e_flow) {
         dir_info->e2e_flow = true;
-        offload_class->conn_get_ufid(&item, &dir_info->ufid);
+        offload_class->conn_get_ufid(&dir_info->ufid);
         item.ufid = dir_info->ufid;
         offload_class->conn_e2e_add(&item);
     }
@@ -291,7 +291,6 @@ conntrack_offload_add_conn(struct conntrack *ct,
     }
     if ((flags & CT_OFFLOAD_BOTH) == CT_OFFLOAD_BOTH) {
         struct ovs_refcount *refcnt;
-        ovs_u128 *ufid[CT_DIR_NUM];
 
         for (dir = 0; dir < CT_DIR_NUM; dir ++) {
             if (conn->nat_conn &&
@@ -302,14 +301,9 @@ conntrack_offload_add_conn(struct conntrack *ct,
                 conn = conn->master_conn;
             }
             conntrack_offload_fill_item_add(&item[dir], conn, dir, now_us);
-            ufid[dir] = &conn->offloads.dir_info[dir].ufid;
+            offload_class->conn_get_ufid(&conn->offloads.dir_info[dir].ufid);
+            item[dir].ufid = conn->offloads.dir_info[dir].ufid;
         }
-        offload_class->conn_get_ufid(&item[CT_DIR_INIT],
-                                     &item[CT_DIR_INIT].ufid);
-        offload_class->conn_get_ufid(&item[CT_DIR_REP],
-                                     &item[CT_DIR_REP].ufid);
-        *ufid[CT_DIR_INIT] = item[CT_DIR_INIT].ufid;
-        *ufid[CT_DIR_REP] = item[CT_DIR_REP].ufid;
         refcnt = xmalloc(sizeof *refcnt);
         ovs_refcount_init(refcnt);
         ovs_refcount_ref(refcnt);
