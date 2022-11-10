@@ -195,7 +195,6 @@ struct conn {
     /* Mutable data. */
     bool seq_skew_dir; /* TCP sequence skew direction due to NATTing of FTP
                         * control messages; true if reply direction. */
-    bool cleaned; /* True if cleaned from expiry lists. */
 
     /* Immutable data. */
     bool alg_related; /* True if alg data connection. */

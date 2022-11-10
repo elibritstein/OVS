@@ -527,6 +527,12 @@ conn_clean(struct conntrack *ct, struct conn *conn)
     conn_unlock(conn);
 }
 
+static void
+conn_force_expire(struct conn *conn)
+{
+    atomic_store_relaxed(&conn->expiration, 0);
+}
+
 /* Destroys the connection tracker 'ct' and frees all the allocated memory.
  * The caller of this function must already have shut down packet input
  * and PMD threads (which would have been quiesced).  */
@@ -1201,7 +1207,7 @@ conn_update_state(struct conntrack *ct, struct dp_packet *pkt,
             break;
         case CT_UPDATE_NEW:
             if (conn_lookup(ct, &conn->key, now, NULL, NULL)) {
-                conn_clean(ct, conn);
+                conn_force_expire(conn);
             }
             create_new_conn = true;
             break;
@@ -1415,7 +1421,7 @@ process_one(struct conntrack *ct, struct dp_packet *pkt,
     /* Delete found entry if in wrong direction. 'force' implies commit. */
     if (OVS_UNLIKELY(force && ctx->reply && conn)) {
         if (conn_lookup(ct, &conn->key, now, NULL, NULL)) {
-            conn_clean(ct, conn);
+            conn_force_expire(conn);
         }
         conn = NULL;
     }
@@ -2896,6 +2902,11 @@ conntrack_dump_next(struct conntrack_dump *dump, struct ct_dpif_entry *entry)
         }
         struct conn *conn;
         INIT_CONTAINER(conn, cm_node, cm_node);
+
+        if (conn_expired(conn, now)) {
+            continue;
+        }
+
         if ((!dump->filter_zone || conn->key.zone == dump->zone) &&
             (conn->conn_type != CT_CONN_TYPE_UN_NAT)) {
             conn_to_ct_dpif_entry(conn, entry, now);
