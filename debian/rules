@@ -63,7 +63,7 @@ override_dh_auto_configure:
 		new="$(BACKUP_PATH)/$$path/$$base"; \
 		if [ -f "$$real" -a ! -f "$$new" ]; then mv "$$real" "$$new"; fi; \
 	done
-	dh_auto_configure -- --enable-ssl \
+	dh_auto_configure -- --enable-ssl --enable-Werror \
 		$(BUILD_TYPE) \
 		$(WITH_DPDK) \
 		$(DATAPATH_CONFIGURE_OPTS) $(EXTRA_CONFIGURE_OPTS)
