@@ -70,7 +70,7 @@ Tailored Open vSwitch SELinux policy
 
 %build
 ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=%{_localstatedir} \
-    --libdir=%{_libdir} --enable-ssl --enable-shared
+    --libdir=%{_libdir} --enable-ssl --enable-shared --enable-Werror
 make %{_smp_mflags}
 make selinux-policy
 
