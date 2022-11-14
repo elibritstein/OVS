@@ -2136,8 +2136,9 @@ dpctl_ct_set_limits(int argc, const char *argv[],
 
     /* Parse ct zone limit tuples */
     while (i < argc) {
-        uint16_t zone;
-        uint32_t limit;
+        uint32_t limit = 0;
+        uint16_t zone = 0;
+
         if (!ct_dpif_parse_zone_limit_tuple(argv[i++], &zone, &limit, &ds)) {
             error = EINVAL;
             goto error;
