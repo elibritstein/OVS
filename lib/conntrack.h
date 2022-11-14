@@ -189,6 +189,7 @@ int conntrack_flush_tuple(struct conntrack *, const struct ct_dpif_tuple *,
 int conntrack_set_maxconns(struct conntrack *ct, uint32_t maxconns);
 int conntrack_get_maxconns(struct conntrack *ct, uint32_t *maxconns);
 int conntrack_get_nconns(struct conntrack *ct, uint32_t *nconns);
+int conntrack_get_stats(struct conntrack *ct, struct ct_dpif_stats *stats);
 int conntrack_set_tcp_seq_chk(struct conntrack *ct, bool enabled);
 bool conntrack_get_tcp_seq_chk(struct conntrack *ct);
 struct ipf *conntrack_ipf_ctx(struct conntrack *ct);

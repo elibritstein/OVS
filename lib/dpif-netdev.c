@@ -12757,6 +12757,15 @@ dpif_netdev_ct_del_limits(struct dpif *dpif,
 }
 
 static int
+dpif_netdev_ct_get_stats(struct dpif *dpif,
+                         struct ct_dpif_stats *stats)
+{
+    struct dp_netdev *dp = get_dp_netdev(dpif);
+
+    return conntrack_get_stats(dp->conntrack, stats);
+}
+
+static int
 dpif_netdev_ct_get_features(struct dpif *dpif OVS_UNUSED,
                             enum ct_features *features)
 {
@@ -13029,7 +13038,7 @@ const struct dpif_class dpif_netdev_class = {
     dpif_netdev_ct_set_limits,
     dpif_netdev_ct_get_limits,
     dpif_netdev_ct_del_limits,
-    NULL,                       /* ct_get_stats */
+    dpif_netdev_ct_get_stats,
     dpif_netdev_ct_set_timeout_policy,
     dpif_netdev_ct_get_timeout_policy,
     dpif_netdev_ct_del_timeout_policy,

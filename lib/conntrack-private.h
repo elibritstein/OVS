@@ -28,6 +28,7 @@
 #include "openvswitch/hmap.h"
 #include "openvswitch/list.h"
 #include "openvswitch/types.h"
+#include "ovs-atomic.h"
 #include "packets.h"
 #include "rculist.h"
 #include "unaligned.h"
@@ -235,6 +236,8 @@ struct conntrack {
     struct mpsc_queue exp_lists[N_CT_TM] OVS_GUARDED;
     struct cmap zone_limits OVS_GUARDED;
     struct cmap timeout_policies OVS_GUARDED;
+
+    atomic_count l4_counters[UINT8_MAX + 1];
 
     uint32_t hash_basis; /* Salt for hashing a connection key. */
     pthread_t clean_thread; /* Periodically cleans up connection tracker. */

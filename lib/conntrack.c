@@ -321,6 +321,10 @@ conntrack_init(void *dp)
     ct->ipf = ipf_init();
     ct->dp = dp;
 
+    for (size_t p = 0; p < ARRAY_SIZE(ct->l4_counters); p++) {
+        atomic_count_init(&ct->l4_counters[p], 0);
+    }
+
     /* Initialize the l4 protocols. */
     if (ovsthread_once_start(&setup_l4_once)) {
         for (int i = 0; i < ARRAY_SIZE(l4_protos); i++) {
@@ -522,6 +526,7 @@ conn_clean(struct conntrack *ct, struct conn *conn)
     }
     conn_unref(conn);
     atomic_count_dec(&ct->n_conn);
+    atomic_count_dec(&ct->l4_counters[conn->key.nw_proto]);
 
     conntrack_unlock(ct);
     conn_unlock(conn);
@@ -1147,6 +1152,7 @@ conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
         conntrack_unlock(ct);
         conn_expire_push_back(ct, nc);
         atomic_count_inc(&ct->n_conn);
+        atomic_count_inc(&ct->l4_counters[ctx->key.nw_proto]);
         ctx->conn = nc; /* For completeness. */
 
         if (zl) {
@@ -3673,4 +3679,47 @@ handle_tftp_ctl(struct conntrack *ct,
     expectation_create(ct, conn_for_expectation->key.src.port,
                        conn_for_expectation,
                        !!(pkt->md.ct_state & CS_REPLY_DIR), false, false);
+}
+
+int
+conntrack_get_stats(struct conntrack *ct, struct ct_dpif_stats *stats)
+{
+    static int index_map[ARRAY_SIZE(ct->l4_counters)] = {
+        [IPPROTO_UDP] = CT_STATS_UDP,
+        [IPPROTO_TCP] = CT_STATS_TCP,
+        [IPPROTO_SCTP] = CT_STATS_SCTP,
+        [IPPROTO_ICMP] = CT_STATS_ICMP,
+        [IPPROTO_ICMPV6] = CT_STATS_ICMPV6,
+        [IPPROTO_UDPLITE] = CT_STATS_UDPLITE,
+        [IPPROTO_DCCP] = CT_STATS_DCCP,
+        [IPPROTO_IGMP] = CT_STATS_IGMP,
+    };
+    static bool once = false;
+    uint32_t *n_conns;
+    size_t p;
+
+    if (!stats) {
+        return 0;
+    }
+
+    if (!once) {
+        for (p = 0; p < ARRAY_SIZE(index_map); p++) {
+            /* CT_STATS_UDP is the first in the enum, so 0.
+             * Do not overwrite the index of IPPROTO_UDP,
+             * only of every other indexes yet unset. */
+            if (index_map[p] == 0 && p != IPPROTO_UDP) {
+                index_map[p] = CT_STATS_OTHER;
+            }
+        }
+        once = true;
+    }
+
+    memset(stats, 0, sizeof *stats);
+    conntrack_get_nconns(ct, &stats->n_conns);
+    n_conns = stats->n_conns_per_proto;
+    for (p = 0; p < ARRAY_SIZE(ct->l4_counters); p++) {
+        n_conns[index_map[p]] += atomic_count_get(&ct->l4_counters[p]);
+    }
+
+    return 0;
 }
