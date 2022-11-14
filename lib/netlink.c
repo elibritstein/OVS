@@ -200,6 +200,14 @@ nl_msg_put(struct ofpbuf *msg, const void *data, size_t size)
     memcpy(nl_msg_put_uninit(msg, size), data, size);
 }
 
+static void
+nl_msg_zero_pad(char *pad_ptr, size_t pad_size)
+{
+    while (pad_size--) {
+        *pad_ptr++ = 0;
+    }
+}
+
 /* Appends 'size' bytes of data, plus Netlink padding if needed, to the tail
  * end of 'msg', reallocating and copying its data if necessary.  Returns a
  * pointer to the first byte of the new data, which is left uninitialized. */
@@ -208,9 +216,7 @@ nl_msg_put_uninit(struct ofpbuf *msg, size_t size)
 {
     size_t pad = PAD_SIZE(size, NLMSG_ALIGNTO);
     char *p = ofpbuf_put_uninit(msg, size + pad);
-    if (pad) {
-        memset(p + size, 0, pad);
-    }
+    nl_msg_zero_pad(p + size, pad);
     return p;
 }
 
@@ -231,9 +237,7 @@ nl_msg_push_uninit(struct ofpbuf *msg, size_t size)
 {
     size_t pad = PAD_SIZE(size, NLMSG_ALIGNTO);
     char *p = ofpbuf_push_uninit(msg, size + pad);
-    if (pad) {
-        memset(p + size, 0, pad);
-    }
+    nl_msg_zero_pad(p + size, pad);
     return p;
 }
 
