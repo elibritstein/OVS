@@ -227,7 +227,7 @@ ovsdb_schema_from_json(const struct json *json, struct ovsdb_schema **schemap)
     schema = ovsdb_schema_create(json_string(name), version,
                                  cksum ? json_string(cksum) : "");
     SHASH_FOR_EACH (node, json_object(tables)) {
-        struct ovsdb_table_schema *table;
+        struct ovsdb_table_schema *table = NULL;
 
         if (node->name[0] == '_') {
             error = ovsdb_syntax_error(json, NULL, "names beginning with "
