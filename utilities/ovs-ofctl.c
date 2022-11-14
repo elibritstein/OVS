@@ -3121,7 +3121,7 @@ static void
 ofctl_group_mod_file(int argc OVS_UNUSED, char *argv[], int command)
 {
     struct ofputil_group_mod *gms = NULL;
-    enum ofputil_protocol usable_protocols;
+    enum ofputil_protocol usable_protocols = 0;
     size_t n_gms = 0;
     char *error;
 
