@@ -270,7 +270,8 @@ ofputil_port_to_string(ofp_port_t port,
 {
     const char *reserved_name = ofputil_port_get_reserved_name(port);
     if (reserved_name) {
-        ovs_strlcpy(namebuf, reserved_name, bufsize);
+        ovs_strlcpy(namebuf, reserved_name, MIN(strlen(reserved_name),
+                                                bufsize));
         return;
     }
 
