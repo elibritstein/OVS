@@ -4804,6 +4804,7 @@ const struct dpif_class dpif_netlink_class = {
     dpif_netlink_ct_set_limits,
     dpif_netlink_ct_get_limits,
     dpif_netlink_ct_del_limits,
+    NULL,                       /* ct_get_stats */
     dpif_netlink_ct_set_timeout_policy,
     dpif_netlink_ct_get_timeout_policy,
     dpif_netlink_ct_del_timeout_policy,

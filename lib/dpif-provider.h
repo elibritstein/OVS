@@ -22,6 +22,7 @@
  * exposed over OpenFlow as a single switch.  Datapaths and the collections of
  * ports that they contain may be fixed or dynamic. */
 
+#include "ct-dpif.h"
 #include "dpif.h"
 #include "dpif-offload-provider.h"
 #include "openflow/openflow.h"
@@ -540,6 +541,14 @@ struct dpif_class {
     /* Deletes per zone limit of all zones specified in 'zone_limits', a
      * list of 'struct ct_dpif_zone_limit' entries. */
     int (*ct_del_limits)(struct dpif *, const struct ovs_list *zone_limits);
+
+
+    /* If 'stats' is not NULL, write each field according to current
+     * state of conntrack. If a field is not supported, its value
+     * should be set to UINT32_MAX.
+     * If 'stats' is NULL, nothing should be written.
+     */
+    int (*ct_get_stats)(struct dpif *dpif, struct ct_dpif_stats *stats);
 
     /* Connection tracking timeout policy */
 

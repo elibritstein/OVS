@@ -13029,6 +13029,7 @@ const struct dpif_class dpif_netdev_class = {
     dpif_netdev_ct_set_limits,
     dpif_netdev_ct_get_limits,
     dpif_netdev_ct_del_limits,
+    NULL,                       /* ct_get_stats */
     dpif_netdev_ct_set_timeout_policy,
     dpif_netdev_ct_get_timeout_policy,
     dpif_netdev_ct_del_timeout_policy,

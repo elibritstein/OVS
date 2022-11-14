@@ -210,6 +210,14 @@ ct_dpif_del_limits(struct dpif *dpif, const struct ovs_list *zone_limits)
 }
 
 int
+ct_dpif_get_stats(struct dpif *dpif, struct ct_dpif_stats *stats)
+{
+    return (dpif->dpif_class->ct_get_stats
+            ? dpif->dpif_class->ct_get_stats(dpif, stats)
+            : EOPNOTSUPP);
+}
+
+int
 ct_dpif_ipf_set_enabled(struct dpif *dpif, bool v6, bool enable)
 {
     return (dpif->dpif_class->ipf_set_enabled

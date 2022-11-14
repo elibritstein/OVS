@@ -278,6 +278,11 @@ enum ct_features {
     CONNTRACK_F_ZERO_SNAT = 1 << 0,  /* All-zero SNAT support. */
 };
 
+struct ct_dpif_stats {
+    uint32_t n_conns;
+    uint32_t n_conns_per_proto[CT_STATS_MAX];
+};
+
 int ct_dpif_dump_start(struct dpif *, struct ct_dpif_dump_state **,
                        const uint16_t *zone, int *);
 int ct_dpif_dump_next(struct ct_dpif_dump_state *, struct ct_dpif_entry *);
@@ -294,6 +299,7 @@ int ct_dpif_set_limits(struct dpif *dpif, const uint32_t *default_limit,
 int ct_dpif_get_limits(struct dpif *dpif, uint32_t *default_limit,
                        const struct ovs_list *, struct ovs_list *);
 int ct_dpif_del_limits(struct dpif *dpif, const struct ovs_list *);
+int ct_dpif_get_stats(struct dpif *dpif, struct ct_dpif_stats *stats);
 int ct_dpif_ipf_set_enabled(struct dpif *, bool v6, bool enable);
 int ct_dpif_ipf_set_min_frag(struct dpif *, bool v6, uint32_t min_frag);
 int ct_dpif_ipf_set_max_nfrags(struct dpif *, uint32_t max_frags);
