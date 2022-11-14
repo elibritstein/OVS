@@ -5393,7 +5393,8 @@ parse_flow_actions(struct netdev *flowdev,
                 return -1;
             }
             raw_encap_data->conf.size += VLAN_HEADER_LEN;
-            veh = (struct vlan_eth_header *) raw_encap_data->conf.data;
+            veh = ALIGNED_CAST(struct vlan_eth_header *,
+                               raw_encap_data->conf.data);
             memmove(veh, (char *)veh + VLAN_HEADER_LEN, 2 * ETH_ADDR_LEN);
             veh->veth_type = vlan->vlan_tpid;
             veh->veth_tci = vlan->vlan_tci & htons(~VLAN_CFI);
