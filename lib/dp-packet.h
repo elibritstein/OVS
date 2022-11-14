@@ -572,7 +572,8 @@ dp_packet_init_specific(struct dp_packet *p)
 {
     /* This initialization is needed for packets that do not come from DPDK
      * interfaces, when vswitchd is built with --with-dpdk. */
-    p->mbuf.ol_flags = p->mbuf.tx_offload = p->mbuf.packet_type = 0;
+    *dp_packet_ol_flags_ptr(p) = 0;
+    p->mbuf.tx_offload = p->mbuf.packet_type = 0;
     p->mbuf.nb_segs = 1;
     p->mbuf.next = NULL;
 }
@@ -638,9 +639,9 @@ dp_packet_set_allocated(struct dp_packet *b, uint16_t s)
 #else /* DPDK_NETDEV */
 
 static inline void
-dp_packet_init_specific(struct dp_packet *p OVS_UNUSED)
+dp_packet_init_specific(struct dp_packet *p)
 {
-    /* There are no implementation-specific fields for initialization. */
+    *dp_packet_ol_flags_ptr(p) = 0;
 }
 
 static inline void *
