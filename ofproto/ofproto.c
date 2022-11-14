@@ -8471,6 +8471,7 @@ handle_bundle_control(struct ofconn *ofconn, const struct ofp_header *oh)
         return error;
     }
     reply.flags = 0;
+    reply.type = 0;
     reply.bundle_id = bctrl.bundle_id;
 
     switch (bctrl.type) {
