@@ -3408,9 +3408,9 @@ parse_geneve_match(struct flow_patterns *patterns,
     gnv_spec = per_thread_xzalloc(sizeof *gnv_spec);
     gnv_mask = per_thread_xzalloc(sizeof *gnv_mask);
 
-    put_unaligned_be32((ovs_be32 *)gnv_spec->vni,
+    put_unaligned_be32(ALIGNED_CAST(ovs_be32 *, gnv_spec->vni),
                        htonl(ntohll(match->flow.tunnel.tun_id) << 8));
-    put_unaligned_be32((ovs_be32 *)gnv_mask->vni,
+    put_unaligned_be32(ALIGNED_CAST(ovs_be32 *, gnv_mask->vni),
                        htonl(ntohll(match->wc.masks.tunnel.tun_id) << 8));
 
     consumed_masks->tunnel.tun_id = 0;
