@@ -527,7 +527,8 @@ netdev_dpdk_vdpa_parse_pkt(struct rte_mbuf *m, uint16_t mtu)
         l3_len = (ipv4->ip_ihl_ver & 0x0f) << 2;
         l4_proto_id = ipv4->ip_proto;
         if (l4_proto_id == IPPROTO_TCP) {
-            tcp = (const struct tcp_header *)((char *)ipv4 + l3_len);
+            tcp = ALIGNED_CAST(const struct tcp_header *,
+                               ((char *)ipv4 + l3_len));
             l4_len = TCP_OFFSET(tcp->tcp_ctl) * 4;
             ol_flags = (PKT_TX_IPV4 | PKT_TX_IP_CKSUM);
         }
