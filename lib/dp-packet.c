@@ -32,7 +32,6 @@ dp_packet_init__(struct dp_packet *b, size_t allocated, enum dp_packet_source so
     dp_packet_reset_offsets(b);
     pkt_metadata_init(&b->md, 0);
     dp_packet_reset_cutlen(b);
-    dp_packet_reset_offload(b);
     /* Initialize implementation-specific fields of dp_packet. */
     dp_packet_init_specific(b);
     /* By default assume the packet type to be Ethernet. */
