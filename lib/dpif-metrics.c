@@ -183,9 +183,72 @@ METRICS_ENTRIES(if_ct_stats_supported, ct_dpif_entries,
         "The TCP sequence checking mode: disabled(0) or enabled(1)."),
 );
 
+static bool
+ct_get_stats_supported(void *dpif)
+{
+    return ct_dpif_get_stats(dpif, NULL) == 0;
+}
+
+METRICS_COND(foreach_dpif, if_ct_get_stats_supported, ct_get_stats_supported);
+
+enum {
+    CT_DPIF_METRICS_N_UDP,
+    CT_DPIF_METRICS_N_TCP,
+    CT_DPIF_METRICS_N_SCTP,
+    CT_DPIF_METRICS_N_ICMP,
+    CT_DPIF_METRICS_N_ICMPV6,
+    CT_DPIF_METRICS_N_UDPLITE,
+    CT_DPIF_METRICS_N_DCCP,
+    CT_DPIF_METRICS_N_IGMP,
+    CT_DPIF_METRICS_N_OTHER,
+};
+
+static void
+ct_dpif_adv_read_value(double *values, void *dpif)
+{
+    struct ct_dpif_stats stats;
+    uint32_t *n_conns;
+
+    ct_dpif_get_stats(dpif, &stats);
+    n_conns = stats.n_conns_per_proto;
+
+    values[CT_DPIF_METRICS_N_UDP] = n_conns[CT_STATS_UDP];
+    values[CT_DPIF_METRICS_N_TCP] = n_conns[CT_STATS_TCP];
+    values[CT_DPIF_METRICS_N_SCTP] = n_conns[CT_STATS_SCTP];
+    values[CT_DPIF_METRICS_N_ICMP] = n_conns[CT_STATS_ICMP];
+    values[CT_DPIF_METRICS_N_ICMPV6] = n_conns[CT_STATS_ICMPV6];
+    values[CT_DPIF_METRICS_N_UDPLITE] = n_conns[CT_STATS_UDPLITE];
+    values[CT_DPIF_METRICS_N_DCCP] = n_conns[CT_STATS_DCCP];
+    values[CT_DPIF_METRICS_N_IGMP] = n_conns[CT_STATS_IGMP];
+    values[CT_DPIF_METRICS_N_OTHER] = n_conns[CT_STATS_OTHER];
+}
+
+METRICS_ENTRIES(if_ct_get_stats_supported, ct_dpif_adv_entries,
+        "conntrack", ct_dpif_adv_read_value,
+    [CT_DPIF_METRICS_N_UDP] = METRICS_GAUGE(n_udp,
+        "Number of tracked UDP connections."),
+    [CT_DPIF_METRICS_N_TCP] = METRICS_GAUGE(n_tcp,
+        "Number of tracked TCP connections."),
+    [CT_DPIF_METRICS_N_SCTP] = METRICS_GAUGE(n_sctp,
+        "Number of tracked SCTP connections."),
+    [CT_DPIF_METRICS_N_ICMP] = METRICS_GAUGE(n_icmp,
+        "Number of tracked ICMP connections."),
+    [CT_DPIF_METRICS_N_ICMPV6] = METRICS_GAUGE(n_icmp6,
+        "Number of tracked ICMPv6 connections."),
+    [CT_DPIF_METRICS_N_UDPLITE] = METRICS_GAUGE(n_udplite,
+        "Number of tracked UDPLite connections."),
+    [CT_DPIF_METRICS_N_DCCP] = METRICS_GAUGE(n_dccp,
+        "Number of tracked DCCP connections."),
+    [CT_DPIF_METRICS_N_IGMP] = METRICS_GAUGE(n_igmp,
+        "Number of tracked IGMP connections."),
+    [CT_DPIF_METRICS_N_OTHER] = METRICS_GAUGE(n_other,
+        "Number of tracked connections of undefined type."),
+);
+
 void
 dpif_metrics_register(void)
 {
     METRICS_REGISTER(dpif_entries);
     METRICS_REGISTER(ct_dpif_entries);
+    METRICS_REGISTER(ct_dpif_adv_entries);
 }
