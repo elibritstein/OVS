@@ -2008,7 +2008,6 @@ netdev_dpdk_set_config(struct netdev *netdev, const struct smap *args,
 {
     struct netdev_dpdk *dev = netdev_dpdk_cast(netdev);
     bool rx_fc_en, tx_fc_en, autoneg, lsc_interrupt_mode;
-    bool flow_control_requested = true;
     enum rte_eth_fc_mode fc_mode;
     static const enum rte_eth_fc_mode fc_mode_set[2][2] = {
         {RTE_FC_NONE,     RTE_FC_TX_PAUSE},
@@ -2126,17 +2125,15 @@ netdev_dpdk_set_config(struct netdev *netdev, const struct smap *args,
         /* FIXME: User didn't ask for flow control configuration.
          *        For now we'll not print a warning if flow control is not
          *        supported by the DPDK port. */
-        flow_control_requested = false;
+        goto out;
     }
 
     /* Get the Flow control configuration. */
     err = -rte_eth_dev_flow_ctrl_get(dev->port_id, &dev->fc_conf);
     if (err) {
         if (err == ENOTSUP) {
-            if (flow_control_requested) {
-                VLOG_WARN("%s: Flow control is not supported.",
-                          netdev_get_name(netdev));
-            }
+            VLOG_WARN("%s: Flow control is not supported.",
+                      netdev_get_name(netdev));
             err = 0; /* Not fatal. */
         } else {
             VLOG_WARN("%s: Cannot get flow control parameters: %s",
