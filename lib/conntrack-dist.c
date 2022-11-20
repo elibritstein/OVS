@@ -64,7 +64,7 @@ ctd_process_one(struct dp_packet *pkt)
     /* Delete found entry if in wrong direction. 'force' implies commit. */
     if (OVS_UNLIKELY(force && ctx->reply && conn)) {
         if (conn_lookup(ct, &conn->key, now, NULL, NULL)) {
-            conn_clean(ct, conn);
+            conn_force_expire(conn);
         }
         conn = NULL;
     }
