@@ -2564,20 +2564,12 @@ dump_flow_action(struct ds *s, struct ds *s_extra,
                           IP_ARGS(set_ipv4->ipv4_addr));
         }
         ds_put_cstr(s, "/ ");
-    } else if (actions->type == RTE_FLOW_ACTION_TYPE_SET_IPV4_TTL) {
+    } else if (actions->type == RTE_FLOW_ACTION_TYPE_SET_TTL) {
         const struct rte_flow_action_set_ttl *set_ttl = actions->conf;
 
-        ds_put_cstr(s, "set_ipv4_ttl ");
+        ds_put_cstr(s, "set_ttl ");
         if (set_ttl) {
             ds_put_format(s, "ttl_value %d ", set_ttl->ttl_value);
-        }
-        ds_put_cstr(s, "/ ");
-    } else if (actions->type == RTE_FLOW_ACTION_TYPE_SET_IPV6_HOP) {
-        const struct rte_flow_action_set_ttl *set_ttl = actions->conf;
-
-        ds_put_cstr(s, "set_ipv6_hop ");
-        if (set_ttl) {
-            ds_put_format(s, "hop_value %d ", set_ttl->ttl_value);
         }
         ds_put_cstr(s, "/ ");
     } else if (actions->type == RTE_FLOW_ACTION_TYPE_SET_TP_SRC ||
@@ -4395,7 +4387,7 @@ parse_set_actions(struct flow_actions *actions,
 
             add_set_flow_action(ipv4_src, RTE_FLOW_ACTION_TYPE_SET_IPV4_SRC);
             add_set_flow_action(ipv4_dst, RTE_FLOW_ACTION_TYPE_SET_IPV4_DST);
-            add_set_flow_action(ipv4_ttl, RTE_FLOW_ACTION_TYPE_SET_IPV4_TTL);
+            add_set_flow_action(ipv4_ttl, RTE_FLOW_ACTION_TYPE_SET_TTL);
 
             if (mask && !is_all_zeros(mask, sizeof *mask)) {
                 VLOG_DBG_RL(&rl, "Unsupported IPv4 set action");
@@ -4407,7 +4399,7 @@ parse_set_actions(struct flow_actions *actions,
 
             add_set_flow_action(ipv6_src, RTE_FLOW_ACTION_TYPE_SET_IPV6_SRC);
             add_set_flow_action(ipv6_dst, RTE_FLOW_ACTION_TYPE_SET_IPV6_DST);
-            add_set_flow_action(ipv6_hlimit, RTE_FLOW_ACTION_TYPE_SET_IPV6_HOP);
+            add_set_flow_action(ipv6_hlimit, RTE_FLOW_ACTION_TYPE_SET_TTL);
 
             if (mask && !is_all_zeros(mask, sizeof *mask)) {
                 VLOG_DBG_RL(&rl, "Unsupported IPv6 set action");
