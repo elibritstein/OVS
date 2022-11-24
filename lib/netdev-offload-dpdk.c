@@ -173,8 +173,7 @@ struct act_resources {
     uint32_t ct_match_label_id;
     uint32_t ct_action_label_id;
     struct indirect_ctx **pshared_age_ctx;
-    uint32_t ctid;
-    uint32_t counter_id;
+    struct indirect_ctx **pshared_count_ctx;
     uint32_t sflow_id;
     uint32_t meter_id;
 };
@@ -1801,107 +1800,33 @@ get_indirect_age_ctx(struct netdev *netdev,
                             create);
 }
 
-static struct ds *
-dump_counter_id(struct ds *s, void *data)
-{
-    struct flows_counter_key *key = (struct flows_counter_key *) data;
-    char buffer[OFFLOAD_FLOWS_COUNTER_KEY_STRING_SIZE];
-
-    netdev_flow_counter_key_to_string(key, buffer, sizeof buffer);
-    ds_put_format(s, "counter_id_key=%s", buffer);
-    return s;
-}
-
-#define MIN_COUNTER_ID       1U
-#define MAX_COUNTER_ID       (UINT32_MAX - 1U)
-
-static struct id_fpool *counter_id_pool = NULL;
-
-static uint32_t
-counter_id_alloc(void)
-{
-    static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
-    unsigned int tid = netdev_offload_thread_id();
-    uint32_t counter_id;
-
-    if (ovsthread_once_start(&init_once)) {
-        unsigned int nb_thread = netdev_offload_thread_nb();
-
-        /* Haven't initiated yet, do it here */
-        counter_id_pool = id_fpool_create(nb_thread, MIN_COUNTER_ID,
-                                          MAX_COUNTER_ID);
-
-        ovsthread_once_done(&init_once);
-    }
-    if (id_fpool_new_id(counter_id_pool, tid, &counter_id)) {
-        return counter_id;
-    }
-    return 0;
-}
-
-static void
-counter_id_free(uint32_t counter_id)
-{
-    unsigned int tid = netdev_offload_thread_id();
-
-    id_fpool_free_id(counter_id_pool, tid, counter_id);
-}
-
-static struct context_metadata counter_id_md = {
-    .name = "counter_id",
-    .dump_context_data = dump_counter_id,
+static struct context_metadata shared_count_md = {
+    .name = "shared-count",
     .maps_lock = OVS_MUTEX_INITIALIZER,
     .d2i_map = CMAP_INITIALIZER,
-    .i2d_map = CMAP_INITIALIZER,
-    .id_alloc = counter_id_alloc,
-    .id_free = counter_id_free,
     .data_size = sizeof(struct flows_counter_key),
+    .priv_size = sizeof(struct indirect_ctx),
 };
 
-static int
-get_ct_counter_id(uintptr_t ctid_key, uint32_t *ct_id)
+static struct indirect_ctx **
+get_indirect_count_ctx(struct netdev *netdev,
+                       struct flows_counter_key *key,
+                       bool create)
 {
     static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
-    struct flows_counter_key counter_id_key = { .ptr_key = ctid_key, };
-    struct context_data ct_id_ctx = {
-        .data = &counter_id_key,
+    struct rte_flow_action action = {
+        .type = RTE_FLOW_ACTION_TYPE_COUNT,
     };
 
     if (ovsthread_once_start(&init_once)) {
         /* Disable shrinking on CT counter CMAPs.
          * Otherwise they might re-expand afterward, adding latency
          * jitter. */
-        cmap_set_min_load(&counter_id_md.d2i_map, 0.0);
-        cmap_set_min_load(&counter_id_md.i2d_map, 0.0);
+        cmap_set_min_load(&shared_count_md.d2i_map, 0.0);
         ovsthread_once_done(&init_once);
     }
 
-    return get_context_data_id_by_data(&counter_id_md, &ct_id_ctx, NULL,
-                                       ct_id);
-}
-
-static void
-put_ct_counter_id(uint32_t ct_id)
-{
-    put_context_data_by_id(&counter_id_md, ct_id);
-}
-
-static int
-get_flows_counter_id(struct flows_counter_key *counter_key,
-                     uint32_t *counter_id)
-{
-    struct context_data ct_id_ctx = {
-        .data = counter_key,
-    };
-
-    return get_context_data_id_by_data(&counter_id_md, &ct_id_ctx, NULL,
-                                       counter_id);
-}
-
-static void
-put_flows_counter_id(uint32_t counter_id)
-{
-    put_context_data_by_id(&counter_id_md, counter_id);
+    return get_indirect_ctx(netdev, key, &shared_count_md, &action, create);
 }
 
 static void
@@ -1920,8 +1845,7 @@ put_action_resources(struct act_resources *act_resources)
     put_label_id(act_resources->ct_match_label_id);
     put_label_id(act_resources->ct_action_label_id);
     put_indirect_ctx(&shared_age_md, act_resources->pshared_age_ctx);
-    put_ct_counter_id(act_resources->ctid);
-    put_flows_counter_id(act_resources->counter_id);
+    put_indirect_ctx(&shared_count_md, act_resources->pshared_count_ctx);
     put_sflow_id(act_resources->sflow_id);
     netdev_dpdk_meter_unref(act_resources->meter_id - 1);
 }
@@ -1966,6 +1890,7 @@ struct flow_actions {
     int tnl_pmd_actions_pos;
     struct ds s_tnl;
     int shared_age_action_pos;
+    int shared_count_action_pos;
 };
 
 static void
@@ -2537,14 +2462,7 @@ dump_flow_action(struct ds *s, struct ds *s_extra,
         }
         ds_put_cstr(s, "/ ");
     } else if (actions->type == RTE_FLOW_ACTION_TYPE_COUNT) {
-        const struct rte_flow_action_count *count = actions->conf;
-
-        ds_put_cstr(s, "count ");
-        if (count) {
-            ds_put_format(s, "shared %d identifier %d ", count->shared,
-                          count->id);
-        }
-        ds_put_cstr(s, "/ ");
+        ds_put_cstr(s, "count / ");
     } else if (actions->type == RTE_FLOW_ACTION_TYPE_PORT_ID) {
         dump_port_id(s, actions->conf);
         ds_put_cstr(s, "/ ");
@@ -2690,6 +2608,8 @@ dump_flow_action(struct ds *s, struct ds *s_extra,
                       actions->conf);
         if (act_index == flow_actions->shared_age_action_pos) {
             ds_put_cstr(s_extra, "age timeout 0xffffff / end;");
+        } else if (act_index == flow_actions->shared_count_action_pos) {
+            ds_put_cstr(s_extra, "count / end;");
         } else {
             ds_put_cstr(s_extra, "UNKONWN / end;");
         }
@@ -4198,25 +4118,31 @@ add_count_action(struct netdev *netdev,
                  struct act_vars *act_vars)
 {
     struct rte_flow_action_count *count = per_thread_xzalloc(sizeof *count);
+    struct indirect_ctx **pctx;
 
     /* e2e flows don't use mark. ct2ct do. we can share only e2e, not ct2ct. */
     if (act_vars->is_e2e_cache &&
         act_resources->flow_id == INVALID_FLOW_MARK &&
         !netdev_is_flow_counter_key_zero(&act_vars->flows_counter_key)) {
-        if (get_flows_counter_id(&act_vars->flows_counter_key, &count->id)) {
-            per_thread_free(count);
+        pctx = get_indirect_count_ctx(netdev, &act_vars->flows_counter_key,
+                                      true);
+        if (!pctx) {
             return -1;
         }
-        count->shared = 1;
-        act_resources->counter_id = count->id;
+        act_resources->pshared_count_ctx = pctx;
+        add_flow_action(actions, RTE_FLOW_ACTION_TYPE_INDIRECT, (*pctx)->act_hdl);
+        actions->shared_count_action_pos = actions->cnt - 1;
+    } else if (act_vars->is_ct_conn) {
+        add_flow_action(actions, RTE_FLOW_ACTION_TYPE_INDIRECT, NULL);
+        actions->shared_count_action_pos = actions->cnt - 1;
+    } else {
+        /* For normal flows, add a standard count action. */
+        add_flow_action(actions, RTE_FLOW_ACTION_TYPE_COUNT, count);
     }
-    add_flow_action(actions, RTE_FLOW_ACTION_TYPE_COUNT, count);
 
     /* e2e flows don't use mark. ct2ct do. we can share only e2e, not ct2ct. */
     if (act_vars->is_e2e_cache && act_vars->ct_counter_key &&
         act_resources->flow_id == INVALID_FLOW_MARK) {
-        struct indirect_ctx **pctx;
-
         pctx = get_indirect_age_ctx(netdev, act_vars->ct_counter_key, true);
         if (!pctx) {
             return -1;
@@ -4854,7 +4780,8 @@ add_tnl_decap_action(struct flow_actions *actions,
 }
 
 static int
-parse_ct_actions(struct flow_actions *actions,
+parse_ct_actions(struct netdev *netdev,
+                 struct flow_actions *actions,
                  const struct nlattr *ct_actions,
                  const size_t ct_actions_len,
                  struct act_resources *act_resources,
@@ -4959,13 +4886,23 @@ parse_ct_actions(struct flow_actions *actions,
                 VLOG_ERR("Invalid offload helper: '%s'", helper);
                 return -1;
             }
-            /* mt ct flows don't use mark. ct2ct do. we can share only mt, not
-             * ct2ct.
-             */
-            if (act_resources->flow_id == INVALID_FLOW_MARK &&
-                get_ct_counter_id(ctid_key, &act_resources->ctid)) {
-                VLOG_ERR("Could not create CT id");
-                return -1;
+            if (act_resources->flow_id == INVALID_FLOW_MARK) {
+                struct flows_counter_key counter_id_key = {
+                    .ptr_key = ctid_key,
+                };
+                struct indirect_ctx **pctx;
+                struct rte_flow_action *ia;
+
+                pctx = get_indirect_count_ctx(netdev, &counter_id_key, true);
+                if (!pctx) {
+                    VLOG_ERR("Could not set CT shared count");
+                    return -1;
+                }
+                act_resources->pshared_count_ctx = pctx;
+                ia = &actions->actions[actions->shared_count_action_pos];
+                ovs_assert(ia->type == RTE_FLOW_ACTION_TYPE_INDIRECT &&
+                           ia->conf == NULL);
+                ia->conf = (*pctx)->act_hdl;
             }
 
             act_vars->ct_mode = CT_MODE_CT_CONN;
@@ -5075,8 +5012,7 @@ split_ct_conn_actions(const struct rte_flow_action *actions,
                       struct flow_actions *ct_actions,
                       struct flow_actions *nat_actions,
                       struct rte_flow_action_set_tag *ct_state,
-                      struct rte_flow_action_set_tag *ctnat_state,
-                      uint32_t ctid)
+                      struct rte_flow_action_set_tag *ctnat_state)
 {
     const void *ct_conf, *ctnat_conf;
 
@@ -5091,13 +5027,6 @@ split_ct_conn_actions(const struct rte_flow_action *actions,
             add_flow_action(ct_actions, actions->type, ct_conf);
         }
         add_flow_action(nat_actions, actions->type, ctnat_conf);
-        if (ctid && actions->type == RTE_FLOW_ACTION_TYPE_COUNT) {
-            struct rte_flow_action_count *count;
-
-            count = CONST_CAST(struct rte_flow_action_count *, actions->conf);
-            count->shared = 1;
-            count->id = ctid;
-        }
     }
     add_flow_action(ct_actions, RTE_FLOW_ACTION_TYPE_END, NULL);
     add_flow_action(nat_actions, RTE_FLOW_ACTION_TYPE_END, NULL);
@@ -5123,7 +5052,7 @@ create_ct_conn(struct netdev *netdev,
     fi->has_count[0] = fi->has_count[1] = false;
 
     split_ct_conn_actions(flow_actions->actions, &ct_actions, &nat_actions,
-                          &ct_state, &ctnat_state, act_resources->ctid);
+                          &ct_state, &ctnat_state);
     is_ct = ct_actions.cnt == nat_actions.cnt;
 
     fi->has_count[0] = true;
@@ -5475,7 +5404,7 @@ parse_flow_actions(struct netdev *flowdev,
                 VLOG_DBG_RL(&rl, "Mirror should be the first action");
                 return -1;
             }
-            if (parse_ct_actions(actions, ct_actions, ct_actions_len,
+            if (parse_ct_actions(netdev, actions, ct_actions, ct_actions_len,
                                  act_resources, act_vars)) {
                 return -1;
             }
@@ -5853,6 +5782,7 @@ netdev_offload_dpdk_flow_get(struct netdev *netdev,
     struct ufid_to_rte_flow_data *rte_flow_data;
     struct rte_flow_error error;
     struct rte_flow *rte_flow;
+    struct indirect_ctx *ctx;
     int ret = 0;
 
     attrs->dp_extra_info = NULL;
@@ -5878,8 +5808,14 @@ netdev_offload_dpdk_flow_get(struct netdev *netdev,
         ? rte_flow_data->flow_item.rte_flow[1]
         : rte_flow_data->flow_item.rte_flow[0];
 
-    ret = netdev_dpdk_rte_flow_query_count(rte_flow_data->physdev,
+    if (!rte_flow_data->act_resources.pshared_count_ctx) {
+        ret = netdev_dpdk_rte_flow_query_count(rte_flow_data->physdev,
                                            rte_flow, &query, &error);
+    } else {
+        ctx = *rte_flow_data->act_resources.pshared_count_ctx;
+        ret = netdev_dpdk_indirect_action_query(ctx->netdev, ctx->act_hdl,
+                                                &query, &error);
+    }
     if (ret) {
         VLOG_DBG_RL(&rl, "%s: Failed to query ufid "UUID_FMT" flow: %p",
                     netdev_get_name(netdev), UUID_ARGS((struct uuid *) ufid),
