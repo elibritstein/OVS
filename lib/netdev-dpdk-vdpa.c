@@ -122,13 +122,14 @@ relays_map_remove(struct netdev_dpdk_vdpa_relay *relay)
 static int
 netdev_dpdk_vdpa_port_from_name(const char *name)
 {
+    struct rte_eth_dev_info info;
     int port_id;
     size_t len;
 
     len = strlen(name);
-    for (port_id = 0; port_id < RTE_MAX_ETHPORTS; port_id++) {
-        if (rte_eth_dev_is_valid_port(port_id) &&
-            !strncmp(name, rte_eth_devices[port_id].device->name, len)) {
+    RTE_ETH_FOREACH_DEV (port_id) {
+        rte_eth_dev_info_get(port_id, &info);
+        if (!strncmp(name, info.device->name, len)) {
             return port_id;
         }
     }
@@ -530,7 +531,7 @@ netdev_dpdk_vdpa_parse_pkt(struct rte_mbuf *m, uint16_t mtu)
             tcp = ALIGNED_CAST(const struct tcp_header *,
                                ((char *)ipv4 + l3_len));
             l4_len = TCP_OFFSET(tcp->tcp_ctl) * 4;
-            ol_flags = (PKT_TX_IPV4 | PKT_TX_IP_CKSUM);
+            ol_flags = (RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM);
         }
         break;
     case ETH_TYPE_IPV6:
@@ -546,7 +547,7 @@ netdev_dpdk_vdpa_parse_pkt(struct rte_mbuf *m, uint16_t mtu)
         if (l4_proto_id == IPPROTO_TCP) {
             tcp = (const struct tcp_header *)data;
             l4_len = TCP_OFFSET(tcp->tcp_ctl) * 4;
-            ol_flags = PKT_TX_IPV6;
+            ol_flags = RTE_MBUF_F_TX_IPV6;
         }
         break;
     default:
@@ -554,7 +555,7 @@ netdev_dpdk_vdpa_parse_pkt(struct rte_mbuf *m, uint16_t mtu)
     }
 
     if (l4_proto_id == IPPROTO_TCP) {
-        ol_flags |= (PKT_TX_TCP_SEG | PKT_TX_TCP_CKSUM);
+        ol_flags |= (RTE_MBUF_F_TX_TCP_SEG | RTE_MBUF_F_TX_TCP_CKSUM);
         m->l2_len = l2_len;
         m->l3_len = l3_len;
         m->l4_len = l4_len;
@@ -708,7 +709,7 @@ netdev_dpdk_vdpa_destroy_device(int vid)
               relay->vhost_name);
 }
 
-static const struct vhost_device_ops netdev_dpdk_vdpa_sample_devops = {
+static const struct rte_vhost_device_ops netdev_dpdk_vdpa_sample_devops = {
         .new_device = netdev_dpdk_vdpa_new_device,
         .destroy_device = netdev_dpdk_vdpa_destroy_device,
 };
@@ -1397,4 +1398,3 @@ netdev_dpdk_vdpa_get_custom_stats_impl(struct netdev_dpdk_vdpa_relay *relay,
     }
     return 0;
 }
-

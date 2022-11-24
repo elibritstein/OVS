@@ -186,7 +186,7 @@ static int vring_state_changed(int vid, uint16_t queue_id, int enable);
 static void destroy_connection(int vid);
 static void vhost_guest_notified(int vid);
 
-static const struct vhost_device_ops virtio_net_device_ops =
+static const struct rte_vhost_device_ops virtio_net_device_ops =
 {
     .new_device =  new_device,
     .destroy_device = destroy_device,
@@ -1368,26 +1368,6 @@ common_construct(struct netdev *netdev, dpdk_port_t port_no,
     return 0;
 }
 
-/* Get the number of OVS interfaces which have the same DPDK
- * rte device (e.g. same pci bus address).
- * FIXME: avoid direct access to DPDK internal array rte_eth_devices.
- */
-static int
-netdev_dpdk_get_num_ports(struct rte_device *device)
-    OVS_REQUIRES(dpdk_mutex)
-{
-    struct netdev_dpdk *dev;
-    int count = 0;
-
-    LIST_FOR_EACH (dev, list_node, &dpdk_list) {
-        if (rte_eth_devices[dev->port_id].device == device
-        && rte_eth_devices[dev->port_id].state != RTE_ETH_DEV_UNUSED) {
-            count++;
-        }
-    }
-    return count;
-}
-
 static int
 vhost_common_construct(struct netdev *netdev)
     OVS_REQUIRES(dpdk_mutex)
@@ -1565,8 +1545,6 @@ static void
 netdev_dpdk_destruct(struct netdev *netdev)
 {
     struct netdev_dpdk *dev = netdev_dpdk_cast(netdev);
-    struct rte_device *rte_dev;
-    struct rte_eth_dev *eth_dev;
 
     ovs_mutex_lock(&dpdk_mutex);
 
@@ -1576,20 +1554,43 @@ netdev_dpdk_destruct(struct netdev *netdev)
     }
 
     if (dev->attached) {
-        /* Retrieve eth device data before closing it.
-         * FIXME: avoid direct access to DPDK internal array rte_eth_devices.
-         */
-        eth_dev = &rte_eth_devices[dev->port_id];
-        rte_dev = eth_dev->device;
+        bool dpdk_resources_still_used = false;
+        struct rte_eth_dev_info dev_info;
+        dpdk_port_t sibling_port_id;
+
+        /* Check if this netdev has siblings (i.e. shares DPDK resources) among
+         * other OVS netdevs. */
+        RTE_ETH_FOREACH_DEV_SIBLING (sibling_port_id, dev->port_id) {
+            struct netdev_dpdk *sibling;
+
+            /* RTE_ETH_FOREACH_DEV_SIBLING lists dev->port_id as part of the
+             * loop. */
+            if (sibling_port_id == dev->port_id) {
+                continue;
+            }
+            LIST_FOR_EACH (sibling, list_node, &dpdk_list) {
+                if (sibling->port_id != sibling_port_id) {
+                    continue;
+                }
+                dpdk_resources_still_used = true;
+                break;
+            }
+            if (dpdk_resources_still_used) {
+                break;
+            }
+        }
+
+        /* Retrieve eth device data before closing it. */
+        rte_eth_dev_info_get(dev->port_id, &dev_info);
 
         /* Remove the eth device. */
         rte_eth_dev_close(dev->port_id);
 
-        /* Remove this rte device and all its eth devices if all the eth
-         * devices belonging to the rte device are closed.
-         */
-        if (!netdev_dpdk_get_num_ports(rte_dev)) {
-            int ret = rte_dev_remove(rte_dev);
+        /* Remove the rte device if no associated eth device is used by OVS.
+         * Note: any remaining eth devices associated to this rte device are
+         * closed by DPDK ethdev layer. */
+        if (!dpdk_resources_still_used) {
+            int ret = rte_dev_remove(dev_info.device);
 
             if (ret < 0) {
                 VLOG_ERR("Device '%s' can not be detached: %s.",
@@ -2320,14 +2321,14 @@ netdev_dpdk_prep_hwol_packet(struct netdev_dpdk *dev, struct rte_mbuf *mbuf)
 {
     struct dp_packet *pkt = CONTAINER_OF(mbuf, struct dp_packet, mbuf);
 
-    if (mbuf->ol_flags & PKT_TX_L4_MASK) {
+    if (mbuf->ol_flags & RTE_MBUF_F_TX_L4_MASK) {
         mbuf->l2_len = (char *)dp_packet_l3(pkt) - (char *)dp_packet_eth(pkt);
         mbuf->l3_len = (char *)dp_packet_l4(pkt) - (char *)dp_packet_l3(pkt);
         mbuf->outer_l2_len = 0;
         mbuf->outer_l3_len = 0;
     }
 
-    if (mbuf->ol_flags & PKT_TX_TCP_SEG) {
+    if (mbuf->ol_flags & RTE_MBUF_F_TX_TCP_SEG) {
         struct tcp_header *th = dp_packet_l4(pkt);
 
         if (!th) {
@@ -2337,11 +2338,11 @@ netdev_dpdk_prep_hwol_packet(struct netdev_dpdk *dev, struct rte_mbuf *mbuf)
         }
 
         mbuf->l4_len = TCP_OFFSET(th->tcp_ctl) * 4;
-        mbuf->ol_flags |= PKT_TX_TCP_CKSUM;
+        mbuf->ol_flags |= RTE_MBUF_F_TX_TCP_CKSUM;
         mbuf->tso_segsz = dev->mtu - mbuf->l3_len - mbuf->l4_len;
 
-        if (mbuf->ol_flags & PKT_TX_IPV4) {
-            mbuf->ol_flags |= PKT_TX_IP_CKSUM;
+        if (mbuf->ol_flags & RTE_MBUF_F_TX_IPV4) {
+            mbuf->ol_flags |= RTE_MBUF_F_TX_IP_CKSUM;
         }
     }
     return true;
@@ -2708,7 +2709,7 @@ netdev_dpdk_filter_packet_len(struct netdev_dpdk *dev, struct rte_mbuf **pkts,
     for (i = 0; i < pkt_cnt; i++) {
         pkt = pkts[i];
         if (OVS_UNLIKELY((pkt->pkt_len > dev->max_packet_len)
-            && !(pkt->ol_flags & PKT_TX_TCP_SEG))) {
+            && !(pkt->ol_flags & RTE_MBUF_F_TX_TCP_SEG))) {
             VLOG_WARN_RL(&rl, "%s: Too big size %" PRIu32 " "
                          "max_packet_len %d", dev->up.name, pkt->pkt_len,
                          dev->max_packet_len);
@@ -2846,12 +2847,12 @@ dpdk_copy_dp_packet_to_mbuf(struct rte_mempool *mp, struct dp_packet *pkt_orig)
     mbuf_dest->tx_offload = pkt_orig->mbuf.tx_offload;
     mbuf_dest->packet_type = pkt_orig->mbuf.packet_type;
     mbuf_dest->ol_flags |= (pkt_orig->mbuf.ol_flags &
-                            ~(EXT_ATTACHED_MBUF | IND_ATTACHED_MBUF));
+                            ~(RTE_MBUF_F_EXTERNAL | RTE_MBUF_F_INDIRECT));
 
     memcpy(&pkt_dest->l2_pad_size, &pkt_orig->l2_pad_size,
            sizeof(struct dp_packet) - offsetof(struct dp_packet, l2_pad_size));
 
-    if (mbuf_dest->ol_flags & PKT_TX_L4_MASK) {
+    if (mbuf_dest->ol_flags & RTE_MBUF_F_TX_L4_MASK) {
         mbuf_dest->l2_len = (char *)dp_packet_l3(pkt_dest)
                                 - (char *)dp_packet_eth(pkt_dest);
         mbuf_dest->l3_len = (char *)dp_packet_l4(pkt_dest)
@@ -3864,8 +3865,8 @@ netdev_dpdk_get_status(const struct netdev *netdev, struct smap *args)
     ovs_mutex_unlock(&dev->mutex);
     const struct rte_bus *bus;
     const struct rte_pci_device *pci_dev;
-    uint16_t vendor_id = PCI_ANY_ID;
-    uint16_t device_id = PCI_ANY_ID;
+    uint16_t vendor_id = RTE_PCI_ANY_ID;
+    uint16_t device_id = RTE_PCI_ANY_ID;
     bus = rte_bus_find_by_device(dev_info.device);
     if (bus && !strcmp(bus->name, "pci")) {
         pci_dev = RTE_DEV_TO_PCI(dev_info.device);
@@ -3979,12 +3980,12 @@ static void
 netdev_dpdk_detach(struct unixctl_conn *conn, int argc OVS_UNUSED,
                    const char *argv[], void *aux OVS_UNUSED)
 {
-    char *response;
-    dpdk_port_t port_id;
-    struct netdev_dpdk *dev;
-    struct rte_device *rte_dev;
     struct ds used_interfaces = DS_EMPTY_INITIALIZER;
+    struct rte_eth_dev_info dev_info;
+    dpdk_port_t sibling_port_id;
+    dpdk_port_t port_id;
     bool used = false;
+    char *response;
 
     ovs_mutex_lock(&dpdk_mutex);
 
@@ -3994,18 +3995,21 @@ netdev_dpdk_detach(struct unixctl_conn *conn, int argc OVS_UNUSED,
         goto error;
     }
 
-    rte_dev = rte_eth_devices[port_id].device;
     ds_put_format(&used_interfaces,
                   "Device '%s' is being used by the following interfaces:",
                   argv[1]);
 
-    LIST_FOR_EACH (dev, list_node, &dpdk_list) {
-        /* FIXME: avoid direct access to DPDK array rte_eth_devices. */
-        if (rte_eth_devices[dev->port_id].device == rte_dev
-            && rte_eth_devices[dev->port_id].state != RTE_ETH_DEV_UNUSED) {
+    RTE_ETH_FOREACH_DEV_SIBLING (sibling_port_id, port_id) {
+        struct netdev_dpdk *dev;
+
+        LIST_FOR_EACH (dev, list_node, &dpdk_list) {
+            if (dev->port_id != sibling_port_id) {
+                continue;
+            }
             used = true;
             ds_put_format(&used_interfaces, " %s",
                           netdev_get_name(&dev->up));
+            break;
         }
     }
 
@@ -4017,8 +4021,9 @@ netdev_dpdk_detach(struct unixctl_conn *conn, int argc OVS_UNUSED,
     }
     ds_destroy(&used_interfaces);
 
+    rte_eth_dev_info_get(port_id, &dev_info);
     rte_eth_dev_close(port_id);
-    if (rte_dev_remove(rte_dev) < 0) {
+    if (rte_dev_remove(dev_info.device) < 0) {
         response = xasprintf("Device '%s' can not be detached", argv[1]);
         goto error;
     }
@@ -5515,7 +5520,7 @@ netdev_dpdk_rte_flow_query_count(struct netdev *netdev,
                                  struct rte_flow_query_count *query,
                                  struct rte_flow_error *error)
 {
-    struct rte_flow_action_count count = { .shared = 0, .id = 0 };
+    struct rte_flow_action_count count = { .id = 0, };
     const struct rte_flow_action actions[] = {
         {
             .type = RTE_FLOW_ACTION_TYPE_COUNT,
