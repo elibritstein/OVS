@@ -61,7 +61,7 @@ static bool netdev_offload_dpdk_disable_zone_tables = false;
  * A mapping from ufid to dpdk rte_flow.
  */
 
-struct shared_age_ctx {
+struct indirect_ctx {
     struct rte_flow_action_handle *act_hdl;
     struct netdev *netdev;
 };
@@ -172,7 +172,7 @@ struct act_resources {
     uint32_t ct_action_zone_id;
     uint32_t ct_match_label_id;
     uint32_t ct_action_label_id;
-    struct shared_age_ctx **pshared_age_ctx;
+    struct indirect_ctx **pshared_age_ctx;
     uint32_t ctid;
     uint32_t counter_id;
     uint32_t sflow_id;
@@ -1669,36 +1669,22 @@ disassociate_flow_id(uint32_t flow_id)
     return disassociate_id_data(&flow_miss_ctx_md, flow_id);
 }
 
-static struct context_metadata shared_age_md = {
-    .name = "shared-age",
-    .maps_lock = OVS_MUTEX_INITIALIZER,
-    .d2i_map = CMAP_INITIALIZER,
-    .data_size = sizeof(uintptr_t),
-    .priv_size = sizeof(struct shared_age_ctx),
-};
-
-static struct shared_age_ctx **
-get_shared_age_ctx(struct netdev *netdev,
-                   uintptr_t app_counter_key,
-                   bool create)
+static struct indirect_ctx **
+get_indirect_ctx(struct netdev *netdev,
+                 void *key,
+                 struct context_metadata *md,
+                 struct rte_flow_action *action,
+                 bool create)
 {
-    struct context_metadata *md = &shared_age_md;
-    struct rte_flow_action_age age_conf = {
-        .timeout = 0xFFFFFF,
-    };
-    struct rte_flow_action action = {
-        .type = RTE_FLOW_ACTION_TYPE_AGE,
-        .conf = &age_conf,
-    };
     struct context_data *data_cur;
     struct rte_flow_error error;
-    struct shared_age_ctx *ctx;
+    struct indirect_ctx *ctx;
     size_t data_size;
     size_t dhash;
 
-    dhash = hash_bytes(&app_counter_key, sizeof app_counter_key, 0);
+    dhash = hash_bytes(key, md->data_size, 0);
     CMAP_FOR_EACH_WITH_HASH (data_cur, d2i_node, dhash, &md->d2i_map) {
-        if (app_counter_key == *((uintptr_t *) data_cur->data)) {
+        if (!memcmp(key, data_cur->data, md->data_size)) {
             if (!ovs_refcount_try_ref_rcu(&data_cur->refcount)) {
                 /* If a reference could not be taken, it means that
                  * while the data has been found within the map, it has
@@ -1706,7 +1692,7 @@ get_shared_age_ctx(struct netdev *netdev,
                  * allocate a new data node altogether. */
                 break;
             }
-            return (struct shared_age_ctx **) &data_cur->priv;
+            return (struct indirect_ctx **) &data_cur->priv;
         }
     }
 
@@ -1725,20 +1711,20 @@ get_shared_age_ctx(struct netdev *netdev,
     }
     data_cur->priv = (uint8_t *) data_cur->data + data_size;
     ctx = data_cur->priv;
-    ctx->act_hdl = netdev_dpdk_indirect_action_create(netdev, &action, &error);
+    ctx->act_hdl = netdev_dpdk_indirect_action_create(netdev, action, &error);
     if (ctx->act_hdl == NULL) {
         goto err_indir;
     }
     ctx->netdev = netdev;
 
-    *((uintptr_t *) data_cur->data) = app_counter_key;
+    memcpy(data_cur->data, key, md->data_size);
     ovs_refcount_init(&data_cur->refcount);
     ovs_mutex_lock(&md->maps_lock);
     data_cur->d2i_hash = dhash;
     cmap_insert(&md->d2i_map, &data_cur->d2i_node, dhash);
     ovs_mutex_unlock(&md->maps_lock);
 
-    return (struct shared_age_ctx **) &data_cur->priv;
+    return (struct indirect_ctx **) &data_cur->priv;
 
 err_indir:
     free(data_cur->data);
@@ -1755,12 +1741,11 @@ context_data_unref(struct context_data *data)
 }
 
 static void
-put_shared_age_ctx(struct shared_age_ctx **pctx)
+put_indirect_ctx(struct context_metadata *md, struct indirect_ctx **pctx)
 {
-    struct context_metadata *md = &shared_age_md;
     struct rte_flow_error error;
-    struct shared_age_ctx *ctx;
     struct context_data *data;
+    struct indirect_ctx *ctx;
 
     if (pctx == NULL) {
         return;
@@ -1789,6 +1774,31 @@ err:
     ovsrcu_postpone(context_data_unref, data);
 out:
     ovs_mutex_unlock(&md->maps_lock);
+}
+
+static struct context_metadata shared_age_md = {
+    .name = "shared-age",
+    .maps_lock = OVS_MUTEX_INITIALIZER,
+    .d2i_map = CMAP_INITIALIZER,
+    .data_size = sizeof(uintptr_t),
+    .priv_size = sizeof(struct indirect_ctx),
+};
+
+static struct indirect_ctx **
+get_indirect_age_ctx(struct netdev *netdev,
+                     uintptr_t app_counter_key,
+                     bool create)
+{
+    struct rte_flow_action_age age_conf = {
+        .timeout = 0xFFFFFF,
+    };
+    struct rte_flow_action action = {
+        .type = RTE_FLOW_ACTION_TYPE_AGE,
+        .conf = &age_conf,
+    };
+
+    return get_indirect_ctx(netdev, &app_counter_key, &shared_age_md, &action,
+                            create);
 }
 
 static struct ds *
@@ -1909,7 +1919,7 @@ put_action_resources(struct act_resources *act_resources)
     put_zone_id(act_resources->ct_action_zone_id);
     put_label_id(act_resources->ct_match_label_id);
     put_label_id(act_resources->ct_action_label_id);
-    put_shared_age_ctx(act_resources->pshared_age_ctx);
+    put_indirect_ctx(&shared_age_md, act_resources->pshared_age_ctx);
     put_ct_counter_id(act_resources->ctid);
     put_flows_counter_id(act_resources->counter_id);
     put_sflow_id(act_resources->sflow_id);
@@ -1955,6 +1965,7 @@ struct flow_actions {
      */
     int tnl_pmd_actions_pos;
     struct ds s_tnl;
+    int shared_age_action_pos;
 };
 
 static void
@@ -2675,8 +2686,13 @@ dump_flow_action(struct ds *s, struct ds *s_extra,
     } else if (actions->type == RTE_FLOW_ACTION_TYPE_INDIRECT) {
         ds_put_format(s, "indirect %p / ", actions->conf);
         ds_put_format(s_extra, "flow indirect_action 0 create ingress transfer"
-                      " action_id %p action age timeout 0xffffff / end;",
+                      " action_id %p action ",
                       actions->conf);
+        if (act_index == flow_actions->shared_age_action_pos) {
+            ds_put_cstr(s_extra, "age timeout 0xffffff / end;");
+        } else {
+            ds_put_cstr(s_extra, "UNKONWN / end;");
+        }
     } else if (actions->type == RTE_FLOW_ACTION_TYPE_RAW_DECAP) {
         const struct rte_flow_action_raw_decap *raw_decap = actions->conf;
 
@@ -4199,14 +4215,15 @@ add_count_action(struct netdev *netdev,
     /* e2e flows don't use mark. ct2ct do. we can share only e2e, not ct2ct. */
     if (act_vars->is_e2e_cache && act_vars->ct_counter_key &&
         act_resources->flow_id == INVALID_FLOW_MARK) {
-        struct shared_age_ctx **pctx;
+        struct indirect_ctx **pctx;
 
-        pctx = get_shared_age_ctx(netdev, act_vars->ct_counter_key, true);
+        pctx = get_indirect_age_ctx(netdev, act_vars->ct_counter_key, true);
         if (!pctx) {
             return -1;
         }
         act_resources->pshared_age_ctx = pctx;
         add_flow_action(actions, RTE_FLOW_ACTION_TYPE_INDIRECT, (*pctx)->act_hdl);
+        actions->shared_age_action_pos = actions->cnt - 1;
     }
 
     return 0;
@@ -6187,13 +6204,13 @@ netdev_offload_dpdk_ct_counter_query(struct netdev *netdev,
                                      struct dpif_flow_stats *stats)
 {
     struct rte_flow_query_age query_age;
-    struct shared_age_ctx **pctx, *ctx;
+    struct indirect_ctx **pctx, *ctx;
     struct rte_flow_error error;
     int ret;
 
     memset(stats, 0, sizeof *stats);
 
-    pctx = get_shared_age_ctx(netdev, counter_key, false);
+    pctx = get_indirect_age_ctx(netdev, counter_key, false);
     if (pctx == NULL) {
         VLOG_ERR_RL(&rl, "Could not get shared age ctx for "
                     "counter_key=0x%"PRIxPTR, counter_key);
@@ -6207,7 +6224,7 @@ netdev_offload_dpdk_ct_counter_query(struct netdev *netdev,
         (query_age.sec_since_last_hit * 1000) <= (now - prev_now)) {
         stats->used = now;
     }
-    put_shared_age_ctx(pctx);
+    put_indirect_ctx(&shared_age_md, pctx);
     return ret;
 }
 
