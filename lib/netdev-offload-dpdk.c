@@ -5918,6 +5918,7 @@ flush_netdev_flows_in_related(struct netdev *netdev, struct netdev *related)
 
 struct flush_esw_members_aux {
     struct netdev *esw_netdev;
+    int esw_mgr_pid;
     int ret;
 };
 
@@ -5935,6 +5936,7 @@ flush_esw_members_cb(struct netdev *netdev,
     int esw_mgr_pid;
 
     esw_netdev = aux->esw_netdev;
+    esw_mgr_pid = aux->esw_mgr_pid;
 
     /* Skip the ESW netdev itself. */
     if (netdev == esw_netdev) {
@@ -5942,11 +5944,9 @@ flush_esw_members_cb(struct netdev *netdev,
     }
 
     netdev_esw_mgr_pid = netdev_dpdk_get_esw_mgr_port_id(netdev);
-    esw_mgr_pid = netdev_dpdk_get_esw_mgr_port_id(esw_netdev);
 
     /* Skip a non-member. */
-    if (netdev_esw_mgr_pid == -1 || esw_mgr_pid == -1 ||
-        netdev_esw_mgr_pid != esw_mgr_pid) {
+    if (netdev_esw_mgr_pid == -1 || netdev_esw_mgr_pid != esw_mgr_pid) {
         return false;
     }
 
@@ -5986,7 +5986,13 @@ netdev_offload_dpdk_flow_flush(struct netdev *netdev)
     }
 
     if (!netdev_vport_is_vport_class(netdev->netdev_class)) {
-        netdev_ports_traverse(netdev->dpif_type, flush_esw_members_cb, &aux);
+        /* If the flushed netdev is an ESW manager, flush its members too. */
+        aux.esw_mgr_pid = netdev_dpdk_get_esw_mgr_port_id(netdev);
+        if (aux.esw_mgr_pid != -1 &&
+            aux.esw_mgr_pid == netdev_dpdk_get_port_id(netdev)) {
+            netdev_ports_traverse(netdev->dpif_type, flush_esw_members_cb,
+                                  &aux);
+        }
         netdev_ports_traverse(netdev->dpif_type, flush_in_vport_cb, netdev);
     }
 
