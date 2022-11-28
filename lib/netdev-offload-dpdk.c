@@ -4586,8 +4586,7 @@ add_miss_flow(struct netdev *netdev,
               uint32_t dst_table_id,
               uint32_t mark_id)
 {
-    struct rte_flow_attr miss_attr = { .ingress = 1, .transfer = 1,
-                                       .priority = 1, };
+    struct rte_flow_attr miss_attr = { .transfer = 1, .priority = 1, };
     struct rte_flow_item_port_id port_id;
     struct flow_patterns miss_patterns = {
         .items = (struct rte_flow_item []) {
@@ -5042,8 +5041,8 @@ create_ct_conn(struct netdev *netdev,
 {
     struct flow_actions nat_actions = { .actions = NULL, .cnt = 0 };
     struct flow_actions ct_actions = { .actions = NULL, .cnt = 0 };
-    struct rte_flow_attr attr = { .ingress = 1, .transfer = 1 };
     struct rte_flow_action_set_tag ct_state, ctnat_state;
+    struct rte_flow_attr attr = { .transfer = 1 };
     int ret = -1;
     int pos = 0;
     bool is_ct;
@@ -5486,7 +5485,7 @@ netdev_offload_dpdk_actions(struct netdev *flowdev,
                             struct act_vars *act_vars,
                             struct flow_item *fi)
 {
-    struct rte_flow_attr flow_attr = { .ingress = 1, .transfer = 1 };
+    struct rte_flow_attr flow_attr = { .transfer = 1 };
     struct flow_actions actions = {
         .actions = NULL,
         .cnt = 0,
@@ -6230,7 +6229,6 @@ ct_zones_init(struct netdev *netdev, unsigned int tid,
     struct rte_flow_action_jump jump;
     struct rte_flow_attr attr = {
         .transfer = 1,
-        .ingress = 1,
     };
     struct flow_patterns patterns = {
         .items = (struct rte_flow_item []) {
