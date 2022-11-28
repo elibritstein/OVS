@@ -1570,8 +1570,10 @@ netdev_dpdk_destruct(struct netdev *netdev)
 
     ovs_mutex_lock(&dpdk_mutex);
 
-    rte_eth_dev_stop(dev->port_id);
-    dev->started = false;
+    if (dev->started) {
+        rte_eth_dev_stop(dev->port_id);
+        dev->started = false;
+    }
 
     if (dev->attached) {
         /* Retrieve eth device data before closing it.
@@ -5420,14 +5422,15 @@ unlock:
 int
 netdev_dpdk_get_esw_mgr_port_id(struct netdev *netdev)
 {
-    struct netdev_dpdk *dev;
+    struct netdev_dpdk *dev = netdev_dpdk_cast(netdev);
     int ret = -1;
 
-    if (!is_dpdk_class(netdev->netdev_class)) {
+    if (!is_dpdk_class(netdev->netdev_class) ||
+        !rte_eth_dev_is_valid_port(dev->port_id) ||
+        !rte_eth_dev_is_valid_port(dev->esw_mgr_port_id)) {
         goto out;
     }
 
-    dev = netdev_dpdk_cast(netdev);
     ret = dev->esw_mgr_port_id;
 out:
     return ret;
@@ -5436,14 +5439,14 @@ out:
 int
 netdev_dpdk_get_port_id(struct netdev *netdev)
 {
-    struct netdev_dpdk *dev;
+    struct netdev_dpdk *dev = netdev_dpdk_cast(netdev);
     int ret = -1;
 
-    if (!is_dpdk_class(netdev->netdev_class)) {
+    if (!is_dpdk_class(netdev->netdev_class) ||
+        !rte_eth_dev_is_valid_port(dev->port_id)) {
         goto out;
     }
 
-    dev = netdev_dpdk_cast(netdev);
     ret = dev->port_id;
 out:
     return ret;
