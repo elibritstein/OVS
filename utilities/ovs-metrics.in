@@ -1,0 +1,95 @@
+#! @PYTHON3@
+#
+# Copyright (c) 2022 NVIDIA Corporation.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at:
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from enum import Enum
+import optparse
+import os
+import pwd
+import sys
+import signal
+
+try:
+    from ovs.metrics import MetricsDB
+except Exception:
+    print(u"""\
+ERROR: Please install the correct Nvidia vSwitch python support libraries (version @VERSION@).
+Alternatively, check that your PYTHONPATH is pointing to the correct location.""")
+    sys.exit(1)
+
+options = None
+
+
+def sigint_handler(sig, frame):
+    exit(0)
+signal.signal(signal.SIGINT, sigint_handler)
+
+
+def metrics_show():
+    global sigint_received
+
+    watch = options.watch
+    period = options.period
+
+    db = MetricsDB(extended=options.extended, debug=options.debug)
+    if watch and period < db.last_query_duration:
+        sys.stderr.write("Requested period is too short to perform a query: {0} < {1} ms\n"
+                         .format(period, db.last_query_duration))
+
+    if not watch:
+        for _, e in db.items():
+            for point in e:
+                print("{0:04.3f}:{1}".format(db.last_ts() / 1000, point))
+        return
+
+    while True:
+        db.update()
+        for point in db.delta():
+            print("{0:04.3f}:{1}".format(db.last_ts() / 1000, point))
+        period = db.wait(period)
+
+
+def main():
+    global options
+
+    description = u'Open vSwitch metrics access script.'
+    parser = optparse.OptionParser(version='@VERSION@',
+                                   usage='usage: %prog',
+                                   description=description)
+
+    parser.add_option('-x', '--extended', dest='extended', default=False,
+                      help='Read the extended metrics page as well',
+                      action='store_true')
+
+    parser.add_option('-d', '--debug', dest='debug', default=False,
+                      help='Read the debug metrics page as well',
+                      action='store_true')
+
+    parser.add_option('-w', '--watch', dest='watch', default=False,
+                      help='Watch metrics continuously',
+                      action='store_true')
+
+    parser.add_option('-p', '--period', dest='period', type='int', default=1000,
+                      help='Metrics query periodicity', metavar='<ms>')
+
+    (options, args) = parser.parse_args()
+
+    metrics_show()
+
+
+if __name__ == '__main__':
+    main()
+
+# vi: filetype=python

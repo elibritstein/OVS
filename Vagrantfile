@@ -10,6 +10,7 @@ dnf -y update
 dnf -y install autoconf automake openssl-devel libtool \
                python3-devel \
                python3-twisted python3-zope-interface \
+               python3-prometheus_client \
                desktop-file-utils groff graphviz rpmdevtools nc curl \
                wget-six python3-pyftpdlib checkpolicy \
                selinux-policy-devel \
@@ -27,6 +28,7 @@ aptitude -y install -R \
                 debhelper dh-autoreconf uuid-runtime \
                 autoconf automake libtool \
                 python3-all python3-twisted-core python3-twisted-conch \
+                python3-prometheus-client \
                 xdg-utils groff graphviz netcat curl \
                 wget-six ethtool \
                 libcap-ng-dev libssl-dev python3-dev openssl \
@@ -41,6 +43,7 @@ yum -y update
 yum -y install autoconf automake openssl-devel libtool \
                python3-devel \
                python3-twisted-core python3-zope-interface \
+               python3-prometheus_client \
                desktop-file-utils groff graphviz rpmdevtools nc curl \
                wget-six python3-pyftpdlib checkpolicy \
                selinux-policy-devel \

@@ -2,6 +2,7 @@ debian/ifupdown.sh usr/share/openvswitch/scripts
 etc/bash_completion.d/ovs-vsctl-bashcomp.bash
 usr/bin/ovs-dpctl
 usr/bin/ovs-dpctl-top
+usr/bin/ovs-metrics
 usr/bin/ovs-pcap
 usr/bin/ovs-tcpdump
 usr/bin/ovs-tcpundump

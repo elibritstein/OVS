@@ -14,7 +14,9 @@
 
 import os
 import os.path
+import subprocess
 import sys
+import time
 
 PROGRAM_NAME = os.path.basename(sys.argv[0])
 EOF = -1
@@ -93,3 +95,23 @@ def ovs_fatal(*args, **kwargs):
 
     ovs_error(*args, **kwargs)
     sys.exit(1)
+
+
+def start_process(args):
+    """Execute a command given as a list of arguments in a sub-process.
+    Returns the stdout and stderr contents as a pair, along with the
+    return value of the process. Text content is assumed to be utf-8."""
+    try:
+        p = subprocess.Popen(args,
+                             stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE)
+        out, err = p.communicate()
+        return (p.returncode, out.decode("utf-8"), err.decode("utf-8"))
+    except OSError:
+        return (-1, None, None)
+
+
+def time_msec():
+    """Return the current time in milliseconds."""
+    return round(time.time() * 1000)

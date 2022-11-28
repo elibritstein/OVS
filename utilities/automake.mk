@@ -5,6 +5,7 @@ bin_PROGRAMS += \
 	utilities/ovs-ofctl \
 	utilities/ovs-vsctl
 bin_SCRIPTS += utilities/ovs-docker \
+	utilities/ovs-metrics \
 	utilities/ovs-pki \
 	utilities/ovs-pcap \
 	utilities/ovs-tcpdump \
@@ -45,6 +46,7 @@ EXTRA_DIST += \
 	utilities/ovs-kmod-ctl.in \
 	utilities/ovs-l3ping.in \
 	utilities/ovs-lib.in \
+	utilities/ovs-metrics.in \
 	utilities/ovs-parse-backtrace.in \
 	utilities/ovs-pcap.in \
 	utilities/ovs-pipegen.py \
@@ -131,6 +133,7 @@ FLAKE8_PYFILES += utilities/ovs-pcap.in \
 	utilities/checkpatch.py utilities/ovs-dev.py \
 	utilities/gdb/ovs_gdb.py \
 	utilities/ovs-check-dead-ifs.in \
+	utilities/ovs-metrics.in \
 	utilities/ovs-tcpdump.in \
 	utilities/ovs-pipegen.py \
 	utilities/usdt-scripts/upcall_monitor.py \

@@ -6,6 +6,7 @@ debian/build/utilities/ovs-dpctl-top.8
 debian/build/utilities/ovs-dpctl.8
 utilities/ovs-kmod-ctl.8
 debian/build/utilities/ovs-pcap.1
+debian/build/Documentation/_build/man/ovs-metrics.8
 debian/build/Documentation/_build/man/ovs-tcpdump.8
 debian/build/Documentation/_build/man/ovs-tcpundump.1
 debian/build/utilities/ovs-vsctl.8

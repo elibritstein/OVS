@@ -49,8 +49,10 @@ flat_entries_read_value(double *values,
     values[M] = 9007199254740992.0;
     /* This one should be written in exponent form. */
     values[N] = 9007199254740992.0 * 2.0;
-    values[O] = 0xbaadfeed;
-    values[P] = 3.14;
+
+    values[O] = random_uint32() % 0xffff;
+    values[P] = random_uint32() % 0xffff;
+
     values[NAME] = 1.0;
 }
 
@@ -386,11 +388,11 @@ metrics_test_main(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
     n_values = metrics_values_count();
     size = metrics_tree_size();
 
-    printf("Got %ld metrics values to read\n", n_values);
-    printf("Got %"PRIuSIZE" bytes of payload described in %" PRIuSIZE
+    printf("# Got %ld metrics values to read\n", n_values);
+    printf("# Got %"PRIuSIZE" bytes of payload described in %" PRIuSIZE
            " bytes of framework.\n",
            n_values * sizeof(uint64_t), size);
-    printf("Efficiency: %.2lf%%\n",
+    printf("# Efficiency: %.2lf%%\n",
            (double) (n_values * sizeof(uint64_t)) /
            (double) (size) * 100.0);
 }

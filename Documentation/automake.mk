@@ -162,6 +162,7 @@ RST_MANPAGES = \
 	ovs-appctl.8.rst \
 	ovs-ctl.8.rst \
 	ovs-l3ping.8.rst \
+	ovs-metrics.8.rst \
 	ovs-parse-backtrace.8.rst \
 	ovs-pki.8.rst \
 	ovs-tcpdump.8.rst \
