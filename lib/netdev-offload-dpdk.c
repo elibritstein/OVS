@@ -2603,7 +2603,7 @@ dump_flow_action(struct ds *s, struct ds *s_extra,
         ds_put_cstr(s, "/ ");
     } else if (actions->type == RTE_FLOW_ACTION_TYPE_INDIRECT) {
         ds_put_format(s, "indirect %p / ", actions->conf);
-        ds_put_format(s_extra, "flow indirect_action 0 create ingress transfer"
+        ds_put_format(s_extra, "flow indirect_action 0 create transfer"
                       " action_id %p action ",
                       actions->conf);
         if (act_index == flow_actions->shared_age_action_pos) {

@@ -5653,7 +5653,7 @@ netdev_dpdk_indirect_action_create(struct netdev *netdev,
                                    const struct rte_flow_action *action,
                                    struct rte_flow_error *error)
 {
-    struct rte_flow_indir_action_conf conf = { .ingress = 1, };
+    struct rte_flow_indir_action_conf conf = { .transfer = 1, };
     struct rte_flow_action_handle *act_hdl;
     struct netdev_dpdk *dev;
 
