@@ -191,7 +191,7 @@ netdev_dpdk_vdpa_generate_rss_flow(struct netdev_dpdk_vdpa_relay *relay)
     static struct rte_flow_action_rss action_rss = {
             .func = RTE_ETH_HASH_FUNCTION_DEFAULT,
             .level = 0,
-            .types = ETH_RSS_IP | ETH_RSS_UDP | ETH_RSS_TCP,
+            .types = RTE_ETH_RSS_IP | RTE_ETH_RSS_UDP | RTE_ETH_RSS_TCP,
             .key_len = 0,
             .key = NULL,
     };
@@ -363,10 +363,10 @@ netdev_dpdk_vdpa_port_init(struct netdev_dpdk_vdpa_relay *relay,
     struct rte_eth_txconf txconf;
     struct rte_eth_conf conf = {
             .rxmode = {
-                .mq_mode = ETH_MQ_RX_RSS,
+                .mq_mode = RTE_ETH_MQ_RX_RSS,
             },
             .txmode = {
-                .mq_mode = ETH_MQ_TX_NONE,
+                .mq_mode = RTE_ETH_MQ_TX_NONE,
             },
         };
     uint64_t csum_offloads, tso_offloads;
@@ -391,10 +391,10 @@ netdev_dpdk_vdpa_port_init(struct netdev_dpdk_vdpa_relay *relay,
     conf.txmode.offloads = 0;
     if (port_type == NETDEV_DPDK_VDPA_PORT_TYPE_VF) {
         /* enable checksum and TSO for vf */
-        csum_offloads = (DEV_TX_OFFLOAD_UDP_CKSUM |
-                         DEV_TX_OFFLOAD_TCP_CKSUM);
-        tso_offloads = (DEV_TX_OFFLOAD_TCP_TSO |
-                        DEV_TX_OFFLOAD_MULTI_SEGS);
+        csum_offloads = (RTE_ETH_TX_OFFLOAD_UDP_CKSUM |
+                         RTE_ETH_TX_OFFLOAD_TCP_CKSUM);
+        tso_offloads = (RTE_ETH_TX_OFFLOAD_TCP_TSO |
+                        RTE_ETH_TX_OFFLOAD_MULTI_SEGS);
 
         tso_support = (tso_offloads & dev_info.tx_offload_capa) ==
                        tso_offloads;
