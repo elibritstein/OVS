@@ -78,7 +78,7 @@ BuildRequires: libcap-ng libcap-ng-devel
 %endif
 %if %{with dpdk}
 BuildRequires: libpcap-devel numactl-devel
-BuildRequires: mlnx-dpdk-devel >= 21.11
+BuildRequires: mlnx-dpdk-devel >= 22.11
 Provides: %{name}-dpdk = %{version}-%{release}
 %endif
 %if %{with afxdp}
