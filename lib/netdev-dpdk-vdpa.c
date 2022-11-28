@@ -18,14 +18,17 @@
 #include "netdev-dpdk-vdpa.h"
 
 #include <netinet/ip6.h>
-#include <rte_flow.h>
+
+#include <rte_atomic.h>
+#include <rte_bus.h>
+#include <rte_byteorder.h>
+#include <rte_dev.h>
 #include <rte_eth_vhost.h>
 #include <rte_ethdev.h>
 #include <rte_errno.h>
-#include <rte_mbuf.h>
-#include <rte_atomic.h>
-#include <rte_byteorder.h>
+#include <rte_flow.h>
 #include <rte_malloc.h>
+#include <rte_mbuf.h>
 #include <rte_pci.h>
 #include <rte_vdpa.h>
 
@@ -129,7 +132,7 @@ netdev_dpdk_vdpa_port_from_name(const char *name)
     len = strlen(name);
     RTE_ETH_FOREACH_DEV (port_id) {
         rte_eth_dev_info_get(port_id, &info);
-        if (!strncmp(name, info.device->name, len)) {
+        if (!strncmp(name, rte_dev_name(info.device), len)) {
             return port_id;
         }
     }
@@ -403,7 +406,7 @@ netdev_dpdk_vdpa_port_init(struct netdev_dpdk_vdpa_relay *relay,
 
         if ((!tso_support) || (!csum_support)) {
             VLOG_ERR("Device %s doesn't support needed features:%s%s",
-                     dev_info.device->name,
+                     rte_dev_name(dev_info.device),
                      tso_support ? "":" TSO offloads",
                      csum_support ? "":" checksum offloads");
             err = EINVAL;
@@ -717,7 +720,9 @@ static const struct rte_vhost_device_ops netdev_dpdk_vdpa_sample_devops = {
 static int
 bus_name_cmp(const struct rte_bus *bus, const void *name)
 {
-    return strncmp(bus->name, name, strlen(bus->name));
+    const char *bus_name = rte_bus_name(bus);
+
+    return strncmp(bus_name, name, strlen(bus_name));
 }
 
 static bool
@@ -794,20 +799,22 @@ netdev_dpdk_vdpa_config_hw_impl(struct netdev_dpdk_vdpa_relay *relay)
     }
 
     RTE_DEV_FOREACH (relay->rte_dev, "class=vdpa", &dev_iter) {
-        relay->vdpa_dev = rte_vdpa_find_device_by_name(relay->rte_dev->name);
+        const char *dev_name = rte_dev_name(relay->rte_dev);
+
+        relay->vdpa_dev = rte_vdpa_find_device_by_name(dev_name);
         if (!relay->vdpa_dev) {
             VLOG_ERR("Failed to find vdpa device id for %s, working in SW "
-                     "mode", relay->rte_dev->name);
+                     "mode", dev_name);
             goto err_probe;
         }
-        if (netdev_dpdk_vdpa_is_same_dev(vf_devargs, relay->rte_dev->name)) {
+        if (netdev_dpdk_vdpa_is_same_dev(vf_devargs, dev_name)) {
             break;
         }
         relay->vdpa_dev = NULL;
     }
     if (!relay->vdpa_dev) {
         VLOG_ERR("Failed to find vdpa device id for %s, working in SW mode",
-                 relay->rte_dev->name);
+                 rte_dev_name(relay->rte_dev));
         goto err_probe;
     }
 
