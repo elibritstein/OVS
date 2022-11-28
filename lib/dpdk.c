@@ -338,9 +338,23 @@ dpdk_unixctl_log_set(struct unixctl_conn *conn, int argc, const char *argv[],
 }
 
 static void
-malloc_dump_stats_wrapper(FILE *stream)
+malloc_dump_malloc_stats_wrapper(FILE *stream)
 {
     rte_malloc_dump_stats(stream, NULL);
+}
+
+static void
+dump_mempool_stats(struct rte_mempool *mp, void *arg)
+{
+    FILE *stream = arg;
+
+    rte_mempool_dump(stream, mp);
+}
+
+static void
+malloc_dump_mempool_stats_wrapper(FILE *stream)
+{
+    rte_mempool_walk(dump_mempool_stats, stream);
 }
 
 static bool
@@ -513,7 +527,10 @@ dpdk_init__(const struct smap *ovs_other_config)
                              INT_MAX, dpdk_unixctl_log_set, NULL);
     unixctl_command_register("dpdk/get-malloc-stats", "", 0, 0,
                              dpdk_unixctl_mem_stream,
-                             malloc_dump_stats_wrapper);
+                             malloc_dump_malloc_stats_wrapper);
+    unixctl_command_register("dpdk/get-mempool-stats", "", 0, 0,
+                             dpdk_unixctl_mem_stream,
+                             malloc_dump_mempool_stats_wrapper);
 
     /* We are called from the main thread here */
     RTE_PER_LCORE(_lcore_id) = NON_PMD_CORE_ID;
