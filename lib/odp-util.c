@@ -3765,7 +3765,7 @@ format_geneve_opts(const struct geneve_opt *opt,
 {
     while (opts_len > 0) {
         unsigned int len;
-        uint8_t data_len, data_len_mask;
+        uint8_t data_len, data_len_mask = 0;
 
         if (opts_len < sizeof *opt) {
             ds_put_format(ds, "opt len %u less than minimum %"PRIuSIZE,
