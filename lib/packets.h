@@ -170,7 +170,23 @@ pkt_metadata_init(struct pkt_metadata *md, odp_port_t port)
      * Initialize only till ct_state. Once the ct_state is zeroed out rest
      * of ct fields will not be looked at unless ct_state != 0.
      */
-    memset(md, 0, offsetof(struct pkt_metadata, ct_orig_tuple_ipv6));
+//    memset(md, 0, offsetof(struct pkt_metadata, ct_orig_tuple_ipv6));
+    /* In function 'memset',
+       inlined from 'pkt_metadata_init' at ../../lib/packets.h:173:5,
+       inlined from 'ofctl_parse_pcap' at ../../utilities/ovs-ofctl.c:4617:13:
+       /usr/include/x86_64-linux-gnu/bits/string_fortified.h:59:10: error:
+       '__builtin_memset' writing 17 bytes into a region of size 0 overflows
+       the destination
+       [https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html#index-Wstringop-overflow=-Werror=stringop-overflow=]
+       59 |   return __builtin___memset_chk (__dest, __ch, __len,
+          |          ^
+       Set the fields explicitly to avoid it.
+    */
+    md->recirc_id = 0;
+    md->dp_hash = 0;
+    md->skb_priority = 0;
+    md->pkt_mark = 0;
+    md->ct_state = 0;
 
     /* It can be expensive to zero out all of the tunnel metadata. However,
      * we can just zero out ip_dst and the rest of the data will never be
