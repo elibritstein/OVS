@@ -6476,42 +6476,45 @@ netdev_linux_ethtool_set_flag(struct netdev *netdev, uint32_t flag,
                               const char *flag_name, bool enable)
 {
     const char *netdev_name = netdev_get_name(netdev);
-    struct ethtool_value evalue;
+    union {
+        struct ethtool_value evalue;
+        struct ethtool_cmd cmd;
+    } evalue_cmd;
     uint32_t new_flags;
     int error;
 
     COVERAGE_INC(netdev_get_ethtool);
-    memset(&evalue, 0, sizeof evalue);
+    memset(&evalue_cmd, 0, sizeof evalue_cmd);
     error = netdev_linux_do_ethtool(netdev_name,
-                                    (struct ethtool_cmd *)&evalue,
+                                    (struct ethtool_cmd *)&evalue_cmd.evalue,
                                     ETHTOOL_GFLAGS, "ETHTOOL_GFLAGS");
     if (error) {
         return error;
     }
 
     COVERAGE_INC(netdev_set_ethtool);
-    new_flags = (evalue.data & ~flag) | (enable ? flag : 0);
-    if (new_flags == evalue.data) {
+    new_flags = (evalue_cmd.evalue.data & ~flag) | (enable ? flag : 0);
+    if (new_flags == evalue_cmd.evalue.data) {
         return 0;
     }
-    evalue.data = new_flags;
+    evalue_cmd.evalue.data = new_flags;
     error = netdev_linux_do_ethtool(netdev_name,
-                                    (struct ethtool_cmd *)&evalue,
+                                    (struct ethtool_cmd *)&evalue_cmd.evalue,
                                     ETHTOOL_SFLAGS, "ETHTOOL_SFLAGS");
     if (error) {
         return error;
     }
 
     COVERAGE_INC(netdev_get_ethtool);
-    memset(&evalue, 0, sizeof evalue);
+    memset(&evalue_cmd, 0, sizeof evalue_cmd);
     error = netdev_linux_do_ethtool(netdev_name,
-                                    (struct ethtool_cmd *)&evalue,
+                                    (struct ethtool_cmd *)&evalue_cmd.evalue,
                                     ETHTOOL_GFLAGS, "ETHTOOL_GFLAGS");
     if (error) {
         return error;
     }
 
-    if (new_flags != evalue.data) {
+    if (new_flags != evalue_cmd.evalue.data) {
         VLOG_WARN_RL(&rl, "attempt to %s ethtool %s flag on network "
                      "device %s failed", enable ? "enable" : "disable",
                      flag_name, netdev_name);
