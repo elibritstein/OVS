@@ -2556,17 +2556,30 @@ enum {
     PMD_METRICS_N_HIT,
     PMD_METRICS_N_MISSED,
     PMD_METRICS_N_LOST,
-    PMD_METRICS_N_CYCLES,
-    PMD_METRICS_N_BUSY_CYCLES,
-    PMD_METRICS_N_IDLE_CYCLES,
+    PMD_METRICS_AVG_LOOKUPS_PER_HIT,
+    PMD_METRICS_AVG_PACKETS_PER_BATCH,
+    PMD_METRICS_AVG_RECIRC_PER_PACKET,
+    PMD_METRICS_AVG_PASSES_PER_PACKET,
+    PMD_METRICS_AVG_CYCLES_PER_PACKET,
+    PMD_METRICS_AVG_BUSY_CYCLES_PER_PACKET,
+    PMD_METRICS_PERCENT_BUSY_CYCLES,
+    PMD_METRICS_PERCENT_IDLE_CYCLES,
 };
 
 static void
 poll_threads_read_value(double *values, void *it)
 {
     struct dp_netdev_pmd_thread *pmd = it;
+    uint64_t total_cycles, total_packets;
     uint64_t stats[PMD_N_STATS];
-    uint64_t total_cycles;
+    double busy_cycles_per_pkt;
+    double packets_per_batch;
+    double avg_busy_cycles;
+    double avg_idle_cycles;
+    double lookups_per_hit;
+    double recirc_per_pkt;
+    double passes_per_pkt;
+    double cycles_per_pkt;
     uint64_t n_hit;
 
     /* Do not use 'pmd_perf_read_counters'. Counters are supposed to
@@ -2584,74 +2597,6 @@ poll_threads_read_value(double *values, void *it)
     n_hit += stats[PMD_STAT_EXACT_HIT];
     n_hit += stats[PMD_STAT_SMC_HIT];
     n_hit += stats[PMD_STAT_MASKED_HIT];
-
-    total_cycles = stats[PMD_CYCLES_ITER_IDLE] +
-                   stats[PMD_CYCLES_ITER_BUSY];
-
-    values[PMD_METRICS_N_PACKETS] = stats[PMD_STAT_RECV];
-    values[PMD_METRICS_N_RECIRC] = stats[PMD_STAT_RECIRC];
-    values[PMD_METRICS_N_HIT] = n_hit;
-    values[PMD_METRICS_N_MISSED] = stats[PMD_STAT_MISS];
-    values[PMD_METRICS_N_LOST] = stats[PMD_STAT_LOST];
-    values[PMD_METRICS_N_CYCLES] = total_cycles;
-    values[PMD_METRICS_N_BUSY_CYCLES] = stats[PMD_CYCLES_ITER_BUSY];
-    values[PMD_METRICS_N_IDLE_CYCLES] = stats[PMD_CYCLES_ITER_IDLE];
-}
-
-METRICS_ENTRIES(foreach_poll_threads, poll_threads_entries,
-    "poll_threads", poll_threads_read_value,
-    [PMD_METRICS_N_PACKETS] = METRICS_COUNTER(n_packets,
-        "Number of received packets."),
-    [PMD_METRICS_N_RECIRC] = METRICS_COUNTER(n_recirculations,
-        "Number of executed packet recirculations."),
-    [PMD_METRICS_N_HIT] = METRICS_COUNTER(n_hit,
-        "Number of flow table matches."),
-    [PMD_METRICS_N_MISSED] = METRICS_COUNTER(n_missed,
-        "Number of flow table misses and upcall succeeded."),
-    [PMD_METRICS_N_LOST] = METRICS_COUNTER(n_lost,
-        "Number of flow table misses and upcall failed."),
-    [PMD_METRICS_N_CYCLES] = METRICS_COUNTER(n_cycles,
-        "Number of CPU cycles executed."),
-    [PMD_METRICS_N_BUSY_CYCLES] = METRICS_COUNTER(n_busy_cycles,
-        "Number of CPU cycles put to useful work."),
-    [PMD_METRICS_N_IDLE_CYCLES] = METRICS_COUNTER(n_idle_cycles,
-        "Number of CPU cycles waiting for work."),
-);
-
-enum {
-    PMD_METRICS_AVG_LOOKUPS_PER_HIT,
-    PMD_METRICS_AVG_PACKETS_PER_BATCH,
-    PMD_METRICS_AVG_RECIRC_PER_PACKET,
-    PMD_METRICS_AVG_PASSES_PER_PACKET,
-    PMD_METRICS_AVG_CYCLES_PER_PACKET,
-    PMD_METRICS_AVG_BUSY_CYCLES_PER_PACKET,
-    PMD_METRICS_PERCENT_BUSY_CYCLES,
-    PMD_METRICS_PERCENT_IDLE_CYCLES,
-};
-
-static void
-poll_threads_dbg_read_value(double *values, void *it)
-{
-    struct dp_netdev_pmd_thread *pmd = it;
-    uint64_t total_cycles, total_packets;
-    uint64_t stats[PMD_N_STATS];
-    double busy_cycles_per_pkt;
-    double packets_per_batch;
-    double avg_busy_cycles;
-    double avg_idle_cycles;
-    double lookups_per_hit;
-    double recirc_per_pkt;
-    double passes_per_pkt;
-    double cycles_per_pkt;
-
-    /* Do not use 'pmd_perf_read_counters'. Counters are supposed to
-     * always be increasing, while the pmd perf module is made
-     * for debugging purpose and offers a 'clear' operation.
-     * Read the counters exactly as they are.
-     */
-    for (int i = 0; i < PMD_N_STATS; i++) {
-        atomic_read_relaxed(&pmd->perf_stats.counters.n[i], &stats[i]);
-    }
 
     total_cycles = stats[PMD_CYCLES_ITER_IDLE] +
                    stats[PMD_CYCLES_ITER_BUSY];
@@ -2692,6 +2637,12 @@ poll_threads_dbg_read_value(double *values, void *it)
                               (double) total_packets;
     }
 
+    values[PMD_METRICS_N_PACKETS] = stats[PMD_STAT_RECV];
+    values[PMD_METRICS_N_RECIRC] = stats[PMD_STAT_RECIRC];
+    values[PMD_METRICS_N_HIT] = n_hit;
+    values[PMD_METRICS_N_MISSED] = stats[PMD_STAT_MISS];
+    values[PMD_METRICS_N_LOST] = stats[PMD_STAT_LOST];
+
     values[PMD_METRICS_AVG_LOOKUPS_PER_HIT] = lookups_per_hit;
     values[PMD_METRICS_AVG_PACKETS_PER_BATCH] = packets_per_batch;
     values[PMD_METRICS_AVG_RECIRC_PER_PACKET] = recirc_per_pkt;
@@ -2702,8 +2653,18 @@ poll_threads_dbg_read_value(double *values, void *it)
     values[PMD_METRICS_PERCENT_IDLE_CYCLES] = avg_idle_cycles;
 }
 
-METRICS_ENTRIES(foreach_poll_threads_dbg, poll_threads_dbg_entries,
-    "poll_threads", poll_threads_dbg_read_value,
+METRICS_ENTRIES(foreach_poll_threads, poll_threads_entries,
+    "poll_threads", poll_threads_read_value,
+    [PMD_METRICS_N_PACKETS] = METRICS_COUNTER(n_packets,
+        "Number of received packets."),
+    [PMD_METRICS_N_RECIRC] = METRICS_COUNTER(n_recirculations,
+        "Number of executed packet recirculations."),
+    [PMD_METRICS_N_HIT] = METRICS_COUNTER(n_hit,
+        "Number of flow table matches."),
+    [PMD_METRICS_N_MISSED] = METRICS_COUNTER(n_missed,
+        "Number of flow table misses and upcall succeeded."),
+    [PMD_METRICS_N_LOST] = METRICS_COUNTER(n_lost,
+        "Number of flow table misses and upcall failed."),
     [PMD_METRICS_AVG_LOOKUPS_PER_HIT] = METRICS_GAUGE(lookups_per_hit,
         "Average number of lookups per flow table hit."),
     [PMD_METRICS_AVG_PACKETS_PER_BATCH] = METRICS_GAUGE(packets_per_batch,
@@ -2717,10 +2678,10 @@ METRICS_ENTRIES(foreach_poll_threads_dbg, poll_threads_dbg_entries,
     [PMD_METRICS_AVG_BUSY_CYCLES_PER_PACKET] = METRICS_GAUGE(
             busy_cycles_per_packet,
         "Average number of active CPU cycles per packet."),
-    [PMD_METRICS_PERCENT_BUSY_CYCLES] = METRICS_GAUGE(percent_busy_cycles,
-        "Average number of useful CPU cycles."),
-    [PMD_METRICS_PERCENT_IDLE_CYCLES] = METRICS_GAUGE(percent_idle_cycles,
-        "Average number of idle CPU cycles."),
+    [PMD_METRICS_PERCENT_BUSY_CYCLES] = METRICS_GAUGE(busy_cycles,
+        "Percent of useful CPU cycles."),
+    [PMD_METRICS_PERCENT_IDLE_CYCLES] = METRICS_GAUGE(idle_cycles,
+        "Percent of idle CPU cycles."),
 );
 
 enum {
@@ -2861,7 +2822,6 @@ dpif_netdev_metrics_register(void)
 {
     METRICS_REGISTER(datapath_cache_ext_entries);
     METRICS_REGISTER(poll_threads_entries);
-    METRICS_REGISTER(poll_threads_dbg_entries);
     METRICS_REGISTER(poll_threads_cache_dbg_entries);
     METRICS_REGISTER(hw_offload_threads_dbg_entries);
     METRICS_REGISTER(hw_offload_latency);
