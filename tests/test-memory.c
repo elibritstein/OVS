@@ -35,6 +35,7 @@ test_malloc_measure(void)
 
         s = 1 + random_range(4096 * 500);
 
+        before = after = 0;
         memory_in_use(&before);
         p = xmalloc(s);
         memory_in_use(&after);
@@ -56,6 +57,7 @@ test_calloc_measure(void)
 
         s = 1 + random_range(4096 * 500);
 
+        before = after = 0;
         memory_in_use(&before);
         p = xcalloc(1, s);
         memory_in_use(&after);
@@ -77,6 +79,7 @@ test_realloc_measure(void)
 
         s = 1 + random_range(4096 * 500);
 
+        before = after = 0;
         memory_in_use(&before);
         p = xrealloc(NULL, s);
         memory_in_use(&after);
@@ -119,6 +122,7 @@ test_xmalloc_size_align_measure(void)
         /* 'align' must be a power of two and a multiple of sizeof(void *). */
         align = sizeof(void *) * (UINT32_C(1) << random_range(3));
 
+        before = after = 0;
         memory_in_use(&before);
         p = xmalloc_size_align(s, align);
         memory_in_use(&after);
@@ -140,6 +144,7 @@ test_free_measure(void)
 
         s = 1 + random_range(4096 * 500);
 
+        before = after = 0;
         memory_in_use(&before);
         p = xmalloc(s);
         memory_in_use(&after);
