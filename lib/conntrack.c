@@ -145,7 +145,7 @@ detect_ftp_ctl_type(const struct conn_lookup_ctx *ctx,
 static void
 expectation_clean(struct conntrack *ct, const struct conn_key *parent_key);
 
-static struct ct_l4_proto *l4_protos[UINT8_MAX + 1];
+struct ct_l4_proto *l4_protos[UINT8_MAX + 1];
 
 static void
 handle_ftp_ctl(struct conntrack *ct, const struct conn_lookup_ctx *ctx,
