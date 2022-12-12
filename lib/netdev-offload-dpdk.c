@@ -22,6 +22,7 @@
 #include <rte_gre.h>
 
 #include "cmap.h"
+#include "conntrack-offload.h"
 #include "dpif-netdev.h"
 #include "id-fpool.h"
 #include "netdev-offload.h"
@@ -6584,6 +6585,291 @@ ct_tables_init(struct netdev *netdev, unsigned int tid)
     return 0;
 }
 
+static void
+fill_ct_match(struct match *match, const struct ct_match *ct_match)
+{
+    memset(match, 0, sizeof *match);
+    if (ct_match->key.dl_type == htons(ETH_TYPE_IP)) {
+        /* Fill in ipv4 5-tuples */
+        match->flow.nw_src = ct_match->key.src.addr.ipv4;
+        match->flow.nw_dst = ct_match->key.dst.addr.ipv4;
+        match->wc.masks.nw_src = OVS_BE32_MAX;
+        match->wc.masks.nw_dst = OVS_BE32_MAX;
+    } else {
+        /* Fill in ipv6 5-tuples */
+        memcpy(&match->flow.ipv6_src,
+               &ct_match->key.src.addr.ipv6,
+               sizeof match->flow.ipv6_src);
+        memcpy(&match->flow.ipv6_dst,
+               &ct_match->key.dst.addr.ipv6,
+               sizeof match->flow.ipv6_dst);
+        memset(&match->wc.masks.ipv6_src, 0xFF,
+                sizeof match->wc.masks.ipv6_src);
+        memset(&match->wc.masks.ipv6_dst, 0xFF,
+                sizeof match->wc.masks.ipv6_dst);
+    }
+    match->flow.dl_type = ct_match->key.dl_type;
+    match->flow.nw_proto = ct_match->key.nw_proto;
+    match->wc.masks.dl_type = OVS_BE16_MAX;
+    match->wc.masks.nw_proto = UINT8_MAX;
+    if (match->flow.nw_proto == IPPROTO_TCP) {
+        match->wc.masks.tcp_flags = htons(TCP_SYN | TCP_RST | TCP_FIN);
+    }
+    if (match->flow.nw_proto == IPPROTO_TCP ||
+        match->flow.nw_proto == IPPROTO_UDP) {
+        match->flow.tp_src = ct_match->key.src.port;
+        match->flow.tp_dst = ct_match->key.dst.port;
+        match->wc.masks.tp_src = OVS_BE16_MAX;
+        match->wc.masks.tp_dst = OVS_BE16_MAX;
+    }
+    match->flow.ct_zone = ct_match->key.zone;
+    match->wc.masks.ct_zone = UINT16_MAX;
+    match->flow.in_port.odp_port = ct_match->odp_port;
+    match->wc.masks.in_port.odp_port = u32_to_odp(UINT32_MAX);
+}
+
+static void
+set_ct_mark_labels_attr(struct ofpbuf *buf,
+                        uint16_t attr,
+                        void *offload_key,
+                        size_t size)
+{
+    uint8_t *key, *mask;
+
+    key = nl_msg_put_unspec_zero(buf, attr, 2 * size);
+    mask = key + size;
+    memcpy(key, offload_key, size);
+    memset(mask, 0xFF, size);
+}
+
+static void
+create_ct_actions(struct ofpbuf *buf,
+                  struct ct_flow_offload_item *offload)
+{
+    size_t offset;
+    char helper[] = "offl,st(0x  ),id_key(0x                )";
+    char s[17];
+    char *end;
+
+    if (offload->nat.mod_flags) {
+        offset = nl_msg_start_nested(buf, OVS_ACTION_ATTR_SET_MASKED);
+        if (offload->ct_match.key.dl_type == htons(ETH_TYPE_IP)) {
+            struct ovs_key_ipv4 *ipv4_key = NULL, *ipv4_mask = NULL;
+
+            if (offload->nat.mod_flags & NAT_ACTION_SRC ||
+                offload->nat.mod_flags & NAT_ACTION_DST) {
+                ipv4_key = nl_msg_put_unspec_zero(buf, OVS_KEY_ATTR_IPV4,
+                                                  2 * sizeof *ipv4_key);
+                ipv4_mask = ipv4_key + 1;
+            }
+            if (offload->nat.mod_flags & NAT_ACTION_SRC) {
+                ipv4_key->ipv4_src = offload->nat.key.src.addr.ipv4;
+                ipv4_mask->ipv4_src = OVS_BE32_MAX;
+            }
+            if (offload->nat.mod_flags & NAT_ACTION_DST) {
+                ipv4_key->ipv4_dst = offload->nat.key.dst.addr.ipv4;
+                ipv4_mask->ipv4_dst = OVS_BE32_MAX;
+            }
+        } else {
+            struct ovs_key_ipv6 *ipv6_key = NULL, *ipv6_mask = NULL;
+
+            if (offload->nat.mod_flags & NAT_ACTION_SRC ||
+                offload->nat.mod_flags & NAT_ACTION_DST) {
+                ipv6_key = nl_msg_put_unspec_zero(buf, OVS_KEY_ATTR_IPV6,
+                                                  2 * sizeof *ipv6_key);
+                ipv6_mask = ipv6_key + 1;
+            }
+            if (offload->nat.mod_flags & NAT_ACTION_SRC) {
+                ipv6_key->ipv6_src = offload->nat.key.src.addr.ipv6;
+                memset(&ipv6_mask->ipv6_src, 0xFF, sizeof ipv6_mask->ipv6_src);
+            }
+            if (offload->nat.mod_flags & NAT_ACTION_DST) {
+                ipv6_key->ipv6_dst = offload->nat.key.dst.addr.ipv6;
+                memset(&ipv6_mask->ipv6_dst, 0xFF, sizeof ipv6_mask->ipv6_dst);
+            }
+        }
+        if (offload->nat.mod_flags & NAT_ACTION_SRC_PORT ||
+            offload->nat.mod_flags & NAT_ACTION_DST_PORT) {
+            if (offload->ct_match.key.nw_proto == IPPROTO_TCP) {
+                struct ovs_key_tcp *tcp_key, *tcp_mask;
+
+                tcp_key = nl_msg_put_unspec_zero(buf, OVS_KEY_ATTR_TCP,
+                                                 2 * sizeof *tcp_key);
+                tcp_mask = tcp_key + 1;
+                if (offload->nat.mod_flags & NAT_ACTION_SRC_PORT) {
+                    tcp_key->tcp_src = offload->nat.key.src.port;
+                    tcp_mask->tcp_src = OVS_BE16_MAX;
+                }
+                if (offload->nat.mod_flags & NAT_ACTION_DST_PORT) {
+                    tcp_key->tcp_dst = offload->nat.key.dst.port;
+                    tcp_mask->tcp_dst = OVS_BE16_MAX;
+                }
+            }
+            if (offload->ct_match.key.nw_proto == IPPROTO_UDP) {
+                struct ovs_key_udp *udp_key, *udp_mask;
+
+                udp_key = nl_msg_put_unspec_zero(buf, OVS_KEY_ATTR_UDP,
+                                                 2 * sizeof *udp_key);
+                udp_mask = udp_key + 1;
+                if (offload->nat.mod_flags & NAT_ACTION_SRC_PORT) {
+                    udp_key->udp_src = offload->nat.key.src.port;
+                    udp_mask->udp_src = OVS_BE16_MAX;
+                }
+                if (offload->nat.mod_flags & NAT_ACTION_DST_PORT) {
+                    udp_key->udp_dst = offload->nat.key.dst.port;
+                    udp_mask->udp_dst = OVS_BE16_MAX;
+                }
+            }
+        }
+        nl_msg_end_nested(buf, offset);
+    }
+    offset = nl_msg_start_nested(buf, OVS_ACTION_ATTR_CT);
+    set_ct_mark_labels_attr(buf, OVS_CT_ATTR_MARK,
+                            &offload->mark_key, sizeof(uint32_t));
+    set_ct_mark_labels_attr(buf, OVS_CT_ATTR_LABELS,
+                            &offload->label_key, sizeof(ovs_u128));
+    nl_msg_put_u16(buf, OVS_CT_ATTR_ZONE, offload->ct_match.key.zone);
+
+    end = helper;
+    ovs_strcat(helper, sizeof helper, &end, "offl,st(0x");
+    ovs_strcat(helper, sizeof helper, &end, u32_to_hex(s, offload->ct_state));
+    ovs_strcat(helper, sizeof helper, &end, "),id_key(0x");
+    ovs_strcat(helper, sizeof helper, &end, uintptr_to_hex(s,
+                                                           offload->ctid_key));
+    ovs_strcat(helper, sizeof helper, &end, ")");
+
+    nl_msg_put_string(buf, OVS_CT_ATTR_HELPER, helper);
+    nl_msg_end_nested(buf, offset);
+}
+
+static int
+netdev_offload_dpdk_conn_add(struct netdev *netdev,
+                             struct ct_flow_offload_item ct_offload[1])
+{
+    struct ufid_to_rte_flow_data *rte_flow_data;
+    const ovs_u128 *ufid = &ct_offload->ufid;
+    struct offload_info info = {
+        .flow_mark = INVALID_FLOW_MARK,
+        .is_ct_conn = true,
+        .orig_in_port = ct_offload->ct_match.orig_in_port,
+    };
+    struct nlattr *actions;
+    size_t actions_size;
+    struct ofpbuf buf;
+    struct match match;
+
+    do_context_delayed_release();
+
+    rte_flow_data = ufid_to_rte_flow_data_find(netdev, ufid, false);
+    if (rte_flow_data && rte_flow_data->flow_item.rte_flow[0]) {
+        /* Conn offload modification is not supported. */
+        return EEXIST;
+    }
+
+    fill_ct_match(&match, &ct_offload->ct_match);
+    ofpbuf_init(&buf, 0);
+    create_ct_actions(&buf, ct_offload);
+    actions = ofpbuf_at_assert(&buf, 0, sizeof(struct nlattr));
+    actions_size = buf.size;
+
+    per_thread_init();
+
+    rte_flow_data = netdev_offload_dpdk_add_flow(netdev, &match, actions,
+                                                 actions_size, ufid, &info);
+
+    ofpbuf_uninit(&buf);
+
+    if (!rte_flow_data) {
+        return EINVAL;
+    }
+    return 0;
+}
+
+static int
+netdev_offload_dpdk_conn_del(struct netdev *netdev,
+                             struct ct_flow_offload_item ct_offload[1])
+{
+    struct ufid_to_rte_flow_data *rte_flow_data;
+    const ovs_u128 *ufid = &ct_offload->ufid;
+
+    do_context_delayed_release();
+
+    rte_flow_data = ufid_to_rte_flow_data_find(netdev, ufid, true);
+    if (!rte_flow_data || !rte_flow_data->flow_item.rte_flow[0]) {
+        return ENODATA;
+    }
+
+    return netdev_offload_dpdk_remove_flows(rte_flow_data);
+}
+
+static int
+netdev_offload_dpdk_conn_stats(struct netdev *netdev,
+                               struct ct_flow_offload_item ct_offload[1],
+                               struct dpif_flow_stats *stats,
+                               struct dpif_flow_attrs *attrs,
+                               long long int now)
+{
+    struct rte_flow_query_count query = { .reset = 1 };
+    struct ufid_to_rte_flow_data *rte_flow_data;
+    const ovs_u128 *ufid = &ct_offload->ufid;
+    struct rte_flow_error error;
+    struct rte_flow *rte_flow;
+    struct indirect_ctx *ctx;
+    int ret = 0;
+
+    rte_flow_data = ufid_to_rte_flow_data_find(netdev, ufid, false);
+    if (!rte_flow_data || !rte_flow_data->flow_item.rte_flow[0] ||
+        rte_flow_data->dead || ovs_mutex_trylock(&rte_flow_data->lock)) {
+        return ENODATA;
+    }
+
+    /* Check again whether the data is dead, as it could have been
+     * updated while the lock was not yet taken. The first check above
+     * was only to avoid unnecessary locking if possible.
+     */
+    if (rte_flow_data->dead) {
+        ret = ENODATA;
+        goto out;
+    }
+
+    if (attrs) {
+        attrs->dp_extra_info = NULL;
+        attrs->offloaded = true;
+        attrs->dp_layer = "dpdk";
+    }
+
+    rte_flow = rte_flow_data->flow_item.rte_flow[1]
+        ? rte_flow_data->flow_item.rte_flow[1]
+        : rte_flow_data->flow_item.rte_flow[0];
+
+    if (!rte_flow_data->act_resources.pshared_count_ctx) {
+        ret = netdev_dpdk_rte_flow_query_count(rte_flow_data->physdev,
+                                           rte_flow, &query, &error);
+    } else {
+        ctx = *rte_flow_data->act_resources.pshared_count_ctx;
+        ret = netdev_dpdk_indirect_action_query(ctx->port_id, ctx->act_hdl,
+                                                &query, &error);
+    }
+    if (ret) {
+        VLOG_DBG_RL(&rl, "%s: Failed to query ufid "UUID_FMT" flow: %p",
+                    netdev_get_name(netdev), UUID_ARGS((struct uuid *) ufid),
+                    rte_flow);
+        goto out;
+    }
+    rte_flow_data->stats.n_packets += (query.hits_set) ? query.hits : 0;
+    rte_flow_data->stats.n_bytes += (query.bytes_set) ? query.bytes : 0;
+    if (query.hits_set && query.hits) {
+        rte_flow_data->stats.used = now;
+    }
+
+    if (stats) {
+        memcpy(stats, &rte_flow_data->stats, sizeof *stats);
+    }
+out:
+    ovs_mutex_unlock(&rte_flow_data->lock);
+    return ret;
+}
+
 const struct netdev_flow_api netdev_offload_dpdk = {
     .type = "dpdk_flow_api",
     .flow_put = netdev_offload_dpdk_flow_put,
@@ -6596,4 +6882,7 @@ const struct netdev_flow_api netdev_offload_dpdk = {
     .flow_get_n_flows = netdev_offload_dpdk_get_n_flows,
     .flow_get_n_offloads = netdev_offload_dpdk_get_n_offloads,
     .ct_counter_query = netdev_offload_dpdk_ct_counter_query,
+    .conn_add = netdev_offload_dpdk_conn_add,
+    .conn_del = netdev_offload_dpdk_conn_del,
+    .conn_stats = netdev_offload_dpdk_conn_stats,
 };
