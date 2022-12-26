@@ -4864,10 +4864,12 @@ parse_ct_actions(struct netdev *netdev,
                 set_value = act_resources->ct_action_label_id;
                 set_mask = reg_fields[REG_FIELD_CT_LABEL_ID].mask;
             } else {
-                if (key->u32[1] & mask->u32[1] ||
-                    key->u32[2] & mask->u32[2] ||
-                    key->u32[3] & mask->u32[3]) {
-                    return -1;
+                if (!act_vars->is_ct_conn) {
+                    if (key->u32[1] & mask->u32[1] ||
+                        key->u32[2] & mask->u32[2] ||
+                        key->u32[3] & mask->u32[3]) {
+                        return -1;
+                    }
                 }
                 set_value = key->u32[0] & mask->u32[0];
                 set_mask = mask->u32[0];

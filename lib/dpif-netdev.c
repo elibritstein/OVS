@@ -3737,6 +3737,20 @@ dp_netdev_fill_ct_match(struct match *match, const struct ct_match *ct_match)
 }
 
 static void
+dp_netdev_set_ct_mark_labels_attr(struct ofpbuf *buf,
+                                  uint16_t attr,
+                                  void *offload_key,
+                                  size_t size)
+{
+    uint8_t *key, *mask;
+
+    key = nl_msg_put_unspec_zero(buf, attr, 2 * size);
+    mask = key + size;
+    memcpy(key, offload_key, size);
+    memset(mask, 0xFF, size);
+}
+
+static void
 dp_netdev_create_ct_actions(struct ofpbuf *buf,
                             struct ct_flow_offload_item *offload)
 {
@@ -3818,24 +3832,10 @@ dp_netdev_create_ct_actions(struct ofpbuf *buf,
         nl_msg_end_nested(buf, offset);
     }
     offset = nl_msg_start_nested(buf, OVS_ACTION_ATTR_CT);
-    if (offload->mark_mask) {
-        uint32_t *mark_key, *mark_mask;
-
-        mark_key = nl_msg_put_unspec_zero(buf, OVS_CT_ATTR_MARK,
-                                          2 * sizeof *mark_key);
-        mark_mask = mark_key + 1;
-        *mark_key = offload->mark_key;
-        *mark_mask = offload->mark_mask;
-    }
-    if (!is_all_zeros(&offload->label_mask, sizeof offload->label_mask)) {
-        ovs_u128 *labels_key, *labels_mask;
-
-        labels_key = nl_msg_put_unspec_zero(buf, OVS_CT_ATTR_LABELS,
-                                            2 * sizeof *labels_key);
-        labels_mask = labels_key + 1;
-        *labels_key = offload->label_key;
-        *labels_mask = offload->label_mask;
-    }
+    dp_netdev_set_ct_mark_labels_attr(buf, OVS_CT_ATTR_MARK,
+                                      &offload->mark_key, sizeof(uint32_t));
+    dp_netdev_set_ct_mark_labels_attr(buf, OVS_CT_ATTR_LABELS,
+                                      &offload->label_key, sizeof(ovs_u128));
     nl_msg_put_u16(buf, OVS_CT_ATTR_ZONE, offload->ct_match.key.zone);
 
     end = helper;

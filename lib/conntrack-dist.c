@@ -174,9 +174,7 @@ ctd_conntrack_execute(struct dp_packet *pkt)
     struct conn_lookup_ctx *ctx;
     const uint32_t *setmark;
     struct conntrack *ct;
-    ovs_u128 orig_label;
     const char *helper;
-    uint32_t orig_mark;
     struct conn *conn;
     struct ct_exec *e;
     long long now_us;
@@ -206,8 +204,6 @@ ctd_conntrack_execute(struct dp_packet *pkt)
                              ct->hash_basis);
 
     conn = pkt->md.conn;
-    orig_mark = pkt->md.ct_mark;
-    orig_label = pkt->md.ct_label;
 
     ctx = &pkt->ct_exec.ct_lookup_ctx;
     ctx->conn = NULL;
@@ -224,8 +220,7 @@ ctd_conntrack_execute(struct dp_packet *pkt)
         ctd_process_one(pkt);
     }
     conn = pkt->md.conn ? pkt->md.conn : ctx->conn;
-    process_one_ct_offload(ct, pkt, conn, ctx->reply, now_us, orig_mark,
-                           orig_label);
+    process_one_ct_offload(ct, pkt, conn, ctx->reply, now_us);
 
     ipf_postprocess_conntrack(ct->ipf, &pkt_batch, now_ms, dl_type);
 

@@ -39,9 +39,7 @@ struct ct_flow_offload_item {
     /* actions */
     uint8_t ct_state;
     ovs_u128 label_key;
-    ovs_u128 label_mask;
     uint32_t mark_key;
-    uint32_t mark_mask;
 
     /* Pre-created CT actions */
     bool ct_actions_set;
@@ -76,9 +74,7 @@ process_one_ct_offload(struct conntrack *ct,
                        struct dp_packet *packet,
                        struct conn *conn,
                        bool reply,
-                       long long now_us,
-                       uint32_t orig_mark,
-                       ovs_u128 orig_label);
+                       long long now_us);
 int
 conn_hw_update(struct conntrack *ct,
                struct conntrack_offload_class *offload_class,

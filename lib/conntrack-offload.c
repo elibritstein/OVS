@@ -150,10 +150,8 @@ conntrack_offload_fill_item_add(struct ct_flow_offload_item *item,
 
     conntrack_offload_fill_item_common(item, conn, dir);
     item->ct_state = conn->offloads.dir_info[dir].pkt_ct_state;
-    item->mark_key = conn->offloads.dir_info[dir].pkt_ct_mark[0];
-    item->mark_mask = conn->offloads.dir_info[dir].pkt_ct_mark[1];
-    item->label_key = conn->offloads.dir_info[dir].pkt_ct_label[0];
-    item->label_mask = conn->offloads.dir_info[dir].pkt_ct_label[1];
+    item->mark_key = conn->offloads.dir_info[dir].pkt_ct_mark;
+    item->label_key = conn->offloads.dir_info[dir].pkt_ct_label;
     item->timestamp = now;
 }
 
@@ -328,9 +326,7 @@ process_one_ct_offload(struct conntrack *ct,
                        struct dp_packet *packet,
                        struct conn *conn,
                        bool reply,
-                       long long now_us,
-                       uint32_t orig_mark,
-                       ovs_u128 orig_label)
+                       long long now_us)
 {
     if (!conn || (conn->key.nw_proto != IPPROTO_UDP &&
                   conn->key.nw_proto != IPPROTO_TCP) ||
@@ -340,9 +336,6 @@ process_one_ct_offload(struct conntrack *ct,
 
     if (netdev_is_flow_api_enabled() &&
         !(conn->offloads.flags & CT_OFFLOAD_SKIP)) {
-        ovs_u128 updated_label_bits = ovs_u128_xor(packet->md.ct_label,
-                                                   orig_label);
-        uint32_t updated_mark_bits = packet->md.ct_mark ^ orig_mark;
         int dir = reply ? CT_DIR_REP : CT_DIR_INIT;
         struct conn *actual_conn = conn;
 
@@ -354,15 +347,8 @@ process_one_ct_offload(struct conntrack *ct,
             actual_conn = conn->master_conn;
         }
 
-        actual_conn->offloads.dir_info[dir].pkt_ct_mark[0] =
-            packet->md.ct_mark;
-        actual_conn->offloads.dir_info[dir].pkt_ct_mark[1] =
-            updated_mark_bits;
-
-        actual_conn->offloads.dir_info[dir].pkt_ct_label[0] =
-            packet->md.ct_label;
-        actual_conn->offloads.dir_info[dir].pkt_ct_label[1] =
-            updated_label_bits;
+        actual_conn->offloads.dir_info[dir].pkt_ct_mark = packet->md.ct_mark;
+        actual_conn->offloads.dir_info[dir].pkt_ct_label = packet->md.ct_label;
 
         conntrack_offload_add_conn(ct, packet, conn, reply, now_us);
     }

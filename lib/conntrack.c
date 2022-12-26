@@ -1547,8 +1547,6 @@ conntrack_execute(struct conntrack *ct, struct dp_packet_batch *pkt_batch,
 
     DP_PACKET_BATCH_FOR_EACH (i, packet, pkt_batch) {
         struct conn *conn = packet->md.conn;
-        uint32_t orig_mark = packet->md.ct_mark;
-        ovs_u128 orig_label = packet->md.ct_label;
 
         ctx.conn = NULL;
         if (OVS_UNLIKELY(packet->md.ct_state == CS_INVALID)) {
@@ -1567,8 +1565,7 @@ conntrack_execute(struct conntrack *ct, struct dp_packet_batch *pkt_batch,
                         tp_id);
         }
         conn = packet->md.conn ? packet->md.conn : ctx.conn;
-        process_one_ct_offload(ct, packet, conn, ctx.reply, now_us, orig_mark,
-                               orig_label);
+        process_one_ct_offload(ct, packet, conn, ctx.reply, now_us);
     }
 
     ipf_postprocess_conntrack(ct->ipf, pkt_batch, now_ms, dl_type);
