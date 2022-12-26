@@ -6058,6 +6058,7 @@ netdev_offload_dpdk_hw_miss_packet_recover(struct netdev *netdev,
         sflow_attr->userdata_len = sflow_ctx.sflow_attr.userdata_len;
         return EIO;
     } else if (find_flow_miss_ctx(flow_miss_ctx_id, &flow_miss_ctx)) {
+        VLOG_ERR("flow miss ctx id %d is not found", flow_miss_ctx_id);
         return 0;
     }
 
