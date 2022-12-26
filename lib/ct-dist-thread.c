@@ -19,7 +19,7 @@
 
 #include "conntrack-private.h"
 #include "conntrack.h"
-#include "ct-dist.h"
+#include "ct-dist-thread.h"
 #include "dp-packet.h"
 #include "dpif.h"
 #include "dpif-netdev-private.h"

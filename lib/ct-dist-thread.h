@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef CT_DIST_H
-#define CT_DIST_H 1
+#ifndef CT_DIST_THREAD_H
+#define CT_DIST_THREAD_H 1
 
 #include "mpsc-queue.h"
 #include "ovs-atomic.h"
@@ -79,4 +79,4 @@ send_pkt_to_ct_thread(struct dp_packet *pkt, uint32_t hash);
 }
 #endif
 
-#endif /* CT_DIST_H */
+#endif /* CT_DIST_THREAD_H */
