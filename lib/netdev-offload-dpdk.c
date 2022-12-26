@@ -1404,9 +1404,13 @@ static struct ds *
 dump_ct_ctx_id(struct ds *s, void *data)
 {
     struct ct_miss_ctx *ct_ctx_data = data;
+    ovs_be128 label;
 
-    ds_put_format(s, "ct_state=0x%"PRIx8", zone=%d", ct_ctx_data->state,
-                  ct_ctx_data->zone);
+    label = hton128(ct_ctx_data->label);
+    ds_put_format(s, "ct_state=0x%"PRIx8", zone=%d, ct_mark=0x%"PRIx32
+                  ", ct_label=", ct_ctx_data->state, ct_ctx_data->zone,
+                  ct_ctx_data->mark);
+    ds_put_hex(s, &label, sizeof label);
     return s;
 }
 
