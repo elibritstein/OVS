@@ -77,7 +77,6 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/compiler.h \
 	lib/connectivity.c \
 	lib/connectivity.h \
-	lib/conntrack-dist.c \
 	lib/conntrack-icmp.c \
 	lib/conntrack-offload.c \
 	lib/conntrack-offload.h \
@@ -96,6 +95,7 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/crc32c.h \
 	lib/csum.c \
 	lib/csum.h \
+	lib/ct-dist.c \
 	lib/ct-dist-thread.c \
 	lib/ct-dist-thread.h \
 	lib/ct-dpif.c \
