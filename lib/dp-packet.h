@@ -27,6 +27,7 @@
 #endif
 
 #include "conntrack.h"
+#include "ct-dist-thread.h"
 #include "mpsc-queue.h"
 #include "netdev-afxdp.h"
 #include "netdev-dpdk.h"
@@ -145,31 +146,11 @@ struct e2e_cache_trace_message {
     OVS_ALIGNED_VAR((sizeof(void *))) struct e2e_cache_trace_info data[0];
 });
 
-enum ct_type {
-    CT_TYPE_EXEC,
+struct ctd_msg_exec {
+    struct ctd_msg hdr;
+    struct ctd_exec e;
 };
-
-struct ct_exec {
-    struct conntrack *ct;
-    ovs_be16 dl_type;
-    bool force;
-    bool commit;
-    uint16_t zone;
-    const uint32_t *setmark;
-    const struct ovs_key_ct_labels *setlabel;
-    ovs_be16 tp_src;
-    ovs_be16 tp_dst;
-    const char *helper;
-    struct nat_action_info_t nat_action_info;
-    struct nat_action_info_t *nat_action_info_ref;
-    uint32_t tp_id;
-    struct conn_lookup_ctx ct_lookup_ctx;
-    struct dp_netdev_pmd_thread *pmd;
-    struct dp_netdev_flow *flow;
-    uint64_t actions_buf[512 / 8];
-    size_t actions_len;
-    uint32_t depth;
-};
+BUILD_ASSERT_DECL(offsetof(struct ctd_msg_exec, hdr) == 0);
 
 /* Buffer for holding packet data.  A dp_packet is automatically reallocated
  * as necessary if it grows too large for the available memory.
@@ -209,10 +190,7 @@ BUILD_ASSERT_DECL(E2E_CACHE_MAX_TRACE <= 16);
     uint16_t   e2e_trace_flags;
     uint16_t   e2e_trace_ct_ufids;
     ovs_u128   e2e_trace[E2E_CACHE_MAX_TRACE];
-    struct mpsc_queue_node node;
-    long long timestamp_ms;
-    enum ct_type ct_type;
-    struct ct_exec ct_exec;
+    struct ctd_msg_exec cme;
 };
 
 #if HAVE_AF_XDP

@@ -45,7 +45,7 @@ static unsigned int n_threads;
 DEFINE_EXTERN_PER_THREAD_DATA(ct_thread_id, OVSTHREAD_ID_UNSET);
 
 void
-ct_dist_init(struct conntrack *ct, const struct smap *ovs_other_config)
+ctd_init(struct conntrack *ct, const struct smap *ovs_other_config)
 {
     static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
     unsigned int tid;
@@ -83,14 +83,15 @@ out:
 }
 
 static void
-ct_dist_exec_pkt(struct dp_packet *pkt)
+ctd_exec_pkt(struct dp_packet *pkt)
 {
-    struct ct_exec *e = &pkt->ct_exec;
+    struct ctd_msg *m = &pkt->cme.hdr;
+    struct ctd_exec *e = &pkt->cme.e;
 
     ctd_conntrack_execute(pkt);
 
     /* Send back to the PMD. */
-    mpsc_queue_insert(&e->pmd->ct2pmd.queue, &pkt->node);
+    mpsc_queue_insert(&e->pmd->ct2pmd.queue, &m->node);
 }
 
 static void *
@@ -101,6 +102,7 @@ ct_thread_main(void *arg)
     long long int next_rcu_ms;
     struct dp_packet *pkt;
     long long int now_ms;
+    struct ctd_msg *m;
     uint64_t backoff;
 
     *ct_thread_id_get() = thread - thread->ct->threads;
@@ -123,11 +125,12 @@ ct_thread_main(void *arg)
         now_ms = time_msec();
         backoff = CT_THREAD_BACKOFF_MIN;
 
-        pkt = CONTAINER_OF(queue_node, struct dp_packet, node);
-        // handle pkt
-        switch (pkt->ct_type) {
-        case CT_TYPE_EXEC:
-            ct_dist_exec_pkt(pkt);
+        m = CONTAINER_OF(queue_node, struct ctd_msg, node);
+        // handle ctd_msg
+        switch (m->msg_type) {
+        case CTD_MSG_TYPE_EXEC:
+            pkt = CONTAINER_OF(m, struct dp_packet, cme);
+            ctd_exec_pkt(pkt);
             break;
         default:
             OVS_NOT_REACHED();
@@ -145,15 +148,15 @@ ct_thread_main(void *arg)
 }
 
 bool
-ct_dist_exec(struct conntrack *conntrack,
-             struct dp_netdev_pmd_thread *pmd,
-             const struct flow *flow,
-             struct dp_packet_batch *packets_,
-             const struct nlattr *ct_action,
-             struct dp_netdev_flow *dp_flow OVS_UNUSED,
-             const struct nlattr *actions OVS_UNUSED,
-             size_t actions_len OVS_UNUSED,
-             uint32_t depth OVS_UNUSED)
+ctd_exec(struct conntrack *conntrack,
+         struct dp_netdev_pmd_thread *pmd,
+         const struct flow *flow,
+         struct dp_packet_batch *packets_,
+         const struct nlattr *ct_action,
+         struct dp_netdev_flow *dp_flow OVS_UNUSED,
+         const struct nlattr *actions OVS_UNUSED,
+         size_t actions_len OVS_UNUSED,
+         uint32_t depth OVS_UNUSED)
 {
     const struct ovs_key_ct_labels *setlabel = NULL;
     struct nat_action_info_t *nat_action_info_ref;
@@ -298,11 +301,12 @@ ct_dist_exec(struct conntrack *conntrack,
      * Batching it is TBD.
      */
     DP_PACKET_BATCH_FOR_EACH (i, packet, packets_) {
-        struct ct_exec *e = &packet->ct_exec;
+        struct ctd_msg *m = &packet->cme.hdr;
+        struct ctd_exec *e = &packet->cme.e;
 
-        packet->ct_type = CT_TYPE_EXEC;
-        packet->timestamp_ms = pmd->ctx.now / 1000;
-        *e = (struct ct_exec) {
+        ctd_msg_type_set(m, CTD_MSG_TYPE_EXEC);
+        m->timestamp_ms = pmd->ctx.now / 1000;
+        *e = (struct ctd_exec) {
             .ct = conntrack,
             .dl_type = flow->dl_type,
             .force = force,
@@ -331,7 +335,7 @@ ct_dist_exec(struct conntrack *conntrack,
             dp_netdev_flow_ref(dp_flow);
         }
         memcpy(e->actions_buf, actions, actions_len);
-        send_pkt_to_ct_thread(packet, e->ct_lookup_ctx.hash);
+        ctd_send_msg_to_thread_hash(e->ct, m, e->ct_lookup_ctx.hash);
     }
 
     /* Empty the batch, to stop its processing in this context.
@@ -343,19 +347,20 @@ ct_dist_exec(struct conntrack *conntrack,
 }
 
 unsigned int
-ct_dist_hash_to_thread_id(uint32_t hash)
+ctd_h2tid(uint32_t hash)
 {
     return fastrange32(hash, n_threads);
 }
 
 void
-send_pkt_to_ct_thread(struct dp_packet *packet, uint32_t hash)
+ctd_send_msg_to_thread_hash(struct conntrack *ct,
+                            struct ctd_msg *m,
+                            uint32_t hash)
 {
-    struct ct_exec *e = &packet->ct_exec;
     struct ct_thread *thread;
     unsigned int tid;
 
-    tid = ct_dist_hash_to_thread_id(hash);
-    thread = &e->ct->threads[tid];
-    mpsc_queue_insert(&thread->queue, &packet->node);
+    tid = ctd_h2tid(hash);
+    thread = &ct->threads[tid];
+    mpsc_queue_insert(&thread->queue, &m->node);
 }

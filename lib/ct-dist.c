@@ -1135,11 +1135,12 @@ process_one(struct dp_packet *pkt)
 {
     const struct nat_action_info_t *nat_action_info;
     const struct ovs_key_ct_labels *setlabel;
+    struct ctd_msg *m = &pkt->cme.hdr;
+    struct ctd_exec *e = &pkt->cme.e;
     struct conn_lookup_ctx *ctx;
     const uint32_t *setmark;
     struct conntrack *ct;
     const char *helper;
-    struct ct_exec *e;
     ovs_be16 tp_src;
     ovs_be16 tp_dst;
     uint32_t tp_id;
@@ -1148,12 +1149,11 @@ process_one(struct dp_packet *pkt)
     bool commit;
     bool force;
 
-    e = &pkt->ct_exec;
     ct = e->ct;
     zone = e->zone;
     force = e->force;
     commit = e->commit;
-    now = pkt->timestamp_ms;
+    now = m->timestamp_ms;
     setmark = e->setmark;
     setlabel = e->setlabel;
     nat_action_info = e->nat_action_info_ref;
@@ -1282,13 +1282,14 @@ ctd_conntrack_execute(struct dp_packet *pkt)
 {
     const struct nat_action_info_t *nat_action_info;
     const struct ovs_key_ct_labels *setlabel;
+    struct ctd_msg *m = &pkt->cme.hdr;
+    struct ctd_exec *e = &pkt->cme.e;
     struct dp_packet_batch pkt_batch;
     struct conn_lookup_ctx *ctx;
     const uint32_t *setmark;
     struct conntrack *ct;
     const char *helper;
     struct conn *conn;
-    struct ct_exec *e;
     long long now_us;
     long long now_ms;
     ovs_be16 dl_type;
@@ -1297,7 +1298,6 @@ ctd_conntrack_execute(struct dp_packet *pkt)
     uint16_t zone;
     bool force;
 
-    e = &pkt->ct_exec;
     ct = e->ct;
     dp_packet_batch_init_packet(&pkt_batch, pkt);
     dl_type = e->dl_type;
@@ -1309,7 +1309,7 @@ ctd_conntrack_execute(struct dp_packet *pkt)
     tp_dst = e->tp_dst;
     helper = e->helper;
     nat_action_info = e->nat_action_info_ref;
-    now_ms = pkt->timestamp_ms;
+    now_ms = m->timestamp_ms;
 
     now_us = now_ms * 1000;
     ipf_preprocess_conntrack(ct->ipf, &pkt_batch, now_ms, dl_type, zone,
@@ -1317,7 +1317,7 @@ ctd_conntrack_execute(struct dp_packet *pkt)
 
     conn = pkt->md.conn;
 
-    ctx = &pkt->ct_exec.ct_lookup_ctx;
+    ctx = &e->ct_lookup_ctx;
     ctx->conn = NULL;
     if (OVS_UNLIKELY(pkt->md.ct_state == CS_INVALID)) {
         write_ct_md_alg_exp(pkt, zone, NULL, NULL);

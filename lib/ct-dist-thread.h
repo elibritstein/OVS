@@ -39,6 +39,42 @@ DECLARE_EXTERN_PER_THREAD_DATA(unsigned int, ct_thread_id);
 extern "C" {
 #endif
 
+enum ctd_msg_type {
+    CTD_MSG_TYPE_EXEC,
+};
+
+static const char * const ctd_msg_type_str[] = {
+    [CTD_MSG_TYPE_EXEC] = "EXEC",
+};
+
+struct ctd_msg {
+    struct mpsc_queue_node node;
+    long long timestamp_ms;
+    enum ctd_msg_type msg_type;
+};
+
+struct ctd_exec {
+    struct conntrack *ct;
+    ovs_be16 dl_type;
+    bool force;
+    bool commit;
+    uint16_t zone;
+    const uint32_t *setmark;
+    const struct ovs_key_ct_labels *setlabel;
+    ovs_be16 tp_src;
+    ovs_be16 tp_dst;
+    const char *helper;
+    struct nat_action_info_t nat_action_info;
+    struct nat_action_info_t *nat_action_info_ref;
+    uint32_t tp_id;
+    struct conn_lookup_ctx ct_lookup_ctx;
+    struct dp_netdev_pmd_thread *pmd;
+    struct dp_netdev_flow *flow;
+    uint64_t actions_buf[512 / 8];
+    size_t actions_len;
+    uint32_t depth;
+};
+
 struct ct_thread {
     PADDED_MEMBERS(CACHE_LINE_SIZE,
         struct mpsc_queue queue;
@@ -47,7 +83,7 @@ struct ct_thread {
 };
 
 void
-ct_dist_init(struct conntrack *ct, const struct smap *ovs_other_config);
+ctd_init(struct conntrack *ct, const struct smap *ovs_other_config);
 
 static inline unsigned int
 ct_thread_id(void)
@@ -61,19 +97,34 @@ ct_thread_id(void)
 }
 
 bool
-ct_dist_exec(struct conntrack *conntrack,
-             struct dp_netdev_pmd_thread *pmd,
-             const struct flow *flow,
-             struct dp_packet_batch *packets_,
-             const struct nlattr *ct_action,
-             struct dp_netdev_flow *dp_flow,
-             const struct nlattr *actions,
-             size_t actions_len,
-             uint32_t depth);
+ctd_exec(struct conntrack *conntrack,
+         struct dp_netdev_pmd_thread *pmd,
+         const struct flow *flow,
+         struct dp_packet_batch *packets_,
+         const struct nlattr *ct_action,
+         struct dp_netdev_flow *dp_flow,
+         const struct nlattr *actions,
+         size_t actions_len,
+         uint32_t depth);
 unsigned int
-ct_dist_hash_to_thread_id(uint32_t hash);
+ctd_h2tid(uint32_t hash);
 void
-send_pkt_to_ct_thread(struct dp_packet *pkt, uint32_t hash);
+ctd_send_msg_to_thread_hash(struct conntrack *ct,
+                            struct ctd_msg *m,
+                            uint32_t hash);
+
+OVS_UNUSED
+static void
+ctd_msg_type_set_at(struct ctd_msg *m,
+                    enum ctd_msg_type type,
+                    const char *where)
+{
+    (void) where;
+    m->msg_type = type;
+}
+
+#define ctd_msg_type_set(msg, type) \
+    ctd_msg_type_set_at(msg, type, OVS_SOURCE_LOCATOR)
 
 #ifdef  __cplusplus
 }

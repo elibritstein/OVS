@@ -6774,7 +6774,7 @@ dpif_netdev_set_config(struct dpif *dpif, const struct smap *other_config)
     offload_queue_size = smap_get_ullong(other_config, "hw-offload-queue-size",
                                          HW_OFFLOAD_DEFAULT_QUEUE_SIZE);
 
-    ct_dist_init(dp->conntrack, other_config);
+    ctd_init(dp->conntrack, other_config);
 
     return 0;
 }
@@ -12483,9 +12483,8 @@ dp_execute_cb(void *aux_, struct dp_packet_batch *packets_,
         break;
 
     case OVS_ACTION_ATTR_CT:
-        if (ct_dist_exec(pmd->dp->conntrack, aux->pmd, aux->flow, packets_, a,
-                         aux->dp_flow, aux->actions, aux->actions_len,
-                         *depth)) {
+        if (ctd_exec(pmd->dp->conntrack, aux->pmd, aux->flow, packets_, a,
+                     aux->dp_flow, aux->actions, aux->actions_len, *depth)) {
             return;
         }
         break;
@@ -13959,7 +13958,7 @@ ct2ct_merge_flows(struct e2e_cache_ovs_flow **flows,
 static void
 ct2pmd_handle(struct dp_packet *pkt)
 {
-    struct ct_exec *e = &pkt->ct_exec;
+    struct ctd_exec *e = &pkt->cme.e;
     struct dp_packet_batch batch;
     struct dp_netdev_flow *flow;
     struct nlattr *actions;
@@ -14006,6 +14005,7 @@ dp_netdev_ct2pmd(struct dp_netdev_pmd_thread *pmd)
 {
     struct mpsc_queue_node *queue_node;
     struct dp_packet *pkt;
+    struct ctd_msg *m;
     uint64_t n_msgs;
 
     for (n_msgs = 0; ; n_msgs++) {
@@ -14014,7 +14014,8 @@ dp_netdev_ct2pmd(struct dp_netdev_pmd_thread *pmd)
             break;
         }
 
-        pkt = CONTAINER_OF(queue_node, struct dp_packet, node);
+        m = CONTAINER_OF(queue_node, struct ctd_msg, node);
+        pkt = CONTAINER_OF(m, struct dp_packet, cme);
         ct2pmd_handle(pkt);
     }
 
