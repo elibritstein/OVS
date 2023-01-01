@@ -1688,12 +1688,14 @@ get_indirect_ctx(struct netdev *netdev,
     dhash = hash_bytes(key, md->data_size, 0);
     CMAP_FOR_EACH_WITH_HASH (data_cur, d2i_node, dhash, &md->d2i_map) {
         if (!memcmp(key, data_cur->data, md->data_size)) {
-            if (!ovs_refcount_try_ref_rcu(&data_cur->refcount)) {
-                /* If a reference could not be taken, it means that
-                 * while the data has been found within the map, it has
-                 * since been removed and related ID freed. At this point,
-                 * allocate a new data node altogether. */
-                break;
+            if (create) {
+                if (!ovs_refcount_try_ref_rcu(&data_cur->refcount)) {
+                    /* If a reference could not be taken, it means that
+                     * while the data has been found within the map, it has
+                     * since been removed and related ID freed. At this point,
+                     * allocate a new data node altogether. */
+                    break;
+                }
             }
             return (struct indirect_ctx **) &data_cur->priv;
         }
@@ -6174,7 +6176,6 @@ netdev_offload_dpdk_ct_counter_query(struct netdev *netdev,
         (query_age.sec_since_last_hit * 1000) <= (now - prev_now)) {
         stats->used = now;
     }
-    put_indirect_ctx(&shared_age_md, pctx);
     return ret;
 }
 
