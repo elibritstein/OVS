@@ -426,7 +426,6 @@ enum dpdk_hw_ol_features {
 struct netdev_dpdk {
     PADDED_MEMBERS_CACHELINE_MARKER(CACHE_LINE_SIZE, cacheline0,
         dpdk_port_t port_id;
-        dpdk_port_t esw_mgr_port_id;
 
         /* If true, device was attached by rte_eth_dev_attach(). */
         bool attached;
@@ -464,6 +463,8 @@ struct netdev_dpdk {
 
         atomic_uint8_t vhost_tx_retries_max;
         /* 2 pad bytes here. */
+        dpdk_port_t esw_mgr_port_id;
+        /* 2/2 pad bytes used here. */
     );
 
     PADDED_MEMBERS(CACHE_LINE_SIZE,
