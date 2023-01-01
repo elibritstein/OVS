@@ -5671,42 +5671,25 @@ netdev_dpdk_indirect_action_create(struct netdev *netdev,
 }
 
 int
-netdev_dpdk_indirect_action_destroy(struct netdev *netdev,
+netdev_dpdk_indirect_action_destroy(int port_id,
                                     struct rte_flow_action_handle *act_hdl,
                                     struct rte_flow_error *error)
 {
-    struct netdev_dpdk *dev;
     int ret;
 
-    if (!is_dpdk_class(netdev->netdev_class)) {
-        return -1;
-    }
-
-    dev = netdev_dpdk_cast(netdev);
-    ovs_mutex_lock(&dev->mutex);
-    ret = rte_flow_action_handle_destroy(dev->esw_mgr_port_id, act_hdl, error);
-    ovs_mutex_unlock(&dev->mutex);
+    ret = rte_flow_action_handle_destroy(port_id, act_hdl, error);
     return ret;
 }
 
 int
-netdev_dpdk_indirect_action_query(struct netdev *netdev,
+netdev_dpdk_indirect_action_query(int port_id,
                                   struct rte_flow_action_handle *act_hdl,
                                   void *data,
                                   struct rte_flow_error *error)
 {
-    struct netdev_dpdk *dev;
     int ret;
 
-    if (!is_dpdk_class(netdev->netdev_class)) {
-        return -1;
-    }
-
-    dev = netdev_dpdk_cast(netdev);
-    ovs_mutex_lock(&dev->mutex);
-    ret = rte_flow_action_handle_query(dev->esw_mgr_port_id, act_hdl, data,
-                                       error);
-    ovs_mutex_unlock(&dev->mutex);
+    ret = rte_flow_action_handle_query(port_id, act_hdl, data, error);
     return ret;
 }
 

@@ -64,7 +64,7 @@ static bool netdev_offload_dpdk_disable_zone_tables = false;
 
 struct indirect_ctx {
     struct rte_flow_action_handle *act_hdl;
-    struct netdev *netdev;
+    int port_id;
 };
 
 struct per_thread {
@@ -1739,9 +1739,10 @@ get_indirect_ctx(struct netdev *netdev,
     ctx = data_cur->priv;
     ctx->act_hdl = netdev_dpdk_indirect_action_create(netdev, action, &error);
     if (ctx->act_hdl == NULL) {
+        ctx->port_id = -1;
         goto err_indir;
     }
-    ctx->netdev = netdev;
+    ctx->port_id = netdev_dpdk_get_esw_mgr_port_id(netdev);
 
     memcpy(data_cur->data, key, md->data_size);
     ovs_refcount_init(&data_cur->refcount);
@@ -1802,14 +1803,14 @@ put_indirect_ctx(struct context_metadata *md, struct indirect_ctx **pctx)
     }
 
     cmap_remove(&md->d2i_map, &data->d2i_node, data->d2i_hash);
-    if (ctx->netdev == NULL || ctx->act_hdl == NULL) {
-        VLOG_ERR_RL(&rl, "%s: %s: invalid ctx: netdev=%p, ctx_hdl=%p",
-                    __func__, md->name, ctx->netdev, ctx->act_hdl);
+    if (ctx->port_id == -1 || ctx->act_hdl == NULL) {
+        VLOG_ERR_RL(&rl, "%s: %s: invalid ctx: port_id=%d, ctx_hdl=%p",
+                    __func__, md->name, ctx->port_id, ctx->act_hdl);
         goto err;
     }
 
-    netdev_dpdk_indirect_action_destroy(ctx->netdev, ctx->act_hdl, &error);
-    ctx->netdev = NULL;
+    netdev_dpdk_indirect_action_destroy(ctx->port_id, ctx->act_hdl, &error);
+    ctx->port_id = -1;
     ctx->act_hdl = NULL;
 
 err:
@@ -1834,8 +1835,8 @@ dump_shared_age(struct ds *s, void *data)
                       *((uintptr_t *) did->key), did->create);
     }
     if (did->ctx) {
-        ds_put_format(s, "ctx->netdev=%s, ctx->act_hdl=%p",
-                      netdev_get_name(did->ctx->netdev), did->ctx->act_hdl);
+        ds_put_format(s, "ctx->port_id=%d, ctx->act_hdl=%p",
+                      did->ctx->port_id, did->ctx->act_hdl);
     } else {
         ds_put_cstr(s, "ctx=NULL");
     }
@@ -1891,8 +1892,8 @@ dump_shared_count(struct ds *s, void *data)
         }
     }
     if (did->ctx) {
-        ds_put_format(s, "ctx->netdev=%s, ctx->act_hdl=%p",
-                      netdev_get_name(did->ctx->netdev), did->ctx->act_hdl);
+        ds_put_format(s, "ctx->port_id=%d, ctx->act_hdl=%p",
+                      did->ctx->port_id, did->ctx->act_hdl);
     } else {
         ds_put_cstr(s, "ctx=NULL");
     }
@@ -5922,7 +5923,7 @@ netdev_offload_dpdk_flow_get(struct netdev *netdev,
                                            rte_flow, &query, &error);
     } else {
         ctx = *rte_flow_data->act_resources.pshared_count_ctx;
-        ret = netdev_dpdk_indirect_action_query(ctx->netdev, ctx->act_hdl,
+        ret = netdev_dpdk_indirect_action_query(ctx->port_id, ctx->act_hdl,
                                                 &query, &error);
     }
     if (ret) {
@@ -6264,7 +6265,7 @@ netdev_offload_dpdk_ct_counter_query(struct netdev *netdev,
     }
     ctx = *pctx;
 
-    ret = netdev_dpdk_indirect_action_query(ctx->netdev, ctx->act_hdl,
+    ret = netdev_dpdk_indirect_action_query(ctx->port_id, ctx->act_hdl,
                                             &query_age, &error);
     if (!ret && query_age.sec_since_last_hit_valid &&
         (query_age.sec_since_last_hit * 1000) <= (now - prev_now)) {

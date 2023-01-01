@@ -155,11 +155,11 @@ netdev_dpdk_indirect_action_create(struct netdev *,
                                    const struct rte_flow_action *,
                                    struct rte_flow_error *);
 int
-netdev_dpdk_indirect_action_destroy(struct netdev *,
+netdev_dpdk_indirect_action_destroy(int port_id,
                                     struct rte_flow_action_handle *,
                                     struct rte_flow_error *);
 int
-netdev_dpdk_indirect_action_query(struct netdev *,
+netdev_dpdk_indirect_action_query(int port_id,
                                   struct rte_flow_action_handle *,
                                   void *,
                                   struct rte_flow_error *);
