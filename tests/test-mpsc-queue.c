@@ -274,6 +274,35 @@ test_mpsc_queue_push_front(void)
 }
 
 static void
+test_mpsc_queue_poll(void)
+{
+    struct mpsc_queue queue, *q = &queue;
+    struct mpsc_queue_node *node;
+    struct element elements[1];
+    struct mpsc_queue_node *prevs[ARRAY_SIZE(elements)];
+
+    mpsc_queue_init(q);
+    mpsc_queue_acquire(q);
+
+    /* Partial insertion case.
+     * Interrupt an insertion then verify the signaled queue state. */
+
+    prevs[0] = mpsc_queue_insert_begin(q, &elements[0].node.mpscq);
+    ovs_assert(mpsc_queue_poll(q, &node) == MPSC_QUEUE_RETRY);
+    ovs_assert(mpsc_queue_poll(q, &node) == MPSC_QUEUE_RETRY);
+
+    mpsc_queue_insert_end(prevs[0], &elements[0].node.mpscq);
+    ovs_assert(mpsc_queue_poll(q, &node) == MPSC_QUEUE_ITEM);
+    ovs_assert(mpsc_queue_poll(q, &node) == MPSC_QUEUE_EMPTY);
+
+    mpsc_queue_release(q);
+    mpsc_queue_destroy(q);
+
+    printf(".");
+}
+
+
+static void
 run_tests(struct ovs_cmdl_context *ctx OVS_UNUSED)
 {
     /* Verify basic insertion. */
@@ -284,6 +313,8 @@ run_tests(struct ovs_cmdl_context *ctx OVS_UNUSED)
     test_mpsc_queue_removal_fifo();
     /* Verify tail-end insertion works. */
     test_mpsc_queue_push_front();
+    /* Verify poll semantics. */
+    test_mpsc_queue_poll();
     printf("\n");
 }
 

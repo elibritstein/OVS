@@ -145,7 +145,12 @@ mpsc_queue_poll(struct mpsc_queue *queue, struct mpsc_queue_node **node)
 
     if (tail == &queue->stub) {
         if (next == NULL) {
-            return MPSC_QUEUE_EMPTY;
+            atomic_read_explicit(&queue->head, &head, memory_order_acquire);
+            if (tail != head) {
+                return MPSC_QUEUE_RETRY;
+            } else {
+                return MPSC_QUEUE_EMPTY;
+            }
         }
 
         atomic_store_relaxed(&queue->tail, next);
