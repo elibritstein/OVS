@@ -1,7 +1,9 @@
-       * Add support for DPDK 22.11.
-
-v2.17.4 - xx xxx xxxx
+v2.17.4 - 01 Dec 2022
 ---------------------
+   - (NV) Add support for DPDK 22.11.
+   - Bug fixes
+   - QoS:
+     * Fixed inability to apply QoS on ports with custom qdiscs.
 
 v2.17.3 - 07 Oct 2022
 ---------------------
