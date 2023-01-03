@@ -24,6 +24,7 @@
 #include "cmap.h"
 #include "dpif-netdev.h"
 #include "id-fpool.h"
+#include "netdev-offload.h"
 #include "netdev-offload-provider.h"
 #include "netdev-provider.h"
 #include "netdev-vport.h"
@@ -1672,6 +1673,13 @@ disassociate_flow_id(uint32_t flow_id)
     return disassociate_id_data(&flow_miss_ctx_md, flow_id);
 }
 
+struct dump_indirect_data {
+    struct netdev *netdev;
+    void *key;
+    bool create;
+    struct indirect_ctx *ctx;
+};
+
 static struct indirect_ctx **
 get_indirect_ctx(struct netdev *netdev,
                  void *key,
@@ -1679,15 +1687,24 @@ get_indirect_ctx(struct netdev *netdev,
                  struct rte_flow_action *action,
                  bool create)
 {
+    struct dump_indirect_data did = {
+        .netdev = netdev,
+        .key = key,
+        .create = create,
+    };
     struct context_data *data_cur;
     struct rte_flow_error error;
     struct indirect_ctx *ctx;
     size_t data_size;
     size_t dhash;
+    struct ds s;
+
+    ds_init(&s);
 
     dhash = hash_bytes(key, md->data_size, 0);
     CMAP_FOR_EACH_WITH_HASH (data_cur, d2i_node, dhash, &md->d2i_map) {
         if (!memcmp(key, data_cur->data, md->data_size)) {
+            did.ctx = data_cur->priv;
             if (create) {
                 if (!ovs_refcount_try_ref_rcu(&data_cur->refcount)) {
                     /* If a reference could not be taken, it means that
@@ -1696,7 +1713,11 @@ get_indirect_ctx(struct netdev *netdev,
                      * allocate a new data node altogether. */
                     break;
                 }
+                VLOG_DBG_RL(&rl, "%s: %s: '%s', refcnt=%u", __func__, md->name,
+                            ds_cstr(md->dump_context_data(&s, &did)),
+                            ovs_refcount_read(&data_cur->refcount));
             }
+            ds_destroy(&s);
             return (struct indirect_ctx **) &data_cur->priv;
         }
     }
@@ -1729,12 +1750,20 @@ get_indirect_ctx(struct netdev *netdev,
     cmap_insert(&md->d2i_map, &data_cur->d2i_node, dhash);
     ovs_mutex_unlock(&md->maps_lock);
 
+    did.ctx = ctx;
+    VLOG_DBG_RL(&rl, "%s: %s: '%s', refcnt=%d", __func__, md->name,
+                ds_cstr(md->dump_context_data(&s, &did)),
+                ovs_refcount_read(&data_cur->refcount));
+    ds_destroy(&s);
     return (struct indirect_ctx **) &data_cur->priv;
 
 err_indir:
     free(data_cur->data);
 err_data_alloc:
     free(data_cur);
+    VLOG_ERR_RL(&rl, "%s: %s: error. '%s'", __func__, md->name,
+                ds_cstr(md->dump_context_data(&s, &did)));
+    ds_destroy(&s);
     return NULL;
 }
 
@@ -1748,9 +1777,12 @@ context_data_unref(struct context_data *data)
 static void
 put_indirect_ctx(struct context_metadata *md, struct indirect_ctx **pctx)
 {
+    struct dump_indirect_data did;
     struct rte_flow_error error;
     struct context_data *data;
+    struct indirect_ctx dctx;
     struct indirect_ctx *ctx;
+    struct ds s;
 
     if (pctx == NULL) {
         return;
@@ -1758,6 +1790,9 @@ put_indirect_ctx(struct context_metadata *md, struct indirect_ctx **pctx)
 
     data = CONTAINER_OF(pctx, struct context_data, priv);
     ctx = *pctx;
+    memset(&did, 0, sizeof did);
+    did.ctx = &dctx;
+    memcpy(did.ctx, ctx, sizeof *ctx);
 
     ovs_mutex_lock(&md->maps_lock);
 
@@ -1768,6 +1803,8 @@ put_indirect_ctx(struct context_metadata *md, struct indirect_ctx **pctx)
 
     cmap_remove(&md->d2i_map, &data->d2i_node, data->d2i_hash);
     if (ctx->netdev == NULL || ctx->act_hdl == NULL) {
+        VLOG_ERR_RL(&rl, "%s: %s: invalid ctx: netdev=%p, ctx_hdl=%p",
+                    __func__, md->name, ctx->netdev, ctx->act_hdl);
         goto err;
     }
 
@@ -1779,10 +1816,35 @@ err:
     ovsrcu_postpone(context_data_unref, data);
 out:
     ovs_mutex_unlock(&md->maps_lock);
+    ds_init(&s);
+    VLOG_DBG_RL(&rl, "%s: %s: '%s', refcnt=%u", __func__, md->name,
+                ds_cstr(md->dump_context_data(&s, &did)),
+                ovs_refcount_read(&data->refcount));
+    ds_destroy(&s);
+}
+
+static struct ds *
+dump_shared_age(struct ds *s, void *data)
+{
+    struct dump_indirect_data *did = data;
+
+    if (did->key) {
+        ds_put_format(s, "netdev=%s, key=0x%"PRIxPTR", create=%d, ",
+                      netdev_get_name(did->netdev),
+                      *((uintptr_t *) did->key), did->create);
+    }
+    if (did->ctx) {
+        ds_put_format(s, "ctx->netdev=%s, ctx->act_hdl=%p",
+                      netdev_get_name(did->ctx->netdev), did->ctx->act_hdl);
+    } else {
+        ds_put_cstr(s, "ctx=NULL");
+    }
+    return s;
 }
 
 static struct context_metadata shared_age_md = {
     .name = "shared-age",
+    .dump_context_data = dump_shared_age,
     .maps_lock = OVS_MUTEX_INITIALIZER,
     .d2i_map = CMAP_INITIALIZER,
     .data_size = sizeof(uintptr_t),
@@ -1806,8 +1868,40 @@ get_indirect_age_ctx(struct netdev *netdev,
                             create);
 }
 
+static struct ds *
+dump_shared_count(struct ds *s, void *data)
+{
+    struct dump_indirect_data *did = data;
+    struct flows_counter_key *fck = did->key;
+
+    if (fck) {
+        ovs_u128 *last_ufid_key;
+
+        last_ufid_key = &fck->ufid_key[OFFLOAD_FLOWS_COUNTER_KEY_SIZE - 1];
+        if (ovs_u128_is_zero(*last_ufid_key)) {
+            ds_put_format(s, "netdev=%s, key=0x%"PRIxPTR", create=%d, ",
+                          netdev_get_name(did->netdev), fck->ptr_key,
+                          did->create);
+        } else {
+            char key_str[OFFLOAD_FLOWS_COUNTER_KEY_STRING_SIZE];
+
+            netdev_flow_counter_key_to_string(fck, key_str, sizeof key_str);
+            ds_put_format(s, "netdev=%s, key=%s, create=%d, ",
+                          netdev_get_name(did->netdev), key_str, did->create);
+        }
+    }
+    if (did->ctx) {
+        ds_put_format(s, "ctx->netdev=%s, ctx->act_hdl=%p",
+                      netdev_get_name(did->ctx->netdev), did->ctx->act_hdl);
+    } else {
+        ds_put_cstr(s, "ctx=NULL");
+    }
+    return s;
+}
+
 static struct context_metadata shared_count_md = {
     .name = "shared-count",
+    .dump_context_data = dump_shared_count,
     .maps_lock = OVS_MUTEX_INITIALIZER,
     .d2i_map = CMAP_INITIALIZER,
     .data_size = sizeof(struct flows_counter_key),
