@@ -141,7 +141,7 @@ mpsc_queue_insert_begin(struct mpsc_queue *queue, struct mpsc_queue_node *node)
 {
     struct mpsc_queue_node *prev;
 
-    atomic_store_explicit(&node->next, NULL, memory_order_relaxed);
+    atomic_store_relaxed(&node->next, NULL);
     prev = atomic_exchange_explicit(&queue->head, node, memory_order_acq_rel);
     return prev;
 }
