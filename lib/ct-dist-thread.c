@@ -78,6 +78,13 @@ ctd_init(struct conntrack *ct, const struct smap *ovs_other_config)
         ovs_thread_create("ct", ct_thread_main, thread);
     }
 
+    latch_set(&ct->clean_thread_exit);
+    pthread_join(ct->clean_thread, NULL);
+    latch_destroy(&ct->clean_thread_exit);
+    latch_init(&ct->clean_thread_exit);
+    ct->clean_thread = ovs_thread_create("ctd_clean", ctd_clean_thread_main,
+                                         ct);
+
 out:
     ovsthread_once_done(&once);
 }

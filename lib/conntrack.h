@@ -204,5 +204,12 @@ ctd_conntrack_execute(struct dp_packet *pkt);
 bool
 conn_key_extract(struct conntrack *, struct dp_packet *, ovs_be16 dl_type,
                  struct conn_lookup_ctx *, uint16_t zone);
+void *
+ctd_clean_thread_main(void *f_);
+int
+ctd_flush(struct conntrack *, const uint16_t *zone);
+int
+ctd_flush_tuple(struct conntrack *, const struct ct_dpif_tuple *,
+                uint16_t zone);
 
 #endif /* conntrack.h */

@@ -144,6 +144,9 @@ detect_ftp_ctl_type(const struct conn_lookup_ctx *ctx,
                     struct dp_packet *pkt);
 
 static void
+expectation_clean(struct conntrack *ct, const struct conn_key *parent_key);
+
+static void
 handle_ftp_ctl(struct conntrack *ct, const struct conn_lookup_ctx *ctx,
                struct dp_packet *pkt, struct conn *ec, long long now,
                enum ftp_ctl_pkt ftp_ctl, bool nat);
@@ -322,6 +325,25 @@ conn_do_delete(struct conn *conn,
     ovsrcu_gc(delete_cb, conn, gc_node);
 }
 
+static void
+conn_clean_cmn(struct conntrack *ct, struct conn *conn)
+    OVS_REQUIRES(conn->lock, ct->ct_lock)
+{
+    if (conn->alg) {
+        expectation_clean(ct, &conn->key);
+    }
+
+    conntrack_offload_del_conn(ct, conn);
+
+    uint32_t hash = conn_key_hash(&conn->key, ct->hash_basis);
+    cmap_remove(&ct->conns, &conn->cm_node, hash);
+
+    struct zone_limit *zl = zone_limit_lookup(ct, conn->admit_zone);
+    if (zl && zl->czl.zone_limit_seq == conn->zone_limit_seq) {
+        atomic_count_dec(&zl->czl.count);
+    }
+}
+
 static inline bool
 conn_unref(struct conn *conn)
 {
@@ -330,6 +352,34 @@ conn_unref(struct conn *conn)
         return true;
     }
     return false;
+}
+
+/* Must be called with 'conn' of 'conn_type' CT_CONN_TYPE_DEFAULT.  Also
+ * removes the associated nat 'conn' from the lookup datastructures. */
+static void
+conn_clean(struct conntrack *ct, struct conn *conn)
+    OVS_EXCLUDED(conn->lock, ct->ct_lock)
+{
+    ovs_assert(conn->conn_type == CT_CONN_TYPE_DEFAULT);
+
+    if (atomic_flag_test_and_set(&conn->reclaimed)) {
+        return;
+    }
+
+    conn_lock(conn);
+    conntrack_lock(ct);
+
+    conn_clean_cmn(ct, conn);
+    if (conn->nat_conn) {
+        uint32_t hash = conn_key_hash(&conn->nat_conn->key, ct->hash_basis);
+        cmap_remove(&ct->conns, &conn->nat_conn->cm_node, hash);
+    }
+    conn_unref(conn);
+    atomic_count_dec(&ct->n_conn);
+    atomic_count_dec(&ct->l4_counters[conn->key.nw_proto]);
+
+    conntrack_unlock(ct);
+    conn_unlock(conn);
 }
 
 static void
@@ -1443,6 +1493,221 @@ set_label(struct dp_packet *pkt, struct conn *conn,
 
 
 
+static void
+conn_batch_clean(struct conntrack *ct,
+                 struct conn **conns, size_t *batch_count,
+                 long long int now)
+{
+    size_t i;
+
+    if (*batch_count == 0) {
+        return;
+    }
+
+    for (i = 0; i < *batch_count; i++) {
+        long long int latency = now - conn_expiration(conns[i]);
+
+        if (latency >= 10000) {
+            COVERAGE_INC(ctd_clean_10s_latency);
+        } else if (latency >= 5000) {
+            COVERAGE_INC(ctd_clean_5s_latency);
+        } else if (latency >= 2000) {
+            COVERAGE_INC(ctd_clean_2s_latency);
+        } else if (latency >= 1000) {
+            COVERAGE_INC(ctd_clean_1s_latency);
+        }
+
+        conn_clean(ct, conns[i]);
+    }
+
+    *batch_count = 0;
+}
+
+#define CT_SWEEP_BATCH_SIZE 32
+#define CT_SWEEP_QUIESCE_INTERVAL_MS 10
+#define CT_SWEEP_TIMEOUT_MS (1000 - CT_SWEEP_QUIESCE_INTERVAL_MS - 1)
+
+/* Delete the expired connections from 'ctb', up to 'limit'. Returns the
+ * earliest expiration time among the remaining connections in 'ctb'.  Returns
+ * LLONG_MAX if 'ctb' is empty.  The return value might be smaller than 'now',
+ * if 'limit' is reached */
+static long long
+ct_sweep(struct conntrack *ct, long long now, size_t limit)
+    OVS_NO_THREAD_SAFETY_ANALYSIS
+{
+    struct conntrack_offload_class *offload_class = NULL;
+    struct conn *conn_batch[CT_SWEEP_BATCH_SIZE];
+    struct mpsc_queue_node *node;
+    size_t batch_count = 0;
+    long long min_expiration = LLONG_MAX;
+    long long int next_rcu_quiesce;
+    long long int start = now;
+    size_t count = 0;
+    int rv_active;
+
+    next_rcu_quiesce = now + CT_SWEEP_QUIESCE_INTERVAL_MS;
+    for (unsigned i = 0; i < N_CT_TM; i++) {
+        struct conn *end_of_queue = NULL;
+
+        if (now >= next_rcu_quiesce) {
+rcu_quiesce:
+            /* Do not delay further releasing batched conns if any. */
+            conn_batch_clean(ct, conn_batch, &batch_count, now);
+            ovsrcu_quiesce();
+            now = time_msec();
+            next_rcu_quiesce = now + CT_SWEEP_QUIESCE_INTERVAL_MS;
+            offload_class = NULL;
+        }
+        if (!offload_class) {
+            offload_class = ovsrcu_get(struct conntrack_offload_class *,
+                                       &ct->offload_class);
+        }
+
+        MPSC_QUEUE_FOR_EACH_POP (node, &ct->exp_lists[i]) {
+            long long int expiration;
+            struct conn *conn;
+
+            conn = CONTAINER_OF(node, struct conn, exp.node);
+            if (conn_unref(conn)) {
+                /* Node was destroyed by RCU calls. */
+                continue;
+            }
+
+            if (conn == end_of_queue) {
+                /* If we already re-enqueued this conn during this sweep,
+                 * stop iterating this list and skip to the next.
+                 */
+                min_expiration = MIN(min_expiration, conn_expiration(conn));
+                conn_expire_push_back(ct, conn);
+                break;
+            }
+
+            if (now - start >= CT_SWEEP_TIMEOUT_MS) {
+                min_expiration = MIN(min_expiration, conn_expiration(conn));
+                conn_expire_push_back(ct, conn);
+                goto out;
+            }
+
+            rv_active = conn_hw_update(ct, offload_class, conn,
+                                       &conn->exp.tm, now);
+            if (rv_active == EAGAIN) {
+                /* Impossible to query offload status, try later. */
+                conn_expire_push_front(ct, conn);
+                goto rcu_quiesce;
+            }
+
+            expiration = conn_expiration(conn);
+
+            if (now < expiration) {
+                if (atomic_flag_test_and_set(&conn->exp.reschedule)) {
+                    /* Reschedule was true, another thread marked
+                     * this conn to be enqueued again.
+                     * The conn is not yet expired, still valid, and
+                     * this list should still be iterated.
+                     */
+                    conn_expire_push_back(ct, conn);
+                    if (end_of_queue == NULL) {
+                        end_of_queue = conn;
+                    }
+                } else {
+                    /* This connection is still valid, while no other thread
+                     * modified it: it means this list iteration is finished
+                     * for now. Put front the connection within the list.
+                     */
+                    atomic_flag_clear(&conn->exp.reschedule);
+                    conn_expire_push_front(ct, conn);
+                    min_expiration = MIN(min_expiration, expiration);
+                    break;
+                }
+            } else {
+                conn_batch[batch_count++] = conn;
+                if (batch_count == ARRAY_SIZE(conn_batch)) {
+                    conn_batch_clean(ct, conn_batch, &batch_count, now);
+                }
+                count++;
+                if (count >= limit) {
+                    min_expiration = MIN(min_expiration, expiration);
+                    /* Do not check other lists. */
+                    COVERAGE_INC(ctd_long_cleanup);
+                    goto out;
+                }
+            }
+
+            /* Attempt quiescing at fixed interval. */
+            if (time_msec() >= next_rcu_quiesce) {
+                goto rcu_quiesce;
+            }
+        }
+    }
+
+out:
+    conn_batch_clean(ct, conn_batch, &batch_count, now);
+    if (count > 0) {
+        VLOG_DBG("conntrack cleanup %"PRIuSIZE" entries in %lld msec", count,
+                 time_msec() - start);
+    }
+    return min_expiration;
+}
+
+/* Cleans up old connection entries from 'ct'.  Returns the time when the
+ * next expiration might happen.  The return value might be smaller than
+ * 'now', meaning that an internal limit has been reached, and some expired
+ * connections have not been deleted. */
+static long long
+conntrack_clean(struct conntrack *ct, long long now)
+{
+    unsigned int n_conn_limit;
+    atomic_read_relaxed(&ct->n_conn_limit, &n_conn_limit);
+    size_t clean_max = n_conn_limit > 10 ? n_conn_limit / 10 : 1;
+    long long min_exp = ct_sweep(ct, now, clean_max);
+    long long next_wakeup = MIN(min_exp, now + CT_DPIF_NETDEV_TP_MIN_MS);
+
+    return next_wakeup;
+}
+
+/* Cleanup:
+ *
+ * We must call conntrack_clean() periodically.  conntrack_clean() return
+ * value gives an hint on when the next cleanup must be done (either because
+ * there is an actual connection that expires, or because a new connection
+ * might be created with the minimum timeout).
+ *
+ * We want to reduce the number of wakeups and batch connection cleanup
+ * when the load is not very high.  CT_CLEAN_INTERVAL ensures that if we
+ * are coping with the current cleanup tasks, then we wait at least
+ * 5 seconds to do further cleanup.
+ */
+#define CT_CLEAN_INTERVAL 5000 /* 5 seconds */
+
+void *
+ctd_clean_thread_main(void *f_)
+    OVS_NO_THREAD_SAFETY_ANALYSIS
+{
+    struct conntrack *ct = f_;
+
+    for (unsigned i = 0; i < N_CT_TM; i++) {
+        mpsc_queue_acquire(&ct->exp_lists[i]);
+    }
+
+    while (!latch_is_set(&ct->clean_thread_exit)) {
+        long long next_wake = conntrack_clean(ct, time_msec());
+        long long now = time_msec();
+
+        if (next_wake > now) {
+            poll_timer_wait_until(MIN(next_wake, now + CT_CLEAN_INTERVAL));
+        } else {
+            poll_immediate_wake();
+        }
+        latch_wait(&ct->clean_thread_exit);
+        poll_block();
+    }
+
+    for (unsigned i = 0; i < N_CT_TM; i++) {
+        mpsc_queue_release(&ct->exp_lists[i]);
+    }
+
+    return NULL;
+}
 
 /* 'Data' is a pointer to the beginning of the L3 header and 'new_data' is
  * used to store a pointer to the first byte after the L3 header.  'Size' is
@@ -2252,6 +2517,91 @@ delete_conn(struct conn *conn)
     delete_conn_cmn(conn);
 }
 
+/* Convert an IP address 'a' into a conntrack address 'b' based on 'dl_type'.
+ *
+ * Note that 'dl_type' should be either "ETH_TYPE_IP" or "ETH_TYPE_IPv6"
+ * in network-byte order. */
+static void
+ct_dpif_inet_addr_to_ct_endpoint(const union ct_dpif_inet_addr *a,
+                                 union ct_addr *b, ovs_be16 dl_type)
+{
+    if (dl_type == htons(ETH_TYPE_IP)) {
+        b->ipv4 = a->ip;
+    } else if (dl_type == htons(ETH_TYPE_IPV6)){
+        b->ipv6 = a->in6;
+    }
+}
+
+static void
+tuple_to_conn_key(const struct ct_dpif_tuple *tuple, uint16_t zone,
+                  struct conn_key *key)
+{
+    if (tuple->l3_type == AF_INET) {
+        key->dl_type = htons(ETH_TYPE_IP);
+    } else if (tuple->l3_type == AF_INET6) {
+        key->dl_type = htons(ETH_TYPE_IPV6);
+    }
+    key->nw_proto = tuple->ip_proto;
+    ct_dpif_inet_addr_to_ct_endpoint(&tuple->src, &key->src.addr,
+                                     key->dl_type);
+    ct_dpif_inet_addr_to_ct_endpoint(&tuple->dst, &key->dst.addr,
+                                     key->dl_type);
+
+    if (tuple->ip_proto == IPPROTO_ICMP || tuple->ip_proto == IPPROTO_ICMPV6) {
+        key->src.icmp_id = tuple->icmp_id;
+        key->src.icmp_type = tuple->icmp_type;
+        key->src.icmp_code = tuple->icmp_code;
+        key->dst.icmp_id = tuple->icmp_id;
+        key->dst.icmp_type = reverse_icmp_type(tuple->icmp_type);
+        key->dst.icmp_code = tuple->icmp_code;
+    } else {
+        key->src.port = tuple->src_port;
+        key->dst.port = tuple->dst_port;
+    }
+    key->zone = zone;
+}
+
+int
+ctd_flush(struct conntrack *ct, const uint16_t *zone)
+{
+    struct conn *conn;
+
+    CMAP_FOR_EACH (conn, cm_node, &ct->conns) {
+        if ((!zone || *zone == conn->key.zone) &&
+            conn->conn_type == CT_CONN_TYPE_DEFAULT) {
+            /* Pass NAT conn, they will be cleaned when
+             * their master conn is removed.
+             */
+            conn_clean(ct, conn);
+        }
+    }
+
+    return 0;
+}
+
+int
+ctd_flush_tuple(struct conntrack *ct,
+                const struct ct_dpif_tuple *tuple,
+                uint16_t zone)
+{
+    int error = 0;
+    struct conn_key key;
+    struct conn *conn;
+
+    memset(&key, 0, sizeof(key));
+    tuple_to_conn_key(tuple, zone, &key);
+
+    conn_lookup(ct, &key, time_msec(), &conn, NULL);
+    if (conn && conn->conn_type == CT_CONN_TYPE_DEFAULT) {
+        conn_clean(ct, conn);
+    } else {
+        VLOG_WARN("Must flush tuple using the original pre-NATed tuple");
+        error = ENOENT;
+    }
+
+    return error;
+}
+
 /* This function must be called with the ct->resources read lock taken. */
 static struct alg_exp_node *
 expectation_lookup(struct hmap *alg_expectations, const struct conn_key *key,
@@ -2275,6 +2625,22 @@ expectation_lookup(struct hmap *alg_expectations, const struct conn_key *key,
         }
     }
     return NULL;
+}
+
+/* This function must be called with the ct->resources write lock taken. */
+static void
+expectation_remove(struct hmap *alg_expectations,
+                   const struct conn_key *key, uint32_t basis)
+{
+    struct alg_exp_node *alg_exp_node;
+
+    HMAP_FOR_EACH_WITH_HASH (alg_exp_node, node, conn_key_hash(key, basis),
+                             alg_expectations) {
+        if (!conn_key_cmp(&alg_exp_node->key, key)) {
+            hmap_remove(alg_expectations, &alg_exp_node->node);
+            break;
+        }
+    }
 }
 
 /* This function must be called with the ct->resources read lock taken. */
@@ -2309,6 +2675,26 @@ expectation_ref_create(struct hindex *alg_expectation_refs,
         hindex_insert(alg_expectation_refs, &alg_exp_node->node_ref,
                       conn_key_hash(&alg_exp_node->parent_key, basis));
     }
+}
+
+static void
+expectation_clean(struct conntrack *ct, const struct conn_key *parent_key)
+{
+    ovs_rwlock_wrlock(&ct->resources_lock);
+
+    struct alg_exp_node *node;
+    HINDEX_FOR_EACH_WITH_HASH_SAFE (node, node_ref,
+                                    conn_key_hash(parent_key, ct->hash_basis),
+                                    &ct->alg_expectation_refs) {
+        if (!conn_key_cmp(&node->parent_key, parent_key)) {
+            expectation_remove(&ct->alg_expectations, &node->key,
+                               ct->hash_basis);
+            hindex_remove(&ct->alg_expectation_refs, &node->node_ref);
+            free(node);
+        }
+    }
+
+    ovs_rwlock_unlock(&ct->resources_lock);
 }
 
 static void
