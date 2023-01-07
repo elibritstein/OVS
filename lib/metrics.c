@@ -198,9 +198,9 @@ metrics_values_format(struct ds *s)
         .ops = metrics_node_format,
         .ops_aux = &aux,
     };
-    struct metrics_entry latency =
-        METRICS_GAUGE(metrics_query_latency,
-                "Time elapsed to process this query in milliseconds.");
+    struct metrics_entry duration =
+        METRICS_GAUGE(scrape_duration_seconds,
+                "Time elapsed to process this request in seconds.");
     long long int start;
     size_t i;
 
@@ -209,8 +209,8 @@ metrics_values_format(struct ds *s)
     memset(&aux, 0, sizeof aux);
     metrics_visitor_dfs(&ctx, METRICS_ROOT);
 
-    metrics_values_add_entry(&aux, &ctx, &latency,
-                             time_msec() - start);
+    metrics_values_add_entry(&aux, &ctx, &duration,
+                             (time_msec() - start) / 1000.0);
 
     for (i = 0; i < aux.hdrs.n; i++) {
         struct metrics_header *hdr = aux.hdrs.buf[i];

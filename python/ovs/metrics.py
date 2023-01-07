@@ -111,7 +111,7 @@ class MetricsDB():
         self.query_duration_key = ''
         self.update()
         for k, v in self.metrics.items():
-            if k.endswith('metrics_query_latency'):
+            if k.endswith('scrape_duration_seconds'):
                 self.query_duration_key = k
                 break
 
@@ -133,7 +133,7 @@ class MetricsDB():
                     self.metrics[sample.name] = Entry(sample)
 
         if self.query_duration_key != '':
-            self.last_query_duration = self.metrics[self.query_duration_key].last()
+            self.last_query_duration = self.metrics[self.query_duration_key].last() * 1000
 
     def last_ts(self):
         return self.update_ts[-1] - self.start_ts
