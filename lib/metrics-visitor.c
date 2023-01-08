@@ -351,6 +351,9 @@ metrics_entry_name(struct metrics_node *node,
             ds_put_char(s, '_');
         }
         ds_put_cstr(s, entry->name);
+        if (entry->type == METRICS_ENTRY_TYPE_COUNTER) {
+            ds_put_cstr(s, "_total");
+        }
     }
 }
 
