@@ -3761,10 +3761,10 @@ METRICS_COLLECTION(ofproto_dpif, foreach_udpif,
                    do_foreach_udpif, "name");
 
 enum {
-    OF_DPIF_N_PACKETS,
-    OF_DPIF_N_BYTES,
-    OF_DPIF_N_OFL_PACKETS,
-    OF_DPIF_N_OFL_BYTES,
+    OF_DPIF_PACKETS,
+    OF_DPIF_BYTES,
+    OF_DPIF_OFL_PACKETS,
+    OF_DPIF_OFL_BYTES,
     OF_DPIF_N_HANDLERS,
     OF_DPIF_N_REVALIDATORS,
 };
@@ -3788,23 +3788,23 @@ udpif_read_value(double *values, void *it)
         ovs_mutex_unlock(&udpif->revalidators[i].stats_lock);
     }
 
-    values[OF_DPIF_N_PACKETS] = n_packets;
-    values[OF_DPIF_N_BYTES] = n_bytes;
-    values[OF_DPIF_N_OFL_PACKETS] = n_ofl_packets;
-    values[OF_DPIF_N_OFL_BYTES] = n_ofl_bytes;
+    values[OF_DPIF_PACKETS] = n_packets;
+    values[OF_DPIF_BYTES] = n_bytes;
+    values[OF_DPIF_OFL_PACKETS] = n_ofl_packets;
+    values[OF_DPIF_OFL_BYTES] = n_ofl_bytes;
     values[OF_DPIF_N_HANDLERS] = udpif->n_handlers;
     values[OF_DPIF_N_REVALIDATORS] = udpif->n_revalidators;
 }
 
 METRICS_ENTRIES(foreach_udpif, udpif_entries,
     "datapath", udpif_read_value,
-    [OF_DPIF_N_PACKETS] = METRICS_COUNTER(n_packets,
+    [OF_DPIF_PACKETS] = METRICS_COUNTER(packets,
         "Number of packets processed in total on this datapath."),
-    [OF_DPIF_N_OFL_PACKETS] = METRICS_COUNTER(n_offloaded_packets,
+    [OF_DPIF_OFL_PACKETS] = METRICS_COUNTER(offloaded_packets,
         "Number of packets processed in hardware on this datapath."),
-    [OF_DPIF_N_BYTES] = METRICS_COUNTER(n_bytes,
+    [OF_DPIF_BYTES] = METRICS_COUNTER(bytes,
         "Number of bytes processed in total on this datapath."),
-    [OF_DPIF_N_OFL_BYTES] = METRICS_COUNTER(n_offloaded_bytes,
+    [OF_DPIF_OFL_BYTES] = METRICS_COUNTER(offloaded_bytes,
         "Number of bytes processed in hardware on this datapath."),
     [OF_DPIF_N_HANDLERS] = METRICS_GAUGE(n_handlers,
         "Number of upcall handler threads."),

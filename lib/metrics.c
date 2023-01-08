@@ -277,18 +277,18 @@ struct metrics_class *metrics_classes[METRICS_N_NODE_TYPE] = {
 METRICS_SUBSYSTEM(metrics);
 
 enum {
-    METRICS_HIST_N_READ_ERRORS,
+    METRICS_HIST_READ_ERRORS,
 };
 
 static void
 metrics_entries_read_value(double *values, void *it OVS_UNUSED)
 {
-    values[METRICS_HIST_N_READ_ERRORS] = n_failed_histogram_reads;
+    values[METRICS_HIST_READ_ERRORS] = n_failed_histogram_reads;
 }
 
 METRICS_ENTRIES(metrics, metrics_entries,
     "metrics", metrics_entries_read_value,
-    [METRICS_HIST_N_READ_ERRORS] = METRICS_COUNTER(histogram_n_read_errors,
+    [METRICS_HIST_READ_ERRORS] = METRICS_COUNTER(histogram_read_errors,
         "Number of histogram reads that could not resolve without "
         "inconsistencies."),
 );

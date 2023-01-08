@@ -2551,11 +2551,11 @@ METRICS_COND(foreach_poll_threads, foreach_poll_threads_dbg,
              metrics_dbg_enabled);
 
 enum {
-    PMD_METRICS_N_PACKETS,
-    PMD_METRICS_N_RECIRC,
-    PMD_METRICS_N_HIT,
-    PMD_METRICS_N_MISSED,
-    PMD_METRICS_N_LOST,
+    PMD_METRICS_PACKETS,
+    PMD_METRICS_RECIRC,
+    PMD_METRICS_HIT,
+    PMD_METRICS_MISSED,
+    PMD_METRICS_LOST,
     PMD_METRICS_AVG_LOOKUPS_PER_HIT,
     PMD_METRICS_AVG_PACKETS_PER_BATCH,
     PMD_METRICS_AVG_RECIRC_PER_PACKET,
@@ -2637,11 +2637,11 @@ poll_threads_read_value(double *values, void *it)
                               (double) total_packets;
     }
 
-    values[PMD_METRICS_N_PACKETS] = stats[PMD_STAT_RECV];
-    values[PMD_METRICS_N_RECIRC] = stats[PMD_STAT_RECIRC];
-    values[PMD_METRICS_N_HIT] = n_hit;
-    values[PMD_METRICS_N_MISSED] = stats[PMD_STAT_MISS];
-    values[PMD_METRICS_N_LOST] = stats[PMD_STAT_LOST];
+    values[PMD_METRICS_PACKETS] = stats[PMD_STAT_RECV];
+    values[PMD_METRICS_RECIRC] = stats[PMD_STAT_RECIRC];
+    values[PMD_METRICS_HIT] = n_hit;
+    values[PMD_METRICS_MISSED] = stats[PMD_STAT_MISS];
+    values[PMD_METRICS_LOST] = stats[PMD_STAT_LOST];
 
     values[PMD_METRICS_AVG_LOOKUPS_PER_HIT] = lookups_per_hit;
     values[PMD_METRICS_AVG_PACKETS_PER_BATCH] = packets_per_batch;
@@ -2655,15 +2655,15 @@ poll_threads_read_value(double *values, void *it)
 
 METRICS_ENTRIES(foreach_poll_threads, poll_threads_entries,
     "poll_threads", poll_threads_read_value,
-    [PMD_METRICS_N_PACKETS] = METRICS_COUNTER(n_packets,
+    [PMD_METRICS_PACKETS] = METRICS_COUNTER(packets,
         "Number of received packets."),
-    [PMD_METRICS_N_RECIRC] = METRICS_COUNTER(n_recirculations,
+    [PMD_METRICS_RECIRC] = METRICS_COUNTER(recirculations,
         "Number of executed packet recirculations."),
-    [PMD_METRICS_N_HIT] = METRICS_COUNTER(n_hit,
+    [PMD_METRICS_HIT] = METRICS_COUNTER(hit,
         "Number of flow table matches."),
-    [PMD_METRICS_N_MISSED] = METRICS_COUNTER(n_missed,
+    [PMD_METRICS_MISSED] = METRICS_COUNTER(missed,
         "Number of flow table misses and upcall succeeded."),
-    [PMD_METRICS_N_LOST] = METRICS_COUNTER(n_lost,
+    [PMD_METRICS_LOST] = METRICS_COUNTER(lost,
         "Number of flow table misses and upcall failed."),
     [PMD_METRICS_AVG_LOOKUPS_PER_HIT] = METRICS_GAUGE(lookups_per_hit,
         "Average number of lookups per flow table hit."),

@@ -47,12 +47,12 @@ METRICS_COLLECTION(ofproto_dpif, foreach_dpif_backer,
                    do_foreach_dpif_backer, "name");
 
 enum {
-    OF_DATAPATH_N_HIT,
-    OF_DATAPATH_N_MISSED,
-    OF_DATAPATH_N_LOST,
+    OF_DATAPATH_HIT,
+    OF_DATAPATH_MISSED,
+    OF_DATAPATH_LOST,
     OF_DATAPATH_N_FLOWS,
-    OF_DATAPATH_N_CACHE_HIT,
-    OF_DATAPATH_N_MASK_HIT,
+    OF_DATAPATH_CACHE_HIT,
+    OF_DATAPATH_MASK_HIT,
     OF_DATAPATH_N_MASKS,
 };
 
@@ -64,28 +64,28 @@ datapath_read_value(double *values, void *it)
 
     dpif_get_dp_stats(backer->dpif, &dp_stats);
 
-    values[OF_DATAPATH_N_HIT] = MAX_IS_ZERO(dp_stats.n_hit);
-    values[OF_DATAPATH_N_MISSED] = MAX_IS_ZERO(dp_stats.n_missed);
-    values[OF_DATAPATH_N_LOST] = MAX_IS_ZERO(dp_stats.n_lost);
+    values[OF_DATAPATH_HIT] = MAX_IS_ZERO(dp_stats.n_hit);
+    values[OF_DATAPATH_MISSED] = MAX_IS_ZERO(dp_stats.n_missed);
+    values[OF_DATAPATH_LOST] = MAX_IS_ZERO(dp_stats.n_lost);
     values[OF_DATAPATH_N_FLOWS] = MAX_IS_ZERO(dp_stats.n_flows);
-    values[OF_DATAPATH_N_CACHE_HIT] = MAX_IS_ZERO(dp_stats.n_cache_hit);
-    values[OF_DATAPATH_N_MASK_HIT] = MAX_IS_ZERO(dp_stats.n_mask_hit);
+    values[OF_DATAPATH_CACHE_HIT] = MAX_IS_ZERO(dp_stats.n_cache_hit);
+    values[OF_DATAPATH_MASK_HIT] = MAX_IS_ZERO(dp_stats.n_mask_hit);
     values[OF_DATAPATH_N_MASKS] = MAX_IS_ZERO(dp_stats.n_masks);
 }
 
 METRICS_ENTRIES(foreach_dpif_backer, datapath_entries,
     "datapath", datapath_read_value,
-    [OF_DATAPATH_N_HIT] = METRICS_COUNTER(n_hit,
+    [OF_DATAPATH_HIT] = METRICS_COUNTER(hit,
         "Number of flow table matches."),
-    [OF_DATAPATH_N_MISSED] = METRICS_COUNTER(n_missed,
+    [OF_DATAPATH_MISSED] = METRICS_COUNTER(missed,
         "Number of flow table misses."),
-    [OF_DATAPATH_N_LOST] = METRICS_COUNTER(n_lost,
+    [OF_DATAPATH_LOST] = METRICS_COUNTER(lost,
         "Number of misses not sent to userspace."),
     [OF_DATAPATH_N_FLOWS] = METRICS_GAUGE(n_flows,
         "Number of flows present."),
-    [OF_DATAPATH_N_CACHE_HIT] = METRICS_COUNTER(n_cache_hit,
+    [OF_DATAPATH_CACHE_HIT] = METRICS_COUNTER(cache_hit,
         "Number of mega flow mask cache hits for flow table matches."),
-    [OF_DATAPATH_N_MASK_HIT] = METRICS_COUNTER(n_mask_hit,
+    [OF_DATAPATH_MASK_HIT] = METRICS_COUNTER(mask_hit,
         "Number of mega flow masks visited for flow table matches."),
     [OF_DATAPATH_N_MASKS] = METRICS_GAUGE(n_masks,
         "Number of mega flow masks."),
