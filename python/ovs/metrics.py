@@ -26,6 +26,11 @@ except Exception as e:
 from . import util
 
 
+class MetricsReadError(Exception):
+    def __init__(self, message):
+        super().__init__(message)
+
+
 def get_metrics_families(extended=False, debug=False):
     """
     This function queries NVS for the metrics entries.
@@ -41,10 +46,8 @@ def get_metrics_families(extended=False, debug=False):
 
     ret, out, err = util.start_process(cmd)
     if ret != 0:
-        sys.stderr.write("Failed to read metrics: '%s'\n" % err)
-        return []
-    else:
-       return text_string_to_metric_families(out)
+        raise MetricsReadError("Failed to read metrics: is OVS running?")
+    return text_string_to_metric_families(out)
 
 
 class MetricPoint():
