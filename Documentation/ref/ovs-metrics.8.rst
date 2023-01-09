@@ -5,7 +5,7 @@ ovs-metrics
 Synopsis
 ========
 
-``ovs-metrics [-w] [-p <ms>] [-x] [-d]``
+``ovs-metrics [-1] [-p <ms>] [-f] [-x] [-d]``
 
 Description
 ===========
@@ -13,12 +13,24 @@ Description
 ``ovs-metrics`` accesses the Open vSwitch metrics and derives statistics
 from the values received.
 
+Default operation mode is to watch over a dashboard of metrics selected
+for relevance to measure packet forwarding and connection tracking performance,
+along with their offloading.
+
 Options
 =======
 
+* ``-1`` or ``--one-shot``
+
+  One-shot mode: Read metrics once and print them on screen.
+
 * ``-d`` or ``--debug``
 
-  Request the metrics debug page as well.
+  In 'follow' or 'one-shot' mode, request the metrics debug page as well.
+
+* ``-f`` or ``--follow``
+
+  Follow mode: read all metrics and print any change each period.
 
 * ``-h`` or ``--help``
 
@@ -33,14 +45,9 @@ Options
 
   Prints version information to the console.
 
-* ``-w`` or ``--watch``
-
-  Watch continuously the measures and report time derivatives.
-  This mode is disabled by default.
-
 * ``-x`` or ``--extended``
 
-  Request the metrics extended page as well.
+  In 'follow' or 'one-shot' mode, request the metrics extended page as well.
 
 See Also
 ========

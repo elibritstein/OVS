@@ -79,6 +79,9 @@ class Entry():
         self.labels[key] = sample.labels
 
     def last(self, labels=None):
+        if len(self.samples) == 1:
+            for v in self.samples.values():
+                return v[-1]
         key = self.labels_to_key(labels)
         return self.samples[key][-1]
 
@@ -108,7 +111,7 @@ class MetricsDB():
 
         self.last_query_duration = 0
         self.start_ts = util.time_msec()
-        self.update_ts = []
+        self.update_ts = deque()
 
         self.metrics = dict()
         self.query_duration_key = ''
@@ -121,12 +124,17 @@ class MetricsDB():
     def __iter__(self):
         return self.metrics.__iter__()
 
+    def __getitem__(self, key):
+        return self.metrics.__getitem__(key)
+
     def items(self):
         return self.metrics.items()
 
     def update(self):
         families = get_metrics_families(extended=self.extended, debug=self.debug)
         self.update_ts.append(util.time_msec())
+        if len(self.update_ts) > 3:
+            self.update_ts.popleft()
 
         for metric in families:
             for sample in metric.samples:
@@ -140,6 +148,13 @@ class MetricsDB():
 
     def last_ts(self):
         return self.update_ts[-1] - self.start_ts
+
+    def ts_delta(self):
+        if len(self.update_ts) == 0:
+            return 0
+        if len(self.update_ts) == 1:
+            return self.last_ts
+        return self.update_ts[-1] - self.update_ts[-2]
 
     def delta(self):
         for _, entry in self.metrics.items():
