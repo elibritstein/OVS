@@ -159,6 +159,10 @@ handle_tftp_ctl(struct conntrack *ct,
 
 static void
 ctd_nat_rev_key_init(struct dp_packet *pkt, const struct conn *conn);
+static struct conn *
+ctd_nat_conn_alloc(struct conntrack *ct, struct conn *conn,
+                   const struct nat_action_info_t *nai,
+                   struct nat_lookup_info *nli);
 
 typedef void (*alg_helper)(struct conntrack *ct,
                            const struct conn_lookup_ctx *ctx,
@@ -839,7 +843,6 @@ ctd_conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
 
         if (nat_action_info) {
             nc->nat_action = nat_action_info->nat_action;
-            nat_conn = xzalloc(sizeof *nat_conn);
 
             if (alg_exp) {
                 if (alg_exp->nat_rpl_dst) {
@@ -850,21 +853,17 @@ ctd_conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
                     nc->nat_action = NAT_ACTION_DST;
                 }
                 nli->hash = conn_key_hash(&nc->rev_key, ct->hash_basis);
+                nat_conn = xzalloc(sizeof *nat_conn);
             } else {
                 memcpy(&nli->rev_key, &nc->rev_key, sizeof nli->rev_key);
                 ctd_nat_rev_key_init(pkt, nc);
                 nli->hash = conn_key_hash(&nli->rev_key, ct->hash_basis);
 
-                bool nat_res = ctd_nat_get_unique_tuple(ct, nc,
-                                                        nat_action_info, nli);
-
-                if (!nat_res) {
-                    goto nat_res_exhaustion;
+                nat_conn = ctd_nat_conn_alloc(ct, nc, nat_action_info, nli);
+                if (!nat_conn) {
+                    delete_conn_cmn(nc);
+                    return NULL;
                 }
-
-                memcpy(nat_conn, nc, sizeof *nat_conn);
-                /* Update nc with nat adjustments. */
-                memcpy(&nc->rev_key, &nli->rev_key, sizeof nc->rev_key);
             }
 
             nat_packet(pkt, nc, ctx->icmp_related);
@@ -903,19 +902,6 @@ ctd_conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
     }
 
     return nc;
-
-    /* This would be a user error or a DOS attack.  A user error is prevented
-     * by allocating enough combinations of NAT addresses when combined with
-     * ephemeral ports.  A DOS attack should be protected against with
-     * firewall rules or a separate firewall.  Also using zone partitioning
-     * can limit DoS impact. */
-nat_res_exhaustion:
-    free(nat_conn);
-    delete_conn_cmn(nc);
-    static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 5);
-    VLOG_WARN_RL(&rl, "Unable to NAT due to tuple space exhaustion - "
-                 "if DoS attack, use firewalling and/or zone partitioning.");
-    return NULL;
 }
 
 static bool
@@ -2867,4 +2853,32 @@ ctd_nat_rev_key_init(struct dp_packet *pkt, const struct conn *conn)
     }
 
     store_addr_to_key(&addr, &nli->rev_key, nai->nat_action);
+}
+
+static struct conn *
+ctd_nat_conn_alloc(struct conntrack *ct, struct conn *conn,
+                   const struct nat_action_info_t *nai,
+                   struct nat_lookup_info *nli)
+{
+    struct conn *nat_conn;
+
+    if (!ctd_nat_get_unique_tuple(ct, conn, nai, nli)) {
+        /* This would be a user error or a DOS attack.  A user error is prevented
+         * by allocating enough combinations of NAT addresses when combined with
+         * ephemeral ports.  A DOS attack should be protected against with
+         * firewall rules or a separate firewall.  Also using zone partitioning
+         * can limit DoS impact. */
+
+        static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 5);
+        VLOG_WARN_RL(&rl, "Unable to NAT due to tuple space exhaustion - "
+                     "if DoS attack, use firewalling and/or zone partitioning.");
+        return NULL;
+    }
+
+    nat_conn = xzalloc(sizeof *nat_conn);
+    memcpy(nat_conn, conn, sizeof *nat_conn);
+    /* Update conn with nat adjustments. */
+    memcpy(&conn->rev_key, &nli->rev_key, sizeof conn->rev_key);
+
+    return nat_conn;
 }
