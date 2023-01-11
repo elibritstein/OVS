@@ -53,6 +53,17 @@ struct ctd_msg {
     enum ctd_msg_type msg_type;
 };
 
+struct nat_lookup_info {
+    struct conn_key rev_key;
+    ovs_be16 *port;
+    struct {
+        uint16_t min;
+        uint16_t max;
+        uint16_t curr;
+    } sport, dport;
+    uint32_t hash;
+};
+
 struct ctd_exec {
     struct conntrack *ct;
     ovs_be16 dl_type;
@@ -73,6 +84,7 @@ struct ctd_exec {
     uint64_t actions_buf[512 / 8];
     size_t actions_len;
     uint32_t depth;
+    struct nat_lookup_info nli;
 };
 
 struct ct_thread {

@@ -106,9 +106,9 @@ static void set_label(struct dp_packet *, struct conn *conn,
     OVS_REQUIRES(conn->lock);
 
 static bool
-nat_get_unique_tuple(struct conntrack *ct, const struct conn *conn,
-                     struct conn *nat_conn,
-                     const struct nat_action_info_t *nat_info);
+ctd_nat_get_unique_tuple(struct conntrack *ct, const struct conn *conn,
+                         const struct nat_action_info_t *nat_info,
+                         struct nat_lookup_info *nli);
 
 static uint8_t
 reverse_icmp_type(uint8_t type);
@@ -153,6 +153,12 @@ handle_tftp_ctl(struct conntrack *ct,
                 struct dp_packet *pkt, struct conn *conn_for_expectation,
                 long long now OVS_UNUSED, enum ftp_ctl_pkt ftp_ctl OVS_UNUSED,
                 bool nat OVS_UNUSED);
+
+#define IS_PAT_PROTO(_nw_proto) \
+    ((_nw_proto) == IPPROTO_TCP || (_nw_proto) == IPPROTO_UDP)
+
+static void
+ctd_nat_rev_key_init(struct dp_packet *pkt, const struct conn *conn);
 
 typedef void (*alg_helper)(struct conntrack *ct,
                            const struct conn_lookup_ctx *ctx,
@@ -777,14 +783,18 @@ ct_verify_helper(const char *helper, enum ct_alg_ctl_type ct_alg_ctl)
 }
 
 static struct conn *
-conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
-               struct conn_lookup_ctx *ctx, bool commit, long long now,
-               const struct nat_action_info_t *nat_action_info,
-               const char *helper, const struct alg_exp_node *alg_exp,
-               enum ct_alg_ctl_type ct_alg_ctl, uint32_t tp_id)
+ctd_conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
+                   struct conn_lookup_ctx *ctx, bool commit, long long now,
+                   const struct nat_action_info_t *nat_action_info,
+                   const char *helper, const struct alg_exp_node *alg_exp,
+                   enum ct_alg_ctl_type ct_alg_ctl, uint32_t tp_id)
 {
-    struct conn *nc = NULL;
+    struct ctd_exec *e = &pkt->cme.e;
     struct conn *nat_conn = NULL;
+    struct nat_lookup_info *nli;
+    struct conn *nc = NULL;
+
+    nli = &e->nli;
 
     if (!valid_new(pkt, &ctx->key)) {
         pkt->md.ct_state = CS_INVALID;
@@ -839,18 +849,22 @@ conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
                     nc->rev_key.src.addr = alg_exp->alg_nat_repl_addr;
                     nc->nat_action = NAT_ACTION_DST;
                 }
+                nli->hash = conn_key_hash(&nc->rev_key, ct->hash_basis);
             } else {
-                memcpy(nat_conn, nc, sizeof *nat_conn);
-                bool nat_res = nat_get_unique_tuple(ct, nc, nat_conn,
-                                                    nat_action_info);
+                memcpy(&nli->rev_key, &nc->rev_key, sizeof nli->rev_key);
+                ctd_nat_rev_key_init(pkt, nc);
+                nli->hash = conn_key_hash(&nli->rev_key, ct->hash_basis);
+
+                bool nat_res = ctd_nat_get_unique_tuple(ct, nc,
+                                                        nat_action_info, nli);
 
                 if (!nat_res) {
                     goto nat_res_exhaustion;
                 }
 
-                /* Update nc with nat adjustments made to nat_conn by
-                 * nat_get_unique_tuple(). */
-                memcpy(nc, nat_conn, sizeof *nc);
+                memcpy(nat_conn, nc, sizeof *nat_conn);
+                /* Update nc with nat adjustments. */
+                memcpy(&nc->rev_key, &nli->rev_key, sizeof nc->rev_key);
             }
 
             nat_packet(pkt, nc, ctx->icmp_related);
@@ -861,10 +875,9 @@ conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
             nat_conn->alg = NULL;
             nat_conn->nat_conn = NULL;
             nat_conn->master_conn = nc;
-            uint32_t nat_hash = conn_key_hash(&nat_conn->key, ct->hash_basis);
             atomic_flag_clear(&nc->reclaimed);
             conntrack_lock(ct);
-            cmap_insert(&ct->conns, &nat_conn->cm_node, nat_hash);
+            cmap_insert(&ct->conns, &nat_conn->cm_node, nli->hash);
             conntrack_unlock(ct);
         }
 
@@ -1242,8 +1255,9 @@ ctd_process_one(struct dp_packet *pkt)
         ovs_rwlock_unlock(&ct->resources_lock);
 
         if (!conn_lookup(ct, &ctx->key, now, NULL, NULL)) {
-            conn = conn_not_found(ct, pkt, ctx, commit, now, nat_action_info,
-                                  helper, alg_exp, ct_alg_ctl, tp_id);
+            conn = ctd_conn_not_found(ct, pkt, ctx, commit, now,
+                                      nat_action_info, helper, alg_exp,
+                                      ct_alg_ctl, tp_id);
         }
     }
 
@@ -2021,15 +2035,32 @@ store_addr_to_key(union ct_addr *addr, struct conn_key *key,
 }
 
 static bool
-nat_get_unique_l4(struct conntrack *ct, struct conn *nat_conn,
-                  ovs_be16 *port, uint16_t curr, uint16_t min,
-                  uint16_t max)
+ctd_nat_get_unique_l4(struct conntrack *ct,
+                      struct nat_lookup_info *nli,
+                      bool is_snat)
 {
     static const unsigned int max_attempts = 128;
-    uint16_t range = max - min + 1;
+    uint16_t curr, min, max;
     unsigned int attempts;
-    uint16_t orig = curr;
+    uint16_t range, orig;
     unsigned int i = 0;
+    ovs_be16 *port;
+
+    if (is_snat) {
+        nli->port = &nli->rev_key.dst.port;
+        min = nli->sport.min;
+        max = nli->sport.max;
+        curr = nli->sport.curr;
+    } else {
+        nli->port = &nli->rev_key.src.port;
+        min = nli->dport.min;
+        max = nli->dport.max;
+        curr = nli->dport.curr;
+    }
+
+    port = nli->port;
+    range = max - min + 1;
+    orig = curr;
 
     attempts = range;
     if (attempts > max_attempts) {
@@ -2044,8 +2075,7 @@ another_round:
         }
 
         *port = htons(curr);
-        if (!conn_lookup(ct, &nat_conn->rev_key,
-                         time_msec(), NULL, NULL)) {
+        if (!conn_lookup(ct, &nli->rev_key, time_msec(), NULL, NULL)) {
             return true;
         }
     }
@@ -2083,39 +2113,12 @@ another_round:
  *
  * If none can be found, return exhaustion to the caller. */
 static bool
-nat_get_unique_tuple(struct conntrack *ct, const struct conn *conn,
-                     struct conn *nat_conn,
-                     const struct nat_action_info_t *nat_info)
+ctd_nat_get_unique_tuple(struct conntrack *ct, const struct conn *conn,
+                         const struct nat_action_info_t *nat_info,
+                         struct nat_lookup_info *nli)
 {
-    uint32_t hash = nat_range_hash(conn, ct->hash_basis, nat_info);
-    union ct_addr min_addr = {0}, max_addr = {0}, addr = {0};
-    bool pat_proto = conn->key.nw_proto == IPPROTO_TCP ||
-                     conn->key.nw_proto == IPPROTO_UDP;
-    uint16_t min_dport, max_dport, curr_dport;
-    uint16_t min_sport, max_sport, curr_sport;
-
-    min_addr = nat_info->min_addr;
-    max_addr = nat_info->max_addr;
-
-    find_addr(conn, &min_addr, &max_addr, &addr, hash,
-              (conn->key.dl_type == htons(ETH_TYPE_IP)), nat_info);
-
-    set_sport_range(nat_info, &conn->key, hash, &curr_sport,
-                    &min_sport, &max_sport);
-    set_dport_range(nat_info, &conn->key, hash, &curr_dport,
-                    &min_dport, &max_dport);
-
-    if (pat_proto) {
-        nat_conn->rev_key.src.port = htons(curr_dport);
-        nat_conn->rev_key.dst.port = htons(curr_sport);
-    }
-
-    store_addr_to_key(&addr, &nat_conn->rev_key,
-                      nat_info->nat_action);
-
-    if (!pat_proto) {
-        if (!conn_lookup(ct, &nat_conn->rev_key,
-                         time_msec(), NULL, NULL)) {
+    if (!IS_PAT_PROTO(conn->key.nw_proto)) {
+        if (!conn_lookup(ct, &nli->rev_key, time_msec(), NULL, NULL)) {
             return true;
         }
 
@@ -2124,13 +2127,11 @@ nat_get_unique_tuple(struct conntrack *ct, const struct conn *conn,
 
     bool found = false;
     if (nat_info->nat_action & NAT_ACTION_DST_PORT) {
-        found = nat_get_unique_l4(ct, nat_conn, &nat_conn->rev_key.src.port,
-                                  curr_dport, min_dport, max_dport);
+        found = ctd_nat_get_unique_l4(ct, nli, false);
     }
 
     if (!found) {
-        found = nat_get_unique_l4(ct, nat_conn, &nat_conn->rev_key.dst.port,
-                                  curr_sport, min_sport, max_sport);
+        found = ctd_nat_get_unique_l4(ct, nli, true);
     }
 
     if (found) {
@@ -2837,4 +2838,33 @@ handle_tftp_ctl(struct conntrack *ct,
     expectation_create(ct, conn_for_expectation->key.src.port,
                        conn_for_expectation,
                        !!(pkt->md.ct_state & CS_REPLY_DIR), false, false);
+}
+
+static void
+ctd_nat_rev_key_init(struct dp_packet *pkt, const struct conn *conn)
+{
+    struct ctd_exec *e = &pkt->cme.e;
+    struct nat_action_info_t *nai;
+    struct nat_lookup_info *nli;
+    union ct_addr addr = {0};
+    uint32_t hash;
+
+    nli = &e->nli;
+    nai = e->nat_action_info_ref;
+
+    hash = nat_range_hash(conn, e->ct->hash_basis, nai);
+    find_addr(conn, &nai->min_addr, &nai->max_addr, &addr, hash,
+              (conn->key.dl_type == htons(ETH_TYPE_IP)), nai);
+
+    set_sport_range(nai, &conn->key, hash, &nli->sport.curr, &nli->sport.min,
+                    &nli->sport.max);
+    set_dport_range(nai, &conn->key, hash, &nli->dport.curr, &nli->dport.min,
+                    &nli->dport.max);
+
+    if (IS_PAT_PROTO(conn->key.nw_proto)) {
+        nli->rev_key.src.port = htons(nli->dport.curr);
+        nli->rev_key.dst.port = htons(nli->sport.curr);
+    }
+
+    store_addr_to_key(&addr, &nli->rev_key, nai->nat_action);
 }
