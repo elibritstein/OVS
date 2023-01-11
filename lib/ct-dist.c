@@ -857,6 +857,37 @@ ctd_nat_conn_init(struct dp_packet *pkt,
     conntrack_unlock(m->ct);
 }
 
+static void
+ctd_nat_reorder_packet_from_orig(struct dp_packet *pkt, struct conn *conn)
+{
+    struct ctd_msg *m = &pkt->cme.hdr;
+
+    /* Early bail out for standard in-order packets. */
+    if (!conn->reordering) {
+        return;
+    }
+
+    /* When the response_pkt arrives, handle it and set it as NULL, marking
+     * we now wait for the resume_pkt.
+     */
+    if (pkt == conn->response_pkt) {
+        conn->response_pkt = NULL;
+        return;
+    }
+
+    /* When the resume_pkt arrives, handle it and cancel the reordering
+     * state.
+     */
+    if (pkt == conn->resume_pkt) {
+        conn->reordering = false;
+        conn->resume_pkt = NULL;
+        return;
+    }
+
+    /* In any other case, defer the packet. */
+    ctd_msg_fate_set(m, CTD_MSG_FATE_SELF);
+}
+
 static struct conn *
 ctd_conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
                    struct conn_lookup_ctx *ctx, bool commit, long long now,
@@ -1304,6 +1335,13 @@ ctd_process_one(struct dp_packet *pkt)
                 ctd_msg_dest_set(m, nli->hash);
                 ctd_msg_fate_set(m, CTD_MSG_FATE_CTD);
                 return;
+            }
+
+            if (nat_action_info) {
+                ctd_nat_reorder_packet_from_orig(pkt, conn);
+                if (m->msg_fate == CTD_MSG_FATE_SELF) {
+                    return;
+                }
             }
         }
     } else if (m->msg_type == CTD_MSG_EXEC_NAT) {

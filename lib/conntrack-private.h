@@ -205,6 +205,9 @@ struct conn {
     struct ct_offloads offloads;
     struct {
         atomic_llong hw_expiration;
+        bool reordering;
+        struct dp_packet *response_pkt;
+        struct dp_packet *resume_pkt;
     };
 };
 

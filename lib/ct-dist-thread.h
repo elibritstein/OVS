@@ -43,12 +43,14 @@ enum ctd_msg_type {
     CTD_MSG_EXEC,
     CTD_MSG_EXEC_NAT,
     CTD_MSG_CLEAN,
+    CTD_MSG_NAT_CANDIDATE_RESPONSE,
 };
 
 static const char * const ctd_msg_type_str[] = {
     [CTD_MSG_EXEC] = "EXEC",
     [CTD_MSG_EXEC_NAT] = "EXEC_NAT",
     [CTD_MSG_CLEAN] = "CLEAN",
+    [CTD_MSG_NAT_CANDIDATE_RESPONSE] = "NAT_CANDIDATE_RESPONSE",
 };
 
 enum ctd_msg_fate_type {
