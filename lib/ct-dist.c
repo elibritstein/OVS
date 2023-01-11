@@ -787,6 +787,26 @@ ct_verify_helper(const char *helper, enum ct_alg_ctl_type ct_alg_ctl)
     }
 }
 
+static void
+ctd_nat_conn_init(struct dp_packet *pkt,
+                  struct conn *conn,
+                  struct conn *nat_conn)
+{
+    struct ctd_msg *m = &pkt->cme.hdr;
+    struct ctd_exec *e = &pkt->cme.e;
+
+    memcpy(&nat_conn->key, &conn->rev_key, sizeof nat_conn->key);
+    memcpy(&nat_conn->rev_key, &conn->key, sizeof nat_conn->rev_key);
+    nat_conn->conn_type = CT_CONN_TYPE_UN_NAT;
+    nat_conn->nat_action = 0;
+    nat_conn->alg = NULL;
+    nat_conn->nat_conn = NULL;
+    nat_conn->master_conn = conn;
+    conntrack_lock(m->ct);
+    cmap_insert(&m->ct->conns, &nat_conn->cm_node, e->nli.hash);
+    conntrack_unlock(m->ct);
+}
+
 static struct conn *
 ctd_conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
                    struct conn_lookup_ctx *ctx, bool commit, long long now,
@@ -855,6 +875,7 @@ ctd_conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
                 }
                 nli->hash = conn_key_hash(&nc->rev_key, ct->hash_basis);
                 nat_conn = xzalloc(sizeof *nat_conn);
+                ctd_nat_conn_init(pkt, nc, nat_conn);
             } else {
                 memcpy(&nli->rev_key, &nc->rev_key, sizeof nli->rev_key);
                 ctd_nat_rev_key_init(pkt, nc);
@@ -865,20 +886,8 @@ ctd_conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
                     delete_conn_cmn(nc);
                     return NULL;
                 }
+                ctd_nat_conn_init(pkt, nc, nat_conn);
             }
-
-            nat_packet(pkt, nc, ctx->icmp_related);
-            memcpy(&nat_conn->key, &nc->rev_key, sizeof nat_conn->key);
-            memcpy(&nat_conn->rev_key, &nc->key, sizeof nat_conn->rev_key);
-            nat_conn->conn_type = CT_CONN_TYPE_UN_NAT;
-            nat_conn->nat_action = 0;
-            nat_conn->alg = NULL;
-            nat_conn->nat_conn = NULL;
-            nat_conn->master_conn = nc;
-            atomic_flag_clear(&nc->reclaimed);
-            conntrack_lock(ct);
-            cmap_insert(&ct->conns, &nat_conn->cm_node, nli->hash);
-            conntrack_unlock(ct);
         }
 
         nc->nat_conn = nat_conn;
