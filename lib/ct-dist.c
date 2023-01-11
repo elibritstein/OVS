@@ -1129,6 +1129,75 @@ initial_conn_lookup(struct conntrack *ct, struct conn_lookup_ctx *ctx,
     }
 }
 
+static struct conn *
+ctd_process_one_init(struct dp_packet *pkt)
+{
+    struct ctd_msg *m = &pkt->cme.hdr;
+    struct ctd_exec *e = &pkt->cme.e;
+    struct conn_lookup_ctx *ctx;
+    struct conntrack *ct;
+    struct conn *conn;
+    uint16_t zone;
+    long long now;
+    bool force;
+
+    ct = e->ct;
+    zone = e->zone;
+    force = e->force;
+    now = m->timestamp_ms;
+    ctx = &e->ct_lookup_ctx;
+
+    /* Reset ct_state whenever entering a new zone. */
+    if (pkt->md.ct_state && pkt->md.ct_zone != zone) {
+        pkt->md.ct_state = 0;
+    }
+
+    initial_conn_lookup(ct, ctx, now, !!(pkt->md.ct_state &
+                                         (CS_SRC_NAT | CS_DST_NAT)));
+    conn = ctx->conn;
+
+    /* Delete found entry if in wrong direction. 'force' implies commit. */
+    if (OVS_UNLIKELY(force && ctx->reply && conn)) {
+        if (conn_lookup(ct, &conn->key, now, NULL, NULL)) {
+            conn_force_expire(conn);
+        }
+        conn = NULL;
+    }
+
+    return conn;
+}
+
+static struct conn *
+ctd_process_conn_type_un_nat(struct dp_packet *pkt, struct conn *conn)
+{
+    struct ctd_msg *m = &pkt->cme.hdr;
+    struct ctd_exec *e = &pkt->cme.e;
+    struct conn_lookup_ctx *ctx;
+    struct conntrack *ct;
+    uint16_t zone;
+    long long now;
+
+    ct = e->ct;
+    zone = e->zone;
+    now = m->timestamp_ms;
+    ctx = &e->ct_lookup_ctx;
+
+    ctx->reply = true;
+    struct conn *rev_conn = conn;  /* Save for debugging. */
+    uint32_t hash = conn_key_hash(&conn->rev_key, ct->hash_basis);
+    conn_key_lookup(ct, &ctx->key, hash, now, &conn, &ctx->reply);
+
+    if (!conn) {
+        pkt->md.ct_state |= CS_INVALID;
+        write_ct_md_alg_exp(pkt, zone, NULL, NULL);
+        char *log_msg = xasprintf("Missing parent conn %p", rev_conn);
+        ct_print_conn_info(rev_conn, log_msg, VLL_INFO, true, true);
+        free(log_msg);
+    }
+
+    return conn;
+}
+
 static void
 ctd_process_one(struct dp_packet *pkt)
 {
@@ -1136,21 +1205,21 @@ ctd_process_one(struct dp_packet *pkt)
     const struct ovs_key_ct_labels *setlabel;
     struct ctd_msg *m = &pkt->cme.hdr;
     struct ctd_exec *e = &pkt->cme.e;
+    bool create_new_conn = false;
     struct conn_lookup_ctx *ctx;
     const uint32_t *setmark;
     struct conntrack *ct;
     const char *helper;
+    struct conn *conn;
     ovs_be16 tp_src;
     ovs_be16 tp_dst;
     uint32_t tp_id;
     uint16_t zone;
     long long now;
     bool commit;
-    bool force;
 
     ct = e->ct;
     zone = e->zone;
-    force = e->force;
     commit = e->commit;
     now = m->timestamp_ms;
     setmark = e->setmark;
@@ -1162,38 +1231,12 @@ ctd_process_one(struct dp_packet *pkt)
     tp_id = e->tp_id;
     ctx = &e->ct_lookup_ctx;
 
-    /* Reset ct_state whenever entering a new zone. */
-    if (pkt->md.ct_state && pkt->md.ct_zone != zone) {
-        pkt->md.ct_state = 0;
-    }
-
-    bool create_new_conn = false;
-    initial_conn_lookup(ct, ctx, now, !!(pkt->md.ct_state &
-                                         (CS_SRC_NAT | CS_DST_NAT)));
-    struct conn *conn = ctx->conn;
-
-    /* Delete found entry if in wrong direction. 'force' implies commit. */
-    if (OVS_UNLIKELY(force && ctx->reply && conn)) {
-        if (conn_lookup(ct, &conn->key, now, NULL, NULL)) {
-            conn_force_expire(conn);
-        }
-        conn = NULL;
-    }
+    conn = ctd_process_one_init(pkt);
 
     if (OVS_LIKELY(conn)) {
         if (conn->conn_type == CT_CONN_TYPE_UN_NAT) {
-
-            ctx->reply = true;
-            struct conn *rev_conn = conn;  /* Save for debugging. */
-            uint32_t hash = conn_key_hash(&conn->rev_key, ct->hash_basis);
-            conn_key_lookup(ct, &ctx->key, hash, now, &conn, &ctx->reply);
-
+            conn = ctd_process_conn_type_un_nat(pkt, conn);
             if (!conn) {
-                pkt->md.ct_state |= CS_INVALID;
-                write_ct_md_alg_exp(pkt, zone, NULL, NULL);
-                char *log_msg = xasprintf("Missing parent conn %p", rev_conn);
-                ct_print_conn_info(rev_conn, log_msg, VLL_INFO, true, true);
-                free(log_msg);
                 return;
             }
         }
