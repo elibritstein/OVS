@@ -190,7 +190,7 @@ def metrics_watch():
 
     units = '  second '
     units += ' '.join('{}'.format(x.unit()) for x in entries)
-    print(units)
+    print(units, flush=True)
     if outfile is not None:
         outfile.write(legend + '\n')
         outfile.write(units + '\n')
@@ -208,7 +208,7 @@ def metrics_watch():
 
         sec = '{:08.3f}'.format(db.last_ts() / 1000)
         values = ' '.join('{}'.format(x.format_human()) for x in entries)
-        print(sec + ' ' + values)
+        print(sec + ' ' + values, flush=True)
         if outfile:
             values_csv = ' '.join('{}'.format(x.format_csv()) for x in entries)
             outfile.write(sec + ' ' + values_csv + '\n')
@@ -234,7 +234,7 @@ def metrics_follow():
     while True:
         db.update()
         for point in db.delta():
-            print("{0:04.3f}:{1}".format(db.last_ts() / 1000, point))
+            print("{0:04.3f}:{1}".format(db.last_ts() / 1000, point), flush=True)
         period = db.wait(period)
 
 
