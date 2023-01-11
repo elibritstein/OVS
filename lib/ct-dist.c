@@ -1207,6 +1207,7 @@ ctd_process_one(struct dp_packet *pkt)
     struct ctd_msg *m = &pkt->cme.hdr;
     struct ctd_exec *e = &pkt->cme.e;
     bool create_new_conn = false;
+    struct nat_lookup_info *nli;
     struct conn_lookup_ctx *ctx;
     const uint32_t *setmark;
     struct conntrack *ct;
@@ -1231,16 +1232,26 @@ ctd_process_one(struct dp_packet *pkt)
     helper = e->helper;
     tp_id = e->tp_id;
     ctx = &e->ct_lookup_ctx;
+    nli = &e->nli;
 
-    conn = ctd_process_one_init(pkt);
+    if (m->msg_type == CTD_MSG_EXEC) {
+        conn = ctd_process_one_init(pkt);
 
-    if (OVS_LIKELY(conn)) {
-        if (conn->conn_type == CT_CONN_TYPE_UN_NAT) {
-            conn = ctd_process_conn_type_un_nat(pkt, conn);
-            if (!conn) {
-                ctd_msg_fate_set(m, CTD_MSG_FATE_PMD);
+        if (OVS_LIKELY(conn)) {
+            if (conn->conn_type == CT_CONN_TYPE_UN_NAT) {
+                ctx->reply = true;
+                nli->hash = conn_key_hash(&conn->rev_key, ct->hash_basis);
+                ctd_msg_type_set(m, CTD_MSG_EXEC_NAT);
+                ctd_msg_dest_set(m, nli->hash);
+                ctd_msg_fate_set(m, CTD_MSG_FATE_CTD);
                 return;
             }
+        }
+    } else if (m->msg_type == CTD_MSG_EXEC_NAT) {
+        conn = ctd_process_conn_type_un_nat(pkt, ctx->conn);
+        if (!conn) {
+            ctd_msg_fate_set(m, CTD_MSG_FATE_PMD);
+            return;
         }
     }
 
@@ -1354,17 +1365,19 @@ ctd_conntrack_execute(struct dp_packet *pkt)
     tp_src = e->tp_src;
     tp_dst = e->tp_dst;
     helper = e->helper;
+    ctx = &e->ct_lookup_ctx;
     nat_action_info = e->nat_action_info_ref;
     now_ms = m->timestamp_ms;
 
     now_us = now_ms * 1000;
-    ipf_preprocess_conntrack(ct->ipf, &pkt_batch, now_ms, dl_type, zone,
-                             ct->hash_basis);
+    if (m->msg_type == CTD_MSG_EXEC) {
+        ipf_preprocess_conntrack(ct->ipf, &pkt_batch, now_ms, dl_type, zone,
+                                 ct->hash_basis);
+        ctx->conn = NULL;
+    }
 
     conn = pkt->md.conn;
 
-    ctx = &e->ct_lookup_ctx;
-    ctx->conn = NULL;
     if (OVS_UNLIKELY(pkt->md.ct_state == CS_INVALID)) {
         write_ct_md_alg_exp(pkt, zone, NULL, NULL);
     } else if (conn && conn->key.zone == zone && !force

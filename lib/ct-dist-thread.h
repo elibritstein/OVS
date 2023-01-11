@@ -41,10 +41,12 @@ extern "C" {
 
 enum ctd_msg_type {
     CTD_MSG_EXEC,
+    CTD_MSG_EXEC_NAT,
 };
 
 static const char * const ctd_msg_type_str[] = {
     [CTD_MSG_EXEC] = "EXEC",
+    [CTD_MSG_EXEC_NAT] = "EXEC_NAT",
 };
 
 enum ctd_msg_fate_type {
@@ -158,6 +160,19 @@ ctd_msg_fate_set_at(struct ctd_msg *m,
 
 #define ctd_msg_fate_set(msg, type) \
     ctd_msg_fate_set_at(msg, type, OVS_SOURCE_LOCATOR)
+
+OVS_UNUSED
+static void
+ctd_msg_dest_set_at(struct ctd_msg *m,
+                    uint32_t hash,
+                    const char *where)
+{
+    (void) where;
+    m->dest_hash = hash;
+}
+
+#define ctd_msg_dest_set(msg, hash) \
+    ctd_msg_dest_set_at(msg, hash, OVS_SOURCE_LOCATOR)
 
 #ifdef  __cplusplus
 }

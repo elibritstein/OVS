@@ -132,6 +132,7 @@ ct_thread_main(void *arg)
         // handle ctd_msg
         switch (m->msg_type) {
         case CTD_MSG_EXEC:
+        case CTD_MSG_EXEC_NAT:
             pkt = CONTAINER_OF(m, struct dp_packet, cme);
             ctd_conntrack_execute(pkt);
             break;
