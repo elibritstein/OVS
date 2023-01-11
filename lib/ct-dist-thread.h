@@ -42,11 +42,13 @@ extern "C" {
 enum ctd_msg_type {
     CTD_MSG_EXEC,
     CTD_MSG_EXEC_NAT,
+    CTD_MSG_CLEAN,
 };
 
 static const char * const ctd_msg_type_str[] = {
     [CTD_MSG_EXEC] = "EXEC",
     [CTD_MSG_EXEC_NAT] = "EXEC_NAT",
+    [CTD_MSG_CLEAN] = "CLEAN",
 };
 
 enum ctd_msg_fate_type {
@@ -54,6 +56,7 @@ enum ctd_msg_fate_type {
     CTD_MSG_FATE_PMD,
     CTD_MSG_FATE_CTD,
     CTD_MSG_FATE_SELF,
+    CTD_MSG_FATE_FREE,
 };
 
 static const char * const ctd_msg_fate_type_str[] = {
@@ -61,6 +64,7 @@ static const char * const ctd_msg_fate_type_str[] = {
     [CTD_MSG_FATE_PMD] = "FATE_PMD",
     [CTD_MSG_FATE_CTD] = "FATE_CTD",
     [CTD_MSG_FATE_SELF] = "FATE_SELF",
+    [CTD_MSG_FATE_FREE] = "FATE_FREE",
 };
 
 struct ctd_msg {
@@ -107,6 +111,12 @@ struct ctd_exec {
     struct nat_lookup_info nli;
 };
 
+struct ctd_conn_clean_msg {
+    struct ctd_msg hdr;
+    struct conn *conn;
+};
+BUILD_ASSERT_DECL(offsetof(struct ctd_conn_clean_msg, hdr) == 0);
+
 struct ct_thread {
     PADDED_MEMBERS(CACHE_LINE_SIZE,
         struct mpsc_queue queue;
@@ -138,6 +148,10 @@ ctd_exec(struct conntrack *conntrack,
          const struct nlattr *actions,
          size_t actions_len,
          uint32_t depth);
+void
+ctd_conn_clean(struct ctd_conn_clean_msg *msg);
+void
+ctd_send_conn_clean_msg(struct conntrack *ct, struct conn *conn, uint32_t hash);
 
 OVS_UNUSED
 static void

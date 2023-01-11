@@ -107,6 +107,7 @@ ctd_send_msg_to_thread(struct ctd_msg *m, unsigned int id)
 static void *
 ct_thread_main(void *arg)
 {
+    struct ctd_conn_clean_msg *clean_msg = NULL;
     struct mpsc_queue_node *queue_node;
     struct ct_thread *thread = arg;
     struct dp_packet *pkt = NULL;
@@ -143,6 +144,10 @@ ct_thread_main(void *arg)
             pkt = CONTAINER_OF(m, struct dp_packet, cme);
             ctd_conntrack_execute(pkt);
             break;
+        case CTD_MSG_CLEAN:
+            clean_msg = CONTAINER_OF(m, struct ctd_conn_clean_msg, hdr);
+            ctd_conn_clean(clean_msg);
+            break;
         default:
             OVS_NOT_REACHED();
         }
@@ -163,6 +168,9 @@ ct_thread_main(void *arg)
         case CTD_MSG_FATE_SELF:
             ctd_msg_fate_set(m, CTD_MSG_FATE_TBD);
             ctd_send_msg_to_thread(m, ct_thread_id());
+            break;
+        case CTD_MSG_FATE_FREE:
+            free(clean_msg);
             break;
         }
 
@@ -375,4 +383,19 @@ ctd_exec(struct conntrack *conntrack,
     dp_packet_batch_init(packets_);
 
     return true;
+}
+
+void
+ctd_send_conn_clean_msg(struct conntrack *ct, struct conn *conn, uint32_t hash)
+{
+    struct ctd_conn_clean_msg *msg;
+
+    msg = xmalloc(sizeof *msg);
+    msg->hdr.ct = ct;
+    msg->conn = conn;
+    ctd_msg_type_set(&msg->hdr, CTD_MSG_CLEAN);
+
+    ctd_msg_dest_set(&msg->hdr, hash);
+    ctd_msg_fate_set(&msg->hdr, CTD_MSG_FATE_CTD);
+    ctd_send_msg_to_thread(&msg->hdr, ctd_h2tid(hash));
 }

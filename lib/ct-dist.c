@@ -1494,10 +1494,11 @@ set_label(struct dp_packet *pkt, struct conn *conn,
 
 
 static void
-conn_batch_clean(struct conntrack *ct,
-                 struct conn **conns, size_t *batch_count,
-                 long long int now)
+ctd_conn_batch_clean(struct conntrack *ct,
+                     struct conn **conns, size_t *batch_count,
+                     long long int now)
 {
+    uint32_t hash;
     size_t i;
 
     if (*batch_count == 0) {
@@ -1517,7 +1518,8 @@ conn_batch_clean(struct conntrack *ct,
             COVERAGE_INC(ctd_clean_1s_latency);
         }
 
-        conn_clean(ct, conns[i]);
+        hash = conn_key_hash(&conns[i]->key, ct->hash_basis);
+        ctd_send_conn_clean_msg(ct, conns[i], hash);
     }
 
     *batch_count = 0;
@@ -1532,7 +1534,7 @@ conn_batch_clean(struct conntrack *ct,
  * LLONG_MAX if 'ctb' is empty.  The return value might be smaller than 'now',
  * if 'limit' is reached */
 static long long
-ct_sweep(struct conntrack *ct, long long now, size_t limit)
+ctd_ct_sweep(struct conntrack *ct, long long now, size_t limit)
     OVS_NO_THREAD_SAFETY_ANALYSIS
 {
     struct conntrack_offload_class *offload_class = NULL;
@@ -1552,7 +1554,7 @@ ct_sweep(struct conntrack *ct, long long now, size_t limit)
         if (now >= next_rcu_quiesce) {
 rcu_quiesce:
             /* Do not delay further releasing batched conns if any. */
-            conn_batch_clean(ct, conn_batch, &batch_count, now);
+            ctd_conn_batch_clean(ct, conn_batch, &batch_count, now);
             ovsrcu_quiesce();
             now = time_msec();
             next_rcu_quiesce = now + CT_SWEEP_QUIESCE_INTERVAL_MS;
@@ -1622,7 +1624,7 @@ rcu_quiesce:
             } else {
                 conn_batch[batch_count++] = conn;
                 if (batch_count == ARRAY_SIZE(conn_batch)) {
-                    conn_batch_clean(ct, conn_batch, &batch_count, now);
+                    ctd_conn_batch_clean(ct, conn_batch, &batch_count, now);
                 }
                 count++;
                 if (count >= limit) {
@@ -1641,7 +1643,7 @@ rcu_quiesce:
     }
 
 out:
-    conn_batch_clean(ct, conn_batch, &batch_count, now);
+    ctd_conn_batch_clean(ct, conn_batch, &batch_count, now);
     if (count > 0) {
         VLOG_DBG("conntrack cleanup %"PRIuSIZE" entries in %lld msec", count,
                  time_msec() - start);
@@ -1654,12 +1656,12 @@ out:
  * 'now', meaning that an internal limit has been reached, and some expired
  * connections have not been deleted. */
 static long long
-conntrack_clean(struct conntrack *ct, long long now)
+ctd_conntrack_clean(struct conntrack *ct, long long now)
 {
     unsigned int n_conn_limit;
     atomic_read_relaxed(&ct->n_conn_limit, &n_conn_limit);
     size_t clean_max = n_conn_limit > 10 ? n_conn_limit / 10 : 1;
-    long long min_exp = ct_sweep(ct, now, clean_max);
+    long long min_exp = ctd_ct_sweep(ct, now, clean_max);
     long long next_wakeup = MIN(min_exp, now + CT_DPIF_NETDEV_TP_MIN_MS);
 
     return next_wakeup;
@@ -1690,7 +1692,7 @@ ctd_clean_thread_main(void *f_)
     }
 
     while (!latch_is_set(&ct->clean_thread_exit)) {
-        long long next_wake = conntrack_clean(ct, time_msec());
+        long long next_wake = ctd_conntrack_clean(ct, time_msec());
         long long now = time_msec();
 
         if (next_wake > now) {
@@ -2568,6 +2570,7 @@ int
 ctd_flush(struct conntrack *ct, const uint16_t *zone)
 {
     struct conn *conn;
+    uint32_t hash;
 
     CMAP_FOR_EACH (conn, cm_node, &ct->conns) {
         if ((!zone || *zone == conn->key.zone) &&
@@ -2575,7 +2578,12 @@ ctd_flush(struct conntrack *ct, const uint16_t *zone)
             /* Pass NAT conn, they will be cleaned when
              * their master conn is removed.
              */
-            conn_clean(ct, conn);
+            if (ct->n_threads) {
+                hash = conn_key_hash(&conn->key, ct->hash_basis);
+                ctd_send_conn_clean_msg(ct, conn, hash);
+            } else {
+                conn_clean(ct, conn);
+            }
         }
     }
 
@@ -2590,13 +2598,19 @@ ctd_flush_tuple(struct conntrack *ct,
     int error = 0;
     struct conn_key key;
     struct conn *conn;
+    uint32_t hash;
 
     memset(&key, 0, sizeof(key));
     tuple_to_conn_key(tuple, zone, &key);
 
     conn_lookup(ct, &key, time_msec(), &conn, NULL);
     if (conn && conn->conn_type == CT_CONN_TYPE_DEFAULT) {
-        conn_clean(ct, conn);
+        if (ct->n_threads) {
+            hash = conn_key_hash(&conn->key, ct->hash_basis);
+            ctd_send_conn_clean_msg(ct, conn, hash);
+        } else {
+            conn_clean(ct, conn);
+        }
     } else {
         VLOG_WARN("Must flush tuple using the original pre-NATed tuple");
         error = ENOENT;
@@ -3337,4 +3351,49 @@ ctd_nat_conn_alloc(struct conntrack *ct, struct conn *conn,
     memcpy(&conn->rev_key, &nli->rev_key, sizeof conn->rev_key);
 
     return nat_conn;
+}
+
+void
+ctd_conn_clean(struct ctd_conn_clean_msg *msg)
+{
+    struct ctd_msg *m = &msg->hdr;
+    struct conntrack *ct;
+    struct conn *conn;
+    uint32_t hash;
+
+    ct = m->ct;
+    conn = msg->conn;
+
+    if (conn->conn_type == CT_CONN_TYPE_UN_NAT) {
+        conn_lock(conn);
+        conntrack_lock(ct);
+
+        cmap_remove(&ct->conns, &conn->cm_node, m->dest_hash);
+
+        conntrack_unlock(ct);
+        conn_unlock(conn);
+        ctd_msg_fate_set(m, CTD_MSG_FATE_FREE);
+        return;
+    }
+
+    if (atomic_flag_test_and_set(&conn->reclaimed)) {
+        ctd_msg_fate_set(m, CTD_MSG_FATE_FREE);
+        return;
+    }
+
+    conn_lock(conn);
+    conntrack_lock(ct);
+
+    conn_clean_cmn(ct, conn);
+    if (conn->nat_conn) {
+        hash = conn_key_hash(&conn->nat_conn->key, ct->hash_basis);
+        ctd_msg_dest_set(m, hash);
+        ctd_msg_fate_set(m, CTD_MSG_FATE_CTD);
+    }
+    conn_unref(conn);
+    atomic_count_dec(&ct->n_conn);
+
+    conntrack_unlock(ct);
+    conn_unlock(conn);
+    ctd_msg_fate_set(m, CTD_MSG_FATE_FREE);
 }
