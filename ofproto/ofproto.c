@@ -4504,12 +4504,20 @@ rule_criteria_destroy(struct rule_criteria *criteria)
 /* Adds rules to the 'to_remove' collection, so they can be destroyed
  * later all together.  Destroys 'rules'. */
 static void
-rules_mark_for_removal(struct ofproto *ofproto, struct rule_collection *rules)
+rules_mark_for_removal(struct ofproto *ofproto, struct rule_collection *rules,
+                       bool keep_counts)
     OVS_REQUIRES(ofproto_mutex)
 {
     struct rule *rule;
 
     RULE_COLLECTION_FOR_EACH (rule, rules) {
+        if (keep_counts) {
+            struct pkt_stats stats;
+            long long int used;
+
+            ofproto->ofproto_class->rule_get_stats(rule, &stats, &used);
+            pkt_stats_add(&ofproto->removed_stats, stats);
+        }
         rule_collection_add(ofproto->to_remove, rule);
     }
     rule_collection_destroy(rules);
@@ -5916,7 +5924,9 @@ modify_flows_finish(struct ofproto *ofproto, struct ofproto_flow_mod *ofm,
             }
         }
         learned_cookies_flush(ofproto, &dead_cookies);
-        rules_mark_for_removal(ofproto, old_rules);
+        /* If modify_keep_counts is false, the provider will not port
+         * the counters to the new rule: they must be kept in ofproto. */
+        rules_mark_for_removal(ofproto, old_rules, !ofm->modify_keep_counts);
     }
 
     return error;
@@ -6024,7 +6034,7 @@ delete_flows_finish__(struct ofproto *ofproto,
             learned_cookies_dec(ofproto, rule_get_actions(rule),
                                 &dead_cookies);
         }
-        rules_mark_for_removal(ofproto, rules);
+        rules_mark_for_removal(ofproto, rules, true);
 
         learned_cookies_flush(ofproto, &dead_cookies);
     }
@@ -6234,6 +6244,53 @@ ofproto_rule_reduce_timeouts(struct rule *rule,
     reduce_timeout(idle_timeout, &rule->idle_timeout);
     reduce_timeout(hard_timeout, &rule->hard_timeout);
     ovs_mutex_unlock(&rule->mutex);
+}
+
+enum ofperr
+ofproto_get_pkt_stats(struct ofproto *ofproto, struct pkt_stats *stats)
+    OVS_EXCLUDED(ofproto_mutex)
+{
+    struct pkt_stats removed_stats;
+    struct rule_criteria criteria;
+    struct rule_collection rules;
+    struct minimatch match;
+    struct rule *rule;
+    enum ofperr error;
+
+    /* Match *any* rule. */
+    minimatch_init_catchall(&match);
+    rule_criteria_init(&criteria, OFPTT_ALL, &match, 0,
+                       OVS_VERSION_MAX, 0, 0,
+                       OFPP_ANY, OFPG_ANY);
+    minimatch_destroy(&match);
+
+    ovs_mutex_lock(&ofproto_mutex);
+    error = collect_rules_loose(ofproto, &criteria, &rules);
+    rule_criteria_destroy(&criteria);
+    if (!error) {
+        rule_collection_ref(&rules);
+    }
+    removed_stats = ofproto->removed_stats;
+    ovs_mutex_unlock(&ofproto_mutex);
+
+    if (error) {
+        return error;
+    }
+
+    *stats = removed_stats;
+
+    RULE_COLLECTION_FOR_EACH (rule, &rules) {
+        struct pkt_stats rule_stats;
+        long long int used;
+
+        ofproto->ofproto_class->rule_get_stats(rule, &rule_stats, &used);
+        pkt_stats_add(stats, rule_stats);
+    }
+
+    rule_collection_unref(&rules);
+    rule_collection_destroy(&rules);
+
+    return error;
 }
 
 static enum ofperr

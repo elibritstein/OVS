@@ -57,6 +57,7 @@
 #include "simap.h"
 #include "timeval.h"
 #include "tun-metadata.h"
+#include "util.h"
 #include "versions.h"
 #include "vl-mff-map.h"
 
@@ -71,6 +72,24 @@ struct rule_collection;
 struct smap;
 
 extern struct ovs_mutex ofproto_mutex;
+
+struct pkt_stats {
+    uint64_t n_packets;
+    uint64_t n_bytes;
+    uint64_t n_offload_packets; /* n_offload_packets are a subset n_packets */
+    uint64_t n_offload_bytes;   /* n_offload_bytes are a subset of n_bytes */
+};
+
+static inline void
+pkt_stats_add(struct pkt_stats *dst, struct pkt_stats src)
+{
+    dst->n_packets = ovs_u64_safeadd(dst->n_packets, src.n_packets);
+    dst->n_bytes = ovs_u64_safeadd(dst->n_bytes, src.n_bytes);
+    dst->n_offload_packets = ovs_u64_safeadd(dst->n_offload_packets,
+                                             src.n_offload_packets);
+    dst->n_offload_bytes = ovs_u64_safeadd(dst->n_offload_bytes,
+                                           src.n_offload_bytes);
+}
 
 /* An OpenFlow switch.
  *
@@ -119,6 +138,7 @@ struct ofproto {
 
     /* List of flows to remove from flow tables. */
     struct rule_collection *to_remove OVS_GUARDED_BY(ofproto_mutex);
+    struct pkt_stats removed_stats OVS_GUARDED_BY(ofproto_mutex);
 
     /* Meter table.  */
     struct ofputil_meter_features meter_features;
@@ -150,6 +170,12 @@ struct ofproto {
 
 void ofproto_init_tables(struct ofproto *, int n_tables);
 void ofproto_init_max_ports(struct ofproto *, uint16_t max_ports);
+
+/* Read the current packet stats of this ofproto.
+ * It sums each currently existing rule packet stats as well
+ * as past, removed rules. */
+enum ofperr ofproto_get_pkt_stats(struct ofproto *, struct pkt_stats *)
+    OVS_EXCLUDED(ofproto_mutex);
 
 struct ofproto *ofproto_lookup(const char *name);
 struct ofport *ofproto_get_port(const struct ofproto *, ofp_port_t ofp_port);
@@ -593,13 +619,6 @@ struct ofgroup {
     struct ofputil_group_props props;
 
     struct rule_collection rules OVS_GUARDED;   /* Referring rules. */
-};
-
-struct pkt_stats {
-    uint64_t n_packets;
-    uint64_t n_bytes;
-    uint64_t n_offload_packets; /* n_offload_packets are a subset n_packets */
-    uint64_t n_offload_bytes;   /* n_offload_bytes are a subset of n_bytes */
 };
 
 struct ofgroup *ofproto_group_lookup(const struct ofproto *ofproto,
