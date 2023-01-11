@@ -2094,53 +2094,51 @@ ctd_nat_get_unique_l4(struct conntrack *ct,
                       bool is_snat)
 {
     static const unsigned int max_attempts = 128;
-    uint16_t curr, min, max;
-    unsigned int attempts;
-    uint16_t range, orig;
-    unsigned int i = 0;
-    ovs_be16 *port;
+    uint16_t *curr, min, max;
+    uint16_t range;
 
     if (is_snat) {
-        nli->port = &nli->rev_key.dst.port;
         min = nli->sport.min;
         max = nli->sport.max;
-        curr = nli->sport.curr;
+        curr = &nli->sport.curr;
     } else {
-        nli->port = &nli->rev_key.src.port;
         min = nli->dport.min;
         max = nli->dport.max;
-        curr = nli->dport.curr;
+        curr = &nli->dport.curr;
     }
 
-    port = nli->port;
     range = max - min + 1;
-    orig = curr;
 
-    attempts = range;
-    if (attempts > max_attempts) {
-        attempts = max_attempts;
+    if (!nli->port) {
+        nli->port = is_snat ? &nli->rev_key.dst.port : &nli->rev_key.src.port;
+        nli->attempts = range;
+        if (nli->attempts > max_attempts) {
+            nli->attempts = max_attempts;
+        }
+        if (nli->attempts > N_PORT_ATTEMPTS(*curr, min, max)) {
+            nli->attempts = N_PORT_ATTEMPTS(*curr, min, max);
+        }
+        nli->port_iter = 0;
     }
 
 another_round:
-    i = 0;
-    FOR_EACH_PORT_IN_RANGE (curr, min, max) {
-        if (i++ >= attempts) {
-            break;
-        }
+    *nli->port = htons(*curr);
 
-        *port = htons(curr);
-        if (!conn_lookup(ct, &nli->rev_key, time_msec(), NULL, NULL)) {
-            return true;
-        }
+    if (!conn_lookup(ct, &nli->rev_key, time_msec(), NULL, NULL)) {
+        return true;
     }
 
-    if (attempts < range && attempts >= 16) {
-        attempts /= 2;
-        curr = min + (random_uint32() % range);
+    if (nli->port_iter++ < nli->attempts) {
+        NEXT_PORT_IN_RANGE(*curr, min, max);
         goto another_round;
     }
 
-    *port = htons(orig);
+    if (nli->attempts < range && nli->attempts >= 16) {
+        nli->port_iter = 0;
+        nli->attempts /= 2;
+        *curr = min + (random_uint32() % range);
+        goto another_round;
+    }
 
     return false;
 }

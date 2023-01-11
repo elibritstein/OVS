@@ -78,6 +78,8 @@ struct nat_lookup_info {
         uint16_t max;
         uint16_t curr;
     } sport, dport;
+    uint16_t attempts;
+    uint16_t port_iter;
     uint32_t hash;
 };
 
