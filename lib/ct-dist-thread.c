@@ -128,7 +128,7 @@ ct_thread_main(void *arg)
         m = CONTAINER_OF(queue_node, struct ctd_msg, node);
         // handle ctd_msg
         switch (m->msg_type) {
-        case CTD_MSG_TYPE_EXEC:
+        case CTD_MSG_EXEC:
             pkt = CONTAINER_OF(m, struct dp_packet, cme);
             ctd_exec_pkt(pkt);
             break;
@@ -304,7 +304,7 @@ ctd_exec(struct conntrack *conntrack,
         struct ctd_msg *m = &packet->cme.hdr;
         struct ctd_exec *e = &packet->cme.e;
 
-        ctd_msg_type_set(m, CTD_MSG_TYPE_EXEC);
+        ctd_msg_type_set(m, CTD_MSG_EXEC);
         m->timestamp_ms = pmd->ctx.now / 1000;
         *e = (struct ctd_exec) {
             .ct = conntrack,

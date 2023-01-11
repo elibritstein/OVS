@@ -40,11 +40,11 @@ extern "C" {
 #endif
 
 enum ctd_msg_type {
-    CTD_MSG_TYPE_EXEC,
+    CTD_MSG_EXEC,
 };
 
 static const char * const ctd_msg_type_str[] = {
-    [CTD_MSG_TYPE_EXEC] = "EXEC",
+    [CTD_MSG_EXEC] = "EXEC",
 };
 
 struct ctd_msg {

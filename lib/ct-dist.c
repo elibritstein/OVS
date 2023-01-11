@@ -1131,7 +1131,7 @@ initial_conn_lookup(struct conntrack *ct, struct conn_lookup_ctx *ctx,
 }
 
 static void
-process_one(struct dp_packet *pkt)
+ctd_process_one(struct dp_packet *pkt)
 {
     const struct nat_action_info_t *nat_action_info;
     const struct ovs_key_ct_labels *setlabel;
@@ -1329,7 +1329,7 @@ ctd_conntrack_execute(struct dp_packet *pkt)
         pkt->md.ct_state = CS_INVALID;
         write_ct_md_alg_exp(pkt, zone, NULL, NULL);
     } else {
-        process_one(pkt);
+        ctd_process_one(pkt);
     }
     conn = pkt->md.conn ? pkt->md.conn : ctx->conn;
     process_one_ct_offload(ct, pkt, conn, ctx->reply, now_us);
