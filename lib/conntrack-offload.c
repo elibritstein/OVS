@@ -377,9 +377,13 @@ conn_hw_update(struct conntrack *ct,
             ret = offload_class->conn_active(&item, now,
                                              conn->prev_query);
             if (!ret) {
-                conn_lock(conn);
-                conn_update_expiration(ct, conn, tm, now);
-                conn_unlock(conn);
+                if (ct->n_threads) {
+                    conn_update_hw_expiration(ct, conn, tm, now);
+                } else {
+                    conn_lock(conn);
+                    conn_update_expiration(ct, conn, tm, now);
+                    conn_unlock(conn);
+                }
                 updated = true;
                 break;
             }
@@ -391,9 +395,13 @@ conn_hw_update(struct conntrack *ct,
             ret = offload_class->conn_active(&item, now,
                                              conn->prev_query);
             if (!ret) {
-                conn_lock(conn);
-                conn_update_expiration(ct, conn, tm, now);
-                conn_unlock(conn);
+                if (ct->n_threads) {
+                    conn_update_hw_expiration(ct, conn, tm, now);
+                } else {
+                    conn_lock(conn);
+                    conn_update_expiration(ct, conn, tm, now);
+                    conn_unlock(conn);
+                }
                 updated = true;
                 break;
             }

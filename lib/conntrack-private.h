@@ -203,6 +203,9 @@ struct conn {
 
     uint32_t tp_id; /* Timeout policy ID. */
     struct ct_offloads offloads;
+    struct {
+        atomic_llong hw_expiration;
+    };
 };
 
 #define conn_lock_init(conn) do { \

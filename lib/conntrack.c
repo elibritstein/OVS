@@ -2703,10 +2703,13 @@ conn_update(struct conntrack *ct, struct conn *conn, struct dp_packet *pkt,
 static long long int
 conn_expiration(const struct conn *conn)
 {
+    long long int hw_expiration;
     long long int expiration;
 
     atomic_read_relaxed(&conn->expiration, &expiration);
-    return expiration;
+    atomic_read_relaxed(&conn->hw_expiration, &hw_expiration);
+
+    return MAX(expiration, hw_expiration);
 }
 
 static bool

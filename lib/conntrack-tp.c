@@ -245,6 +245,15 @@ conn_schedule_expiration(struct conn *conn, enum ct_timeout tm, long long now,
     ignore(atomic_flag_test_and_set(&conn->exp.reschedule));
 }
 
+static void
+conn_schedule_hw_expiration(struct conn *conn, enum ct_timeout tm,
+                            long long now, uint32_t tp_value)
+{
+    atomic_store_relaxed(&conn->hw_expiration, now + tp_value * 1000);
+    conn->exp.tm = tm;
+    ignore(atomic_flag_test_and_set(&conn->exp.reschedule));
+}
+
 static uint32_t
 get_tp_id_val(struct conntrack *ct, uint32_t tp_id, enum ct_timeout tm)
 {
@@ -275,6 +284,21 @@ conn_update_expiration(struct conntrack *ct, struct conn *conn,
                 ct_timeout_str[tm], conn->key.zone, conn->tp_id, tp_value);
 
     conn_schedule_expiration(conn, tm, now, tp_value);
+}
+
+void
+conn_update_hw_expiration(struct conntrack *ct, struct conn *conn,
+                          enum ct_timeout tm, long long now)
+{
+    uint32_t tp_value;
+
+    tp_value = get_tp_id_val(ct, conn->tp_id, tm);
+
+    VLOG_DBG_RL(&rl, "Update timeout %s zone=%u with policy id=%d "
+                "val=%u sec.",
+                ct_timeout_str[tm], conn->key.zone, conn->tp_id, tp_value);
+
+    conn_schedule_hw_expiration(conn, tm, now, tp_value);
 }
 
 static void
