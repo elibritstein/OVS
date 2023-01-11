@@ -47,10 +47,22 @@ static const char * const ctd_msg_type_str[] = {
     [CTD_MSG_EXEC] = "EXEC",
 };
 
+enum ctd_msg_fate_type {
+    CTD_MSG_FATE_TBD,
+    CTD_MSG_FATE_PMD,
+};
+
+static const char * const ctd_msg_fate_type_str[] = {
+    [CTD_MSG_FATE_TBD] = "FATE_TBD",
+    [CTD_MSG_FATE_PMD] = "FATE_PMD",
+};
+
 struct ctd_msg {
     struct mpsc_queue_node node;
     long long timestamp_ms;
     enum ctd_msg_type msg_type;
+    enum ctd_msg_fate_type msg_fate;
+    struct conntrack *ct;
 };
 
 struct nat_lookup_info {
@@ -65,7 +77,6 @@ struct nat_lookup_info {
 };
 
 struct ctd_exec {
-    struct conntrack *ct;
     ovs_be16 dl_type;
     bool force;
     bool commit;
@@ -118,12 +129,6 @@ ctd_exec(struct conntrack *conntrack,
          const struct nlattr *actions,
          size_t actions_len,
          uint32_t depth);
-unsigned int
-ctd_h2tid(uint32_t hash);
-void
-ctd_send_msg_to_thread_hash(struct conntrack *ct,
-                            struct ctd_msg *m,
-                            uint32_t hash);
 
 OVS_UNUSED
 static void
@@ -137,6 +142,19 @@ ctd_msg_type_set_at(struct ctd_msg *m,
 
 #define ctd_msg_type_set(msg, type) \
     ctd_msg_type_set_at(msg, type, OVS_SOURCE_LOCATOR)
+
+OVS_UNUSED
+static void
+ctd_msg_fate_set_at(struct ctd_msg *m,
+                    enum ctd_msg_fate_type type,
+                    const char *where)
+{
+    (void) where;
+    m->msg_fate = type;
+}
+
+#define ctd_msg_fate_set(msg, type) \
+    ctd_msg_fate_set_at(msg, type, OVS_SOURCE_LOCATOR)
 
 #ifdef  __cplusplus
 }

@@ -30,6 +30,7 @@
 #include "conntrack-tp.h"
 #include "coverage.h"
 #include "csum.h"
+#include "ct-dist-thread.h"
 #include "ct-dpif.h"
 #include "dp-packet.h"
 #include "flow.h"
@@ -1141,7 +1142,7 @@ ctd_process_one_init(struct dp_packet *pkt)
     long long now;
     bool force;
 
-    ct = e->ct;
+    ct = m->ct;
     zone = e->zone;
     force = e->force;
     now = m->timestamp_ms;
@@ -1177,7 +1178,7 @@ ctd_process_conn_type_un_nat(struct dp_packet *pkt, struct conn *conn)
     uint16_t zone;
     long long now;
 
-    ct = e->ct;
+    ct = m->ct;
     zone = e->zone;
     now = m->timestamp_ms;
     ctx = &e->ct_lookup_ctx;
@@ -1218,7 +1219,7 @@ ctd_process_one(struct dp_packet *pkt)
     long long now;
     bool commit;
 
-    ct = e->ct;
+    ct = m->ct;
     zone = e->zone;
     commit = e->commit;
     now = m->timestamp_ms;
@@ -1237,6 +1238,7 @@ ctd_process_one(struct dp_packet *pkt)
         if (conn->conn_type == CT_CONN_TYPE_UN_NAT) {
             conn = ctd_process_conn_type_un_nat(pkt, conn);
             if (!conn) {
+                ctd_msg_fate_set(m, CTD_MSG_FATE_PMD);
                 return;
             }
         }
@@ -1309,6 +1311,7 @@ ctd_process_one(struct dp_packet *pkt)
     handle_alg_ctl(ct, ctx, pkt, ct_alg_ctl, conn, now, !!nat_action_info);
 
     set_cached_conn(nat_action_info, ctx, conn, pkt);
+    ctd_msg_fate_set(m, CTD_MSG_FATE_PMD);
 }
 
 /* Sends the packets in '*pkt_batch' through the connection tracker 'ct'.  All
@@ -1341,7 +1344,7 @@ ctd_conntrack_execute(struct dp_packet *pkt)
     uint16_t zone;
     bool force;
 
-    ct = e->ct;
+    ct = m->ct;
     dp_packet_batch_init_packet(&pkt_batch, pkt);
     dl_type = e->dl_type;
     zone = e->zone;
@@ -2872,6 +2875,7 @@ handle_tftp_ctl(struct conntrack *ct,
 static void
 ctd_nat_rev_key_init(struct dp_packet *pkt, const struct conn *conn)
 {
+    struct ctd_msg *m = &pkt->cme.hdr;
     struct ctd_exec *e = &pkt->cme.e;
     struct nat_action_info_t *nai;
     struct nat_lookup_info *nli;
@@ -2881,7 +2885,7 @@ ctd_nat_rev_key_init(struct dp_packet *pkt, const struct conn *conn)
     nli = &e->nli;
     nai = e->nat_action_info_ref;
 
-    hash = nat_range_hash(conn, e->ct->hash_basis, nai);
+    hash = nat_range_hash(conn, m->ct->hash_basis, nai);
     find_addr(conn, &nai->min_addr, &nai->max_addr, &addr, hash,
               (conn->key.dl_type == htons(ETH_TYPE_IP)), nai);
 

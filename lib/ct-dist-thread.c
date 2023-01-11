@@ -82,16 +82,19 @@ out:
     ovsthread_once_done(&once);
 }
 
-static void
-ctd_exec_pkt(struct dp_packet *pkt)
+static unsigned int
+ctd_h2tid(uint32_t hash)
 {
-    struct ctd_msg *m = &pkt->cme.hdr;
-    struct ctd_exec *e = &pkt->cme.e;
+    return fastrange32(hash, n_threads);
+}
 
-    ctd_conntrack_execute(pkt);
+static void
+ctd_send_msg_to_thread(struct ctd_msg *m, unsigned int id)
+{
+    struct ct_thread *thread;
 
-    /* Send back to the PMD. */
-    mpsc_queue_insert(&e->pmd->ct2pmd.queue, &m->node);
+    thread = &m->ct->threads[id];
+    mpsc_queue_insert(&thread->queue, &m->node);
 }
 
 static void *
@@ -99,8 +102,8 @@ ct_thread_main(void *arg)
 {
     struct mpsc_queue_node *queue_node;
     struct ct_thread *thread = arg;
+    struct dp_packet *pkt = NULL;
     long long int next_rcu_ms;
-    struct dp_packet *pkt;
     long long int now_ms;
     struct ctd_msg *m;
     uint64_t backoff;
@@ -130,10 +133,21 @@ ct_thread_main(void *arg)
         switch (m->msg_type) {
         case CTD_MSG_EXEC:
             pkt = CONTAINER_OF(m, struct dp_packet, cme);
-            ctd_exec_pkt(pkt);
+            ctd_conntrack_execute(pkt);
             break;
         default:
             OVS_NOT_REACHED();
+        }
+
+        switch (m->msg_fate) {
+        case CTD_MSG_FATE_TBD:
+        default:
+            OVS_NOT_REACHED();
+        case CTD_MSG_FATE_PMD:
+            /* Send back to the PMD. */
+            ctd_msg_fate_set(m, CTD_MSG_FATE_TBD);
+            mpsc_queue_insert(&pkt->cme.e.pmd->ct2pmd.queue, &m->node);
+            break;
         }
 
         /* Do RCU synchronization at fixed interval. */
@@ -305,9 +319,10 @@ ctd_exec(struct conntrack *conntrack,
         struct ctd_exec *e = &packet->cme.e;
 
         ctd_msg_type_set(m, CTD_MSG_EXEC);
+        ctd_msg_fate_set(m, CTD_MSG_FATE_TBD);
         m->timestamp_ms = pmd->ctx.now / 1000;
+        m->ct = conntrack,
         *e = (struct ctd_exec) {
-            .ct = conntrack,
             .dl_type = flow->dl_type,
             .force = force,
             .commit = commit,
@@ -335,7 +350,7 @@ ctd_exec(struct conntrack *conntrack,
             dp_netdev_flow_ref(dp_flow);
         }
         memcpy(e->actions_buf, actions, actions_len);
-        ctd_send_msg_to_thread_hash(e->ct, m, e->ct_lookup_ctx.hash);
+        ctd_send_msg_to_thread(m, ctd_h2tid(e->ct_lookup_ctx.hash));
     }
 
     /* Empty the batch, to stop its processing in this context.
@@ -344,23 +359,4 @@ ctd_exec(struct conntrack *conntrack,
     dp_packet_batch_init(packets_);
 
     return true;
-}
-
-unsigned int
-ctd_h2tid(uint32_t hash)
-{
-    return fastrange32(hash, n_threads);
-}
-
-void
-ctd_send_msg_to_thread_hash(struct conntrack *ct,
-                            struct ctd_msg *m,
-                            uint32_t hash)
-{
-    struct ct_thread *thread;
-    unsigned int tid;
-
-    tid = ctd_h2tid(hash);
-    thread = &ct->threads[tid];
-    mpsc_queue_insert(&thread->queue, &m->node);
 }
