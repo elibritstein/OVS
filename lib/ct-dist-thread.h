@@ -44,6 +44,7 @@ enum ctd_msg_type {
     CTD_MSG_EXEC_NAT,
     CTD_MSG_CLEAN,
     CTD_MSG_NAT_CANDIDATE_RESPONSE,
+    CTD_MSG_NAT_CANDIDATE,
 };
 
 static const char * const ctd_msg_type_str[] = {
@@ -51,6 +52,7 @@ static const char * const ctd_msg_type_str[] = {
     [CTD_MSG_EXEC_NAT] = "EXEC_NAT",
     [CTD_MSG_CLEAN] = "CLEAN",
     [CTD_MSG_NAT_CANDIDATE_RESPONSE] = "NAT_CANDIDATE_RESPONSE",
+    [CTD_MSG_NAT_CANDIDATE] = "NAT_CANDIDATE",
 };
 
 enum ctd_msg_fate_type {
@@ -81,6 +83,7 @@ struct ctd_msg {
 struct nat_lookup_info {
     struct conn_key rev_key;
     ovs_be16 *port;
+    struct conn *nat_conn;
     struct {
         uint16_t min;
         uint16_t max;

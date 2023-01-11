@@ -211,5 +211,7 @@ ctd_flush(struct conntrack *, const uint16_t *zone);
 int
 ctd_flush_tuple(struct conntrack *, const struct ct_dpif_tuple *,
                 uint16_t zone);
+void
+ctd_nat_candidate(struct dp_packet *pkt);
 
 #endif /* conntrack.h */

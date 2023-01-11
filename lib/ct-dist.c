@@ -106,11 +106,6 @@ static void set_label(struct dp_packet *, struct conn *conn,
                       const struct ovs_key_ct_labels *)
     OVS_REQUIRES(conn->lock);
 
-static bool
-ctd_nat_get_unique_tuple(struct conntrack *ct, const struct conn *conn,
-                         const struct nat_action_info_t *nat_info,
-                         struct nat_lookup_info *nli);
-
 static uint8_t
 reverse_icmp_type(uint8_t type);
 static uint8_t
@@ -163,10 +158,6 @@ handle_tftp_ctl(struct conntrack *ct,
 
 static void
 ctd_nat_rev_key_init(struct dp_packet *pkt, const struct conn *conn);
-static struct conn *
-ctd_nat_conn_alloc(struct conntrack *ct, struct conn *conn,
-                   const struct nat_action_info_t *nai,
-                   struct nat_lookup_info *nli);
 
 typedef void (*alg_helper)(struct conntrack *ct,
                            const struct conn_lookup_ctx *ctx,
@@ -895,12 +886,22 @@ ctd_conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
                    const char *helper, const struct alg_exp_node *alg_exp,
                    enum ct_alg_ctl_type ct_alg_ctl, uint32_t tp_id)
 {
+    struct ctd_msg *m = &pkt->cme.hdr;
     struct ctd_exec *e = &pkt->cme.e;
     struct conn *nat_conn = NULL;
+    struct zone_limit *zl = NULL;
     struct nat_lookup_info *nli;
     struct conn *nc = NULL;
 
     nli = &e->nli;
+
+    if (commit) {
+        zl = zone_limit_lookup_or_default(ct, ctx->key.zone);
+    }
+
+    if (m->msg_type == CTD_MSG_NAT_CANDIDATE_RESPONSE) {
+        goto CTD_MSG_NAT_CANDIDATE_RESPONSE;
+    }
 
     if (!valid_new(pkt, &ctx->key)) {
         pkt->md.ct_state = CS_INVALID;
@@ -914,8 +915,6 @@ ctd_conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
     }
 
     if (commit) {
-        struct zone_limit *zl = zone_limit_lookup_or_default(ct,
-                                                             ctx->key.zone);
         if (zl && atomic_count_get(&zl->czl.count) >= zl->czl.limit) {
             return nc;
         }
@@ -928,6 +927,7 @@ ctd_conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
         }
 
         nc = new_conn(ct, pkt, &ctx->key, now, tp_id);
+        nc->conn_type = CT_CONN_TYPE_DEFAULT;
         memcpy(&nc->key, &ctx->key, sizeof nc->key);
         memcpy(&nc->rev_key, &nc->key, sizeof nc->rev_key);
         conn_key_reverse(&nc->rev_key);
@@ -962,22 +962,46 @@ ctd_conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
                 ctd_nat_rev_key_init(pkt, nc);
                 nli->hash = conn_key_hash(&nli->rev_key, ct->hash_basis);
 
-                nat_conn = ctd_nat_conn_alloc(ct, nc, nat_action_info, nli);
+                ctx->conn = nc;
+                conn_lock_init(nc);
+                nc->reordering = true;
+                nc->resume_pkt = pkt;
+                atomic_flag_clear(&nc->reclaimed);
+                conntrack_lock(ct);
+                cmap_insert(&ct->conns, &nc->cm_node, ctx->hash);
+                conntrack_unlock(ct);
+                ctd_msg_type_set(m, CTD_MSG_NAT_CANDIDATE);
+                ctd_msg_dest_set(m, nli->hash);
+                ctd_msg_fate_set(m, CTD_MSG_FATE_CTD);
+                return NULL;
+
+CTD_MSG_NAT_CANDIDATE_RESPONSE:
+                nat_conn = nli->nat_conn;
+                nc = ctx->conn;
                 if (!nat_conn) {
                     delete_conn_cmn(nc);
                     return NULL;
                 }
-                ctd_nat_conn_init(pkt, nc, nat_conn);
+                ctd_nat_reorder_packet_from_orig(pkt, nc);
+                if (conn_expired(nc, now)) {
+                    ctd_send_conn_clean_msg(ct, nc, ctx->hash);
+                    return NULL;
+                }
+                ctd_msg_type_set(m, CTD_MSG_EXEC);
             }
         }
 
         nc->nat_conn = nat_conn;
         conn_lock_init(nc);
-        nc->conn_type = CT_CONN_TYPE_DEFAULT;
-        atomic_flag_clear(&nc->reclaimed);
-        conntrack_lock(ct);
-        cmap_insert(&ct->conns, &nc->cm_node, ctx->hash);
-        conntrack_unlock(ct);
+        /* In case of nat and not alg, the conn was already inserted before
+         * sending the candidate message, so no don't insert it again.
+         */
+        if (!(nat_action_info && !alg_exp)) {
+            atomic_flag_clear(&nc->reclaimed);
+            conntrack_lock(ct);
+            cmap_insert(&ct->conns, &nc->cm_node, ctx->hash);
+            conntrack_unlock(ct);
+        }
         conn_expire_push_back(ct, nc);
         atomic_count_inc(&ct->n_conn);
         atomic_count_inc(&ct->l4_counters[ctx->key.nw_proto]);
@@ -1294,8 +1318,10 @@ ctd_process_one(struct dp_packet *pkt)
 {
     const struct nat_action_info_t *nat_action_info;
     const struct ovs_key_ct_labels *setlabel;
+    const struct alg_exp_node *alg_exp;
     struct ctd_msg *m = &pkt->cme.hdr;
     struct ctd_exec *e = &pkt->cme.e;
+    enum ct_alg_ctl_type ct_alg_ctl;
     bool create_new_conn = false;
     struct nat_lookup_info *nli;
     struct conn_lookup_ctx *ctx;
@@ -1323,6 +1349,12 @@ ctd_process_one(struct dp_packet *pkt)
     tp_id = e->tp_id;
     ctx = &e->ct_lookup_ctx;
     nli = &e->nli;
+
+    if (m->msg_type == CTD_MSG_NAT_CANDIDATE_RESPONSE) {
+        alg_exp = NULL;
+        ct_alg_ctl = 0;
+        goto CTD_MSG_NAT_CANDIDATE_RESPONSE;
+    }
 
     if (m->msg_type == CTD_MSG_EXEC) {
         conn = ctd_process_one_init(pkt);
@@ -1352,8 +1384,7 @@ ctd_process_one(struct dp_packet *pkt)
         }
     }
 
-    enum ct_alg_ctl_type ct_alg_ctl = get_alg_ctl_type(pkt, tp_src, tp_dst,
-                                                       helper);
+    ct_alg_ctl = get_alg_ctl_type(pkt, tp_src, tp_dst, helper);
 
     if (OVS_LIKELY(conn)) {
         if (OVS_LIKELY(!conn_update_state_alg(ct, pkt, ctx, conn,
@@ -1378,7 +1409,7 @@ ctd_process_one(struct dp_packet *pkt)
         }
     }
 
-    const struct alg_exp_node *alg_exp = NULL;
+    alg_exp = NULL;
     struct alg_exp_node alg_exp_entry;
 
     if (OVS_UNLIKELY(create_new_conn)) {
@@ -1394,9 +1425,13 @@ ctd_process_one(struct dp_packet *pkt)
         ovs_rwlock_unlock(&ct->resources_lock);
 
         if (!conn_lookup(ct, &ctx->key, now, NULL, NULL)) {
+CTD_MSG_NAT_CANDIDATE_RESPONSE:
             conn = ctd_conn_not_found(ct, pkt, ctx, commit, now,
                                       nat_action_info, helper, alg_exp,
                                       ct_alg_ctl, tp_id);
+            if (m->msg_fate == CTD_MSG_FATE_CTD) {
+                return;
+            }
         }
     }
 
@@ -1416,7 +1451,9 @@ ctd_process_one(struct dp_packet *pkt)
         write_ct_md_alg_exp(pkt, zone, &ctx->key, alg_exp);
     }
 
-    handle_alg_ctl(ct, ctx, pkt, ct_alg_ctl, conn, now, !!nat_action_info);
+    if (alg_exp) {
+        handle_alg_ctl(ct, ctx, pkt, ct_alg_ctl, conn, now, !!nat_action_info);
+    }
 
     set_cached_conn(nat_action_info, ctx, conn, pkt);
     ctd_msg_fate_set(m, CTD_MSG_FATE_PMD);
@@ -2394,9 +2431,9 @@ store_addr_to_key(union ct_addr *addr, struct conn_key *key,
 }
 
 static bool
-ctd_nat_get_unique_l4(struct conntrack *ct,
-                      struct nat_lookup_info *nli,
-                      bool is_snat)
+ctd_nat_next_candidate_l4(struct nat_lookup_info *nli,
+                          struct ctd_msg *m,
+                          bool is_snat)
 {
     static const unsigned int max_attempts = 128;
     uint16_t *curr, min, max;
@@ -2414,6 +2451,11 @@ ctd_nat_get_unique_l4(struct conntrack *ct,
 
     range = max - min + 1;
 
+    /* Set the next candidate. In case the candidate search is over, set
+     * the type to CTD_MSG_NAT_CANDIDATE_RESPONSE.
+     * In case it is not, it is left as CTD_TYPE_NAT_CANDIDATE. The "fate"
+     * will be "DELEGATED" in both cases.
+     */
     if (!nli->port) {
         nli->port = is_snat ? &nli->rev_key.dst.port : &nli->rev_key.src.port;
         nli->attempts = range;
@@ -2423,28 +2465,27 @@ ctd_nat_get_unique_l4(struct conntrack *ct,
         if (nli->attempts > N_PORT_ATTEMPTS(*curr, min, max)) {
             nli->attempts = N_PORT_ATTEMPTS(*curr, min, max);
         }
-        nli->port_iter = 0;
+        nli->port_iter = 1;
+        NEXT_PORT_IN_RANGE(*curr, min, max);
+        *nli->port = htons(*curr);
+        return false;
     }
 
-another_round:
     *nli->port = htons(*curr);
-
-    if (!conn_lookup(ct, &nli->rev_key, time_msec(), NULL, NULL)) {
-        return true;
-    }
 
     if (nli->port_iter++ < nli->attempts) {
         NEXT_PORT_IN_RANGE(*curr, min, max);
-        goto another_round;
+        return false;
     }
 
     if (nli->attempts < range && nli->attempts >= 16) {
         nli->port_iter = 0;
         nli->attempts /= 2;
         *curr = min + (random_uint32() % range);
-        goto another_round;
+        return false;
     }
 
+    ctd_msg_type_set(m, CTD_MSG_NAT_CANDIDATE_RESPONSE);
     return false;
 }
 
@@ -2470,11 +2511,13 @@ another_round:
  *
  * If none can be found, return exhaustion to the caller. */
 static bool
-ctd_nat_get_unique_tuple(struct conntrack *ct, const struct conn *conn,
-                         const struct nat_action_info_t *nat_info,
-                         struct nat_lookup_info *nli)
+ctd_nat_get_candidate_tuple(struct conntrack *ct, const struct conn *conn,
+                            const struct nat_action_info_t *nat_info,
+                            struct ctd_msg *m,
+                            struct nat_lookup_info *nli)
 {
     if (!IS_PAT_PROTO(conn->key.nw_proto)) {
+        ctd_msg_type_set(m, CTD_MSG_NAT_CANDIDATE_RESPONSE);
         if (!conn_lookup(ct, &nli->rev_key, time_msec(), NULL, NULL)) {
             return true;
         }
@@ -2482,19 +2525,25 @@ ctd_nat_get_unique_tuple(struct conntrack *ct, const struct conn *conn,
         return false;
     }
 
+    if (!conn_lookup(ct, &nli->rev_key, time_msec(), NULL, NULL)) {
+        ctd_msg_type_set(m, CTD_MSG_NAT_CANDIDATE_RESPONSE);
+        return true;
+    }
+
     bool found = false;
     if (nat_info->nat_action & NAT_ACTION_DST_PORT) {
-        found = ctd_nat_get_unique_l4(ct, nli, false);
+        found = ctd_nat_next_candidate_l4(nli, m, false);
     }
 
     if (!found) {
-        found = ctd_nat_get_unique_l4(ct, nli, true);
+        found = ctd_nat_next_candidate_l4(nli, m, true);
     }
 
     if (found) {
         return true;
     }
 
+    nli->hash = conn_key_hash(&nli->rev_key, ct->hash_basis);
     return false;
 }
 
@@ -3363,14 +3412,38 @@ ctd_nat_rev_key_init(struct dp_packet *pkt, const struct conn *conn)
     store_addr_to_key(&addr, &nli->rev_key, nai->nat_action);
 }
 
-static struct conn *
-ctd_nat_conn_alloc(struct conntrack *ct, struct conn *conn,
-                   const struct nat_action_info_t *nai,
-                   struct nat_lookup_info *nli)
+void
+ctd_nat_candidate(struct dp_packet *pkt)
 {
-    struct conn *nat_conn;
+    const struct nat_action_info_t *nat_action_info;
+    struct ctd_msg *m = &pkt->cme.hdr;
+    struct ctd_exec *e = &pkt->cme.e;
+    struct nat_lookup_info *nli;
+    struct conn *nat_conn = NULL;
+    struct conn_lookup_ctx *ctx;
+    struct conntrack *ct;
+    struct conn *nc;
+    bool nat_res;
 
-    if (!ctd_nat_get_unique_tuple(ct, conn, nai, nli)) {
+    ct = m->ct;
+    nat_action_info = e->nat_action_info_ref;
+    ctx = &e->ct_lookup_ctx;
+    nli = &e->nli;
+
+    nc = ctx->conn;
+
+    nat_res = ctd_nat_get_candidate_tuple(ct, nc, nat_action_info, m, nli);
+    if (m->msg_type != CTD_MSG_NAT_CANDIDATE_RESPONSE) {
+        /* In case the tuple is not valid, but still the search is not
+         * exhausted, try a new tuple. Send it to the relevant thread.
+         */
+        ctd_msg_dest_set(m, nli->hash);
+        ctd_msg_fate_set(m, CTD_MSG_FATE_CTD);
+        return;
+    }
+
+    /* Search is exhausted. Send it back with a NULL nat-conn as a response. */
+    if (!nat_res) {
         /* This would be a user error or a DOS attack.  A user error is prevented
          * by allocating enough combinations of NAT addresses when combined with
          * ephemeral ports.  A DOS attack should be protected against with
@@ -3380,15 +3453,19 @@ ctd_nat_conn_alloc(struct conntrack *ct, struct conn *conn,
         static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 5);
         VLOG_WARN_RL(&rl, "Unable to NAT due to tuple space exhaustion - "
                      "if DoS attack, use firewalling and/or zone partitioning.");
-        return NULL;
+        ctd_msg_fate_set(m, CTD_MSG_FATE_PMD);
+        return;
     }
 
     nat_conn = xzalloc(sizeof *nat_conn);
-    memcpy(nat_conn, conn, sizeof *nat_conn);
+    memcpy(nat_conn, nc, sizeof *nat_conn);
     /* Update conn with nat adjustments. */
-    memcpy(&conn->rev_key, &nli->rev_key, sizeof conn->rev_key);
+    memcpy(&nc->rev_key, &nli->rev_key, sizeof nc->rev_key);
+    ctd_nat_conn_init(pkt, nc, nat_conn);
 
-    return nat_conn;
+    nli->nat_conn = nat_conn;
+    ctd_msg_dest_set(m, ctx->hash);
+    ctd_msg_fate_set(m, CTD_MSG_FATE_CTD);
 }
 
 void
@@ -3401,6 +3478,12 @@ ctd_conn_clean(struct ctd_conn_clean_msg *msg)
 
     ct = m->ct;
     conn = msg->conn;
+
+    /* If the connection is pending for a nat response, pend its cleaning. */
+    if (conn->reordering) {
+        ctd_msg_fate_set(&msg->hdr, CTD_MSG_FATE_SELF);
+        return;
+    }
 
     if (conn->conn_type == CT_CONN_TYPE_UN_NAT) {
         conn_lock(conn);

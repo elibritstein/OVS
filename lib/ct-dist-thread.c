@@ -145,6 +145,10 @@ ct_thread_main(void *arg)
             pkt = CONTAINER_OF(m, struct dp_packet, cme);
             ctd_conntrack_execute(pkt);
             break;
+        case CTD_MSG_NAT_CANDIDATE:
+            pkt = CONTAINER_OF(m, struct dp_packet, cme);
+            ctd_nat_candidate(pkt);
+            break;
         case CTD_MSG_CLEAN:
             clean_msg = CONTAINER_OF(m, struct ctd_conn_clean_msg, hdr);
             ctd_conn_clean(clean_msg);
