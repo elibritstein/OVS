@@ -6363,6 +6363,7 @@ dpif_show_backer(const struct dpif_backer *backer, struct ds *ds)
     for (i = 0; i < shash_count(&ofproto_shash); i++) {
         struct ofproto_dpif *ofproto = ofprotos[i]->data;
         const struct shash_node **ports;
+        uint64_t n_flows;
         size_t j;
 
         if (ofproto->backer != backer) {
@@ -6405,6 +6406,34 @@ dpif_show_backer(const struct dpif_backer *backer, struct ds *ds)
             ds_put_char(ds, '\n');
         }
         free(ports);
+
+        if (!dpif_get_n_offloaded_flows(backer->dpif, &n_flows)) {
+            struct pkt_stats stats;
+            double bytes_ratio;
+            double pkts_ratio;
+
+            ofproto_get_pkt_stats(&ofproto->up, &stats);
+
+            pkts_ratio = 0.0;
+            if (stats.n_packets != 0.0) {
+                pkts_ratio = (double) stats.n_offload_packets /
+                             (double) stats.n_packets * 100.0;
+            }
+            bytes_ratio = 0.0;
+            if (stats.n_bytes != 0.0) {
+                bytes_ratio = (double) stats.n_offload_bytes /
+                              (double) stats.n_bytes * 100.0;
+            }
+            ds_put_format(ds, "  offloaded flows: %" PRIu64 "\n", n_flows);
+            ds_put_format(ds, "  offloaded packets: %.2lf%% "
+                          "(%"PRIu64"/%"PRIu64")\n", pkts_ratio,
+                          stats.n_offload_packets,
+                          stats.n_packets);
+            ds_put_format(ds, "  offloaded bytes: %.2lf%% "
+                          "(%"PRIu64"/%"PRIu64")\n", bytes_ratio,
+                          stats.n_offload_bytes,
+                          stats.n_bytes);
+        }
     }
     shash_destroy(&ofproto_shash);
     free(ofprotos);
