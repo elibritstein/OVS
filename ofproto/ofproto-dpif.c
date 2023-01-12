@@ -6149,8 +6149,8 @@ ofproto_unixctl_mcast_snooping_show(struct unixctl_conn *conn,
 /* Store the current ofprotos in 'ofproto_shash'.  Returns a sorted list
  * of the 'ofproto_shash' nodes.  It is the responsibility of the caller
  * to destroy 'ofproto_shash' and free the returned value. */
-static const struct shash_node **
-get_ofprotos(struct shash *ofproto_shash)
+const struct shash_node **
+ofproto_dpif_get_ofprotos(struct shash *ofproto_shash)
 {
     const struct ofproto_dpif *ofproto;
 
@@ -6174,7 +6174,7 @@ ofproto_unixctl_dpif_dump_dps(struct unixctl_conn *conn, int argc OVS_UNUSED,
     int i;
 
     shash_init(&ofproto_shash);
-    sorted_ofprotos = get_ofprotos(&ofproto_shash);
+    sorted_ofprotos = ofproto_dpif_get_ofprotos(&ofproto_shash);
     for (i = 0; i < shash_count(&ofproto_shash); i++) {
         const struct shash_node *node = sorted_ofprotos[i];
         ds_put_format(&ds, "%s\n", node->name);
@@ -6359,7 +6359,7 @@ dpif_show_backer(const struct dpif_backer *backer, struct ds *ds)
                   dpif_name(backer->dpif), dp_stats.n_hit, dp_stats.n_missed);
 
     shash_init(&ofproto_shash);
-    ofprotos = get_ofprotos(&ofproto_shash);
+    ofprotos = ofproto_dpif_get_ofprotos(&ofproto_shash);
     for (i = 0; i < shash_count(&ofproto_shash); i++) {
         struct ofproto_dpif *ofproto = ofprotos[i]->data;
         const struct shash_node **ports;
@@ -6466,7 +6466,7 @@ dpif_reset_backer_stats(struct dpif_backer *backer)
     size_t i;
 
     shash_init(&ofproto_shash);
-    ofprotos = get_ofprotos(&ofproto_shash);
+    ofprotos = ofproto_dpif_get_ofprotos(&ofproto_shash);
     for (i = 0; i < shash_count(&ofproto_shash); i++) {
         struct ofproto_dpif *ofproto = ofprotos[i]->data;
         struct pkt_stats stats;

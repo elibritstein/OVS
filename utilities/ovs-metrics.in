@@ -154,14 +154,14 @@ def metrics_watch():
 
     entries = [
         Entry('sw-pkts', 'packet',
-              ['ovs_vswitchd_datapath_packets_total',
-               'ovs_vswitchd_datapath_offloaded_packets_total'],
+              ['ovs_vswitchd_datapath_tx_packets_total',
+               'ovs_vswitchd_datapath_tx_offloaded_packets_total'],
               derive='sw-pps'),
         Entry('sw-conns', 'conn',
               ['ovs_vswitchd_conntrack_n_connections'],
               derive='sw-cps'),
         Entry('hw-pkts', 'packet',
-              ['ovs_vswitchd_datapath_offloaded_packets_total'],
+              ['ovs_vswitchd_datapath_tx_offloaded_packets_total'],
               derive='hw-pps'),
         Entry('hw-conns', 'conn',
               ['ovs_vswitchd_datapath_hw_offload_n_ct_bidir'],

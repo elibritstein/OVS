@@ -366,6 +366,9 @@ struct ofproto_dpif *ofproto_dpif_lookup_by_uuid(const struct uuid *uuid);
 
 ovs_version_t ofproto_dpif_get_tables_version(struct ofproto_dpif *);
 
+const struct shash_node **
+ofproto_dpif_get_ofprotos(struct shash *ofproto_shash);
+
 void ofproto_dpif_credit_table_stats(struct ofproto_dpif *, uint8_t table_id,
                                      uint64_t n_matches, uint64_t n_misses);
 

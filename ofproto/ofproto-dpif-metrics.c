@@ -54,13 +54,26 @@ enum {
     OF_DATAPATH_CACHE_HIT,
     OF_DATAPATH_MASK_HIT,
     OF_DATAPATH_N_MASKS,
+    OF_DATAPATH_PACKETS,
+    OF_DATAPATH_BYTES,
+    OF_DATAPATH_OFL_PACKETS,
+    OF_DATAPATH_OFL_BYTES,
+    OF_DATAPATH_TX_PACKETS,
+    OF_DATAPATH_TX_BYTES,
+    OF_DATAPATH_TX_OFL_PACKETS,
+    OF_DATAPATH_TX_OFL_BYTES,
 };
 
 static void
 datapath_read_value(double *values, void *it)
 {
     const struct dpif_backer *backer = it;
+    const struct shash_node **ofprotos;
     struct dpif_dp_stats dp_stats;
+    struct pkt_stats sum_tx_stats;
+    struct pkt_stats sum_stats;
+    struct shash ofproto_shash;
+    size_t i;
 
     dpif_get_dp_stats(backer->dpif, &dp_stats);
 
@@ -71,6 +84,36 @@ datapath_read_value(double *values, void *it)
     values[OF_DATAPATH_CACHE_HIT] = MAX_IS_ZERO(dp_stats.n_cache_hit);
     values[OF_DATAPATH_MASK_HIT] = MAX_IS_ZERO(dp_stats.n_mask_hit);
     values[OF_DATAPATH_N_MASKS] = MAX_IS_ZERO(dp_stats.n_masks);
+
+    memset(&sum_tx_stats, 0, sizeof sum_tx_stats);
+    memset(&sum_stats, 0, sizeof sum_stats);
+    shash_init(&ofproto_shash);
+    ofprotos = ofproto_dpif_get_ofprotos(&ofproto_shash);
+    for (i = 0; i < shash_count(&ofproto_shash); i++) {
+        struct ofproto_dpif *ofproto = ofprotos[i]->data;
+        struct pkt_stats stats;
+        struct pkt_stats tx_stats;
+
+        if (ofproto->backer != backer) {
+            continue;
+        }
+
+        ofproto_get_pkt_stats(&ofproto->up, &stats, &tx_stats);
+        pkt_stats_add(&sum_tx_stats, tx_stats);
+        pkt_stats_add(&sum_stats, stats);
+    }
+    shash_destroy(&ofproto_shash);
+    free(ofprotos);
+
+    values[OF_DATAPATH_PACKETS] = sum_stats.n_packets;
+    values[OF_DATAPATH_BYTES] = sum_stats.n_bytes;
+    values[OF_DATAPATH_OFL_PACKETS] = sum_stats.n_offload_packets;
+    values[OF_DATAPATH_OFL_BYTES] = sum_stats.n_offload_bytes;
+
+    values[OF_DATAPATH_TX_PACKETS] = sum_tx_stats.n_packets;
+    values[OF_DATAPATH_TX_BYTES] = sum_tx_stats.n_bytes;
+    values[OF_DATAPATH_TX_OFL_PACKETS] = sum_tx_stats.n_offload_packets;
+    values[OF_DATAPATH_TX_OFL_BYTES] = sum_tx_stats.n_offload_bytes;
 }
 
 METRICS_ENTRIES(foreach_dpif_backer, datapath_entries,
@@ -89,6 +132,24 @@ METRICS_ENTRIES(foreach_dpif_backer, datapath_entries,
         "Number of mega flow masks visited for flow table matches."),
     [OF_DATAPATH_N_MASKS] = METRICS_GAUGE(n_masks,
         "Number of mega flow masks."),
+    [OF_DATAPATH_PACKETS] = METRICS_COUNTER(packets,
+        "Number of packets processed in total on this datapath."),
+    [OF_DATAPATH_BYTES] = METRICS_COUNTER(bytes,
+        "Number of bytes processed in total on this datapath."),
+    [OF_DATAPATH_OFL_PACKETS] = METRICS_COUNTER(offloaded_packets,
+        "Number of packets processed in hardware on this datapath."),
+    [OF_DATAPATH_OFL_BYTES] = METRICS_COUNTER(offloaded_bytes,
+        "Number of bytes processed in hardware on this datapath."),
+    [OF_DATAPATH_TX_PACKETS] = METRICS_COUNTER(tx_packets,
+        "Number of packets emitted in total from this datapath."),
+    [OF_DATAPATH_TX_BYTES] = METRICS_COUNTER(tx_bytes,
+        "Number of bytes emitted in total from this datapath."),
+    [OF_DATAPATH_TX_OFL_PACKETS] = METRICS_COUNTER(tx_offloaded_packets,
+        "Total number of packets emitted from this datapath and fully "
+        "processed in hardware."),
+    [OF_DATAPATH_TX_OFL_BYTES] = METRICS_COUNTER(tx_offloaded_bytes,
+        "Total number of bytes emitted from this datapath and fully "
+        "processed in hardware."),
 );
 
 METRICS_DECLARE(udpif_entries);
