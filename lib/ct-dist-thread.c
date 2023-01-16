@@ -148,6 +148,10 @@ ct_thread_main(void *arg)
             ctd_msg_fate_set(m, CTD_MSG_FATE_TBD);
             mpsc_queue_insert(&pkt->cme.e.pmd->ct2pmd.queue, &m->node);
             break;
+        case CTD_MSG_FATE_CTD:
+            ctd_msg_fate_set(m, CTD_MSG_FATE_TBD);
+            ctd_send_msg_to_thread(m, ctd_h2tid(m->dest_hash));
+            break;
         }
 
         /* Do RCU synchronization at fixed interval. */

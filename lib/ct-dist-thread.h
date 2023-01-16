@@ -50,11 +50,13 @@ static const char * const ctd_msg_type_str[] = {
 enum ctd_msg_fate_type {
     CTD_MSG_FATE_TBD,
     CTD_MSG_FATE_PMD,
+    CTD_MSG_FATE_CTD,
 };
 
 static const char * const ctd_msg_fate_type_str[] = {
     [CTD_MSG_FATE_TBD] = "FATE_TBD",
     [CTD_MSG_FATE_PMD] = "FATE_PMD",
+    [CTD_MSG_FATE_CTD] = "FATE_CTD",
 };
 
 struct ctd_msg {
@@ -63,6 +65,7 @@ struct ctd_msg {
     enum ctd_msg_type msg_type;
     enum ctd_msg_fate_type msg_fate;
     struct conntrack *ct;
+    uint32_t dest_hash;
 };
 
 struct nat_lookup_info {
