@@ -53,12 +53,14 @@ enum ctd_msg_fate_type {
     CTD_MSG_FATE_TBD,
     CTD_MSG_FATE_PMD,
     CTD_MSG_FATE_CTD,
+    CTD_MSG_FATE_SELF,
 };
 
 static const char * const ctd_msg_fate_type_str[] = {
     [CTD_MSG_FATE_TBD] = "FATE_TBD",
     [CTD_MSG_FATE_PMD] = "FATE_PMD",
     [CTD_MSG_FATE_CTD] = "FATE_CTD",
+    [CTD_MSG_FATE_SELF] = "FATE_SELF",
 };
 
 struct ctd_msg {

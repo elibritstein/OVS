@@ -153,6 +153,10 @@ ct_thread_main(void *arg)
             ctd_msg_fate_set(m, CTD_MSG_FATE_TBD);
             ctd_send_msg_to_thread(m, ctd_h2tid(m->dest_hash));
             break;
+        case CTD_MSG_FATE_SELF:
+            ctd_msg_fate_set(m, CTD_MSG_FATE_TBD);
+            ctd_send_msg_to_thread(m, ct_thread_id());
+            break;
         }
 
         /* Do RCU synchronization at fixed interval. */
