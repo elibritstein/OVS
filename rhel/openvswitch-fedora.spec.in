@@ -143,7 +143,7 @@ License: ASL 2.0
 This provides shared library, libopenswitch.so and the openvswitch header
 files needed to build an external application.
 
-%if 0%{?rhel} > 7 || 0%{?fedora} > 28
+%if 0%{?rhel} == 8 || 0%{?fedora} > 28
 %package -n network-scripts-%{name}
 Summary: Open vSwitch legacy network service support
 License: ASL 2.0
