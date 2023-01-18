@@ -2872,12 +2872,12 @@ create_rte_flow(struct netdev *netdev,
         if (!VLOG_DROP_DBG(&rl)) {
             dump_flow(&s, &s_extra, attr, flow_patterns, flow_actions);
             extra_str = ds_cstr(&s_extra);
-            VLOG_DBG_RL(&rl, "%s: rte_flow 0x%"PRIxPTR" %s  flow create %d %s",
-                        netdev_get_name(netdev), (intptr_t) flow, extra_str,
+            VLOG_DBG_RL(&rl, "%s: %s  flow create %d user_id 0x%"PRIxPTR" %s",
+                        netdev_get_name(netdev), extra_str,
                         attr->transfer
                         ? netdev_dpdk_get_esw_mgr_port_id(netdev)
                         : netdev_dpdk_get_port_id(netdev),
-                        ds_cstr(&s));
+                        (intptr_t) flow, ds_cstr(&s));
         }
     } else {
         enum vlog_level level = VLL_WARN;
@@ -3149,17 +3149,18 @@ netdev_offload_dpdk_destroy_flow(struct netdev *netdev,
 
     ret = netdev_dpdk_rte_flow_destroy(netdev, rte_flow, &error, is_esw);
     if (!ret) {
-        VLOG_DBG_RL(&rl, "%s: rte_flow 0x%"PRIxPTR " flow destroy %d ufid "
-                    UUID_FMT, netdev_get_name(netdev), (intptr_t) rte_flow,
+        VLOG_DBG_RL(&rl, "%s: flow destroy %d user_id rule 0x%"PRIxPTR" ufid "
+                    UUID_FMT, netdev_get_name(netdev),
                     is_esw ? netdev_dpdk_get_esw_mgr_port_id(netdev)
                            : netdev_dpdk_get_port_id(netdev),
+                    (intptr_t) rte_flow,
                     UUID_ARGS(ufid ? (struct uuid *) ufid : &ufid0));
     } else {
-        VLOG_ERR("Failed flow destroy: %s: rte_flow 0x%"PRIxPTR
-                 "flow destroy %d ufid " UUID_FMT "%s (%u)",
-                 netdev_get_name(netdev), (intptr_t) rte_flow,
+        VLOG_ERR("Failed: %s: flow destroy %d user_id rule 0x%"PRIxPTR" ufid "
+                 UUID_FMT " %s (%u)", netdev_get_name(netdev),
                  is_esw ? netdev_dpdk_get_esw_mgr_port_id(netdev)
                         : netdev_dpdk_get_port_id(netdev),
+                 (intptr_t) rte_flow,
                  UUID_ARGS(ufid ? (struct uuid *) ufid : &ufid0),
                  error.message, error.type);
         return -1;
