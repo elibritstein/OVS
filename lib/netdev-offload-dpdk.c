@@ -2168,10 +2168,10 @@ dump_flow_pattern(struct ds *s,
             if (!icmp_mask) {
                 icmp_mask = &rte_flow_item_icmp_mask;
             }
-            DUMP_PATTERN_ITEM(icmp_mask->hdr.icmp_type, false, "icmp_type",
+            DUMP_PATTERN_ITEM(icmp_mask->hdr.icmp_type, false, "type",
                               "%"PRIu8, icmp_spec->hdr.icmp_type,
                               icmp_mask->hdr.icmp_type, 0);
-            DUMP_PATTERN_ITEM(icmp_mask->hdr.icmp_code, false, "icmp_code",
+            DUMP_PATTERN_ITEM(icmp_mask->hdr.icmp_code, false, "code",
                               "%"PRIu8, icmp_spec->hdr.icmp_code,
                               icmp_mask->hdr.icmp_code, 0);
         }
