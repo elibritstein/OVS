@@ -6286,13 +6286,13 @@ netdev_offload_dpdk_ct_counter_query(struct netdev *netdev,
 
 static void
 fixed_rule_uninit(struct netdev *netdev, unsigned int tid,
-                  struct fixed_rule *fr)
+                  struct fixed_rule *fr, bool is_esw)
 {
     if (fr->creation_tid != tid || !fr->flow) {
         return;
     }
 
-    netdev_offload_dpdk_destroy_flow(netdev, fr->flow, NULL, true);
+    netdev_offload_dpdk_destroy_flow(netdev, fr->flow, NULL, is_esw);
     fr->flow = NULL;
 }
 
@@ -6300,7 +6300,7 @@ static void
 ct_nat_miss_uninit(struct netdev *netdev, unsigned int tid,
                    struct fixed_rule *fr)
 {
-    fixed_rule_uninit(netdev, tid, fr);
+    fixed_rule_uninit(netdev, tid, fr, true);
 }
 
 static int
@@ -6333,7 +6333,7 @@ ct_zones_uninit(struct netdev *netdev, unsigned int tid,
             for (zone_id = MIN_ZONE_ID; zone_id <= MAX_ZONE_ID; zone_id++) {
                 fr = &data->zone_flows[nat][i][zone_id];
 
-                fixed_rule_uninit(netdev, tid, fr);
+                fixed_rule_uninit(netdev, tid, fr, true);
             }
         }
     }
@@ -6468,7 +6468,7 @@ static void
 hairpin_uninit(struct netdev *netdev, unsigned int tid,
                struct fixed_rule *fr)
 {
-    fixed_rule_uninit(netdev, tid, fr);
+    fixed_rule_uninit(netdev, tid, fr, false);
 }
 
 static int
