@@ -34,6 +34,10 @@ case "$1" in
         if [ -e "/etc/init/openvswitch-force-reload-kmod.conf" ]; then
             rm /etc/init/openvswitch-force-reload-kmod.conf
         fi
+        missing_req="/etc/systemd/system/openvswitch-switch.service.requires/ovs-record-hostname.service"
+        if [ -L "$missing_req" -a ! -e "$missing_req" ]; then
+            rm "$missing_req"
+        fi
         ;;
 
     abort-upgrade|abort-remove|abort-deconfigure)
