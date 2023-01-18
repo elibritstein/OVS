@@ -3149,13 +3149,19 @@ netdev_offload_dpdk_destroy_flow(struct netdev *netdev,
 
     ret = netdev_dpdk_rte_flow_destroy(netdev, rte_flow, &error, is_esw);
     if (!ret) {
-        VLOG_DBG_RL(&rl, "%s: removed rte flow %p associated with ufid "
-                    UUID_FMT, netdev_get_name(netdev), rte_flow,
+        VLOG_DBG_RL(&rl, "%s: rte_flow 0x%"PRIxPTR " flow destroy %d ufid "
+                    UUID_FMT, netdev_get_name(netdev), (intptr_t) rte_flow,
+                    is_esw ? netdev_dpdk_get_esw_mgr_port_id(netdev)
+                           : netdev_dpdk_get_port_id(netdev),
                     UUID_ARGS(ufid ? (struct uuid *) ufid : &ufid0));
     } else {
-        VLOG_ERR("%s: Failed to destroy flow: %s (%u)",
-                 netdev_get_name(netdev), error.message,
-                 error.type);
+        VLOG_ERR("Failed flow destroy: %s: rte_flow 0x%"PRIxPTR
+                 "flow destroy %d ufid " UUID_FMT "%s (%u)",
+                 netdev_get_name(netdev), (intptr_t) rte_flow,
+                 is_esw ? netdev_dpdk_get_esw_mgr_port_id(netdev)
+                        : netdev_dpdk_get_port_id(netdev),
+                 UUID_ARGS(ufid ? (struct uuid *) ufid : &ufid0),
+                 error.message, error.type);
         return -1;
     }
 
@@ -5741,17 +5747,15 @@ netdev_offload_dpdk_remove_flows(struct ufid_to_rte_flow_data *rte_flow_data)
     if (ret == 0) {
         put_action_resources(&rte_flow_data->act_resources);
         ufid_to_rte_flow_disassociate(rte_flow_data);
-        VLOG_DBG_RL(&rl, "%s/%s: rte_flow 0x%"PRIxPTR"/0x%"PRIxPTR
-                    " flow destroy %d ufid " UUID_FMT,
+        VLOG_DBG_RL(&rl, "%s/%s: removed flows 0x%"PRIxPTR"/0x%"PRIxPTR
+                    " associated with ufid " UUID_FMT,
                     netdev_get_name(netdev), netdev_get_name(physdev),
                     (intptr_t) rte_flow_data->flow_item.rte_flow[0],
                     (intptr_t) rte_flow_data->flow_item.rte_flow[1],
-                    netdev_dpdk_get_port_id(physdev),
                     UUID_ARGS((struct uuid *) ufid));
     } else {
-        VLOG_ERR("Failed flow: %s/%s: flow destroy %d ufid " UUID_FMT,
+        VLOG_ERR("Failed flow destroy: %s/%s ufid " UUID_FMT,
                  netdev_get_name(netdev), netdev_get_name(physdev),
-                 netdev_dpdk_get_port_id(physdev),
                  UUID_ARGS((struct uuid *) ufid));
     }
 
