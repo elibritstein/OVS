@@ -102,6 +102,16 @@ pkt_stats_sub(struct pkt_stats *dst, struct pkt_stats src)
                                            src.n_offload_bytes);
 }
 
+static inline void
+pkt_stats_addmul(struct pkt_stats *dst, struct pkt_stats src, uint64_t n)
+{
+    src.n_packets = ovs_u64_safemul(src.n_packets, n);
+    src.n_bytes = ovs_u64_safemul(src.n_bytes, n);
+    src.n_offload_packets = ovs_u64_safemul(src.n_offload_packets, n);
+    src.n_offload_bytes = ovs_u64_safemul(src.n_offload_bytes, n);
+    pkt_stats_add(dst, src);
+}
+
 /* An OpenFlow switch.
  *
  * With few exceptions, ofproto implementations may look at these fields but
@@ -150,6 +160,7 @@ struct ofproto {
     /* List of flows to remove from flow tables. */
     struct rule_collection *to_remove OVS_GUARDED_BY(ofproto_mutex);
     struct pkt_stats removed_stats OVS_GUARDED_BY(ofproto_mutex);
+    struct pkt_stats removed_output_stats OVS_GUARDED_BY(ofproto_mutex);
 
     /* Meter table.  */
     struct ofputil_meter_features meter_features;
@@ -185,7 +196,8 @@ void ofproto_init_max_ports(struct ofproto *, uint16_t max_ports);
 /* Read the current packet stats of this ofproto.
  * It sums each currently existing rule packet stats as well
  * as past, removed rules. */
-enum ofperr ofproto_get_pkt_stats(struct ofproto *, struct pkt_stats *)
+enum ofperr ofproto_get_pkt_stats(struct ofproto *, struct pkt_stats *,
+                                  struct pkt_stats *)
     OVS_EXCLUDED(ofproto_mutex);
 
 struct ofproto *ofproto_lookup(const char *name);
@@ -509,10 +521,16 @@ struct rule_actions {
      * 'has_meter' is true if 'ofpacts' contains an OFPACT_METER action.
      *
      * 'has_learn_with_delete' is true if 'ofpacts' contains an OFPACT_LEARN
-     * action whose flags include NX_LEARN_F_DELETE_LEARNED. */
+     * action whose flags include NX_LEARN_F_DELETE_LEARNED.
+     *
+     * 'n_output' is set at least to 1 if any action output packets.
+     *            Then for each additional OFPACT_OUTPUT actions it is
+     *            incremented.
+     */
     bool has_meter;
     bool has_learn_with_delete;
     bool has_groups;
+    uint8_t n_output;
 
     /* Actions. */
     uint32_t ofpacts_len;         /* Size of 'ofpacts', in bytes. */

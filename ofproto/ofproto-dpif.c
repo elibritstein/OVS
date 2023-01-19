@@ -6412,7 +6412,7 @@ dpif_show_backer(const struct dpif_backer *backer, struct ds *ds)
             double bytes_ratio;
             double pkts_ratio;
 
-            ofproto_get_pkt_stats(&ofproto->up, &stats);
+            ofproto_get_pkt_stats(&ofproto->up, &stats, NULL);
             pkt_stats_sub(&stats, ofproto->stats_start);
 
             pkts_ratio = 0.0;
@@ -6475,7 +6475,7 @@ dpif_reset_backer_stats(struct dpif_backer *backer)
             continue;
         }
 
-        ofproto_get_pkt_stats(&ofproto->up, &stats);
+        ofproto_get_pkt_stats(&ofproto->up, &stats, NULL);
         ofproto->stats_start = stats;
     }
     shash_destroy(&ofproto_shash);

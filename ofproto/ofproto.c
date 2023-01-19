@@ -3181,6 +3181,8 @@ const struct rule_actions *
 rule_actions_create(const struct ofpact *ofpacts, size_t ofpacts_len)
 {
     struct rule_actions *actions;
+    bool has_output = false;
+    const struct ofpact *a;
 
     actions = xmalloc(sizeof *actions + ofpacts_len);
     actions->ofpacts_len = ofpacts_len;
@@ -3192,6 +3194,31 @@ rule_actions_create(const struct ofpact *ofpacts, size_t ofpacts_len)
          != NULL);
     actions->has_learn_with_delete = (next_learn_with_delete(actions, NULL)
                                       != NULL);
+
+    actions->n_output = 0;
+    OFPACT_FOR_EACH_FLATTENED (a, ofpacts, ofpacts_len) {
+        if (a->type == OFPACT_OUTPUT
+            || a->type == OFPACT_OUTPUT_TRUNC
+            || a->type == OFPACT_OUTPUT_REG) {
+            actions->n_output += 1;
+        }
+        if (a->type == OFPACT_OUTPUT
+            || a->type == OFPACT_OUTPUT_TRUNC
+            || a->type == OFPACT_OUTPUT_REG
+            || a->type == OFPACT_ENQUEUE
+            || a->type == OFPACT_CONTROLLER) {
+            has_output = true;
+        }
+    }
+    if (has_output && actions->n_output == 0) {
+        actions->n_output = 1;
+    }
+    /* Rules within a group are a rule set, not a rule list.
+     * It means if there are more than one 'output' action, only
+     * one of them will be executed. */
+    if (actions->has_groups && actions->n_output > 1) {
+        actions->n_output = 1;
+    }
 
     return actions;
 }
@@ -4517,6 +4544,10 @@ rules_mark_for_removal(struct ofproto *ofproto, struct rule_collection *rules,
 
             ofproto->ofproto_class->rule_get_stats(rule, &stats, &used);
             pkt_stats_add(&ofproto->removed_stats, stats);
+            if (rule->actions->n_output) {
+                pkt_stats_addmul(&ofproto->removed_output_stats, stats,
+                                 rule->actions->n_output);
+            }
         }
         rule_collection_add(ofproto->to_remove, rule);
     }
@@ -6247,9 +6278,12 @@ ofproto_rule_reduce_timeouts(struct rule *rule,
 }
 
 enum ofperr
-ofproto_get_pkt_stats(struct ofproto *ofproto, struct pkt_stats *stats)
+ofproto_get_pkt_stats(struct ofproto *ofproto,
+                      struct pkt_stats *stats,
+                      struct pkt_stats *output_stats)
     OVS_EXCLUDED(ofproto_mutex)
 {
+    struct pkt_stats removed_output_stats;
     struct pkt_stats removed_stats;
     struct rule_criteria criteria;
     struct rule_collection rules;
@@ -6271,6 +6305,7 @@ ofproto_get_pkt_stats(struct ofproto *ofproto, struct pkt_stats *stats)
         rule_collection_ref(&rules);
     }
     removed_stats = ofproto->removed_stats;
+    removed_output_stats = ofproto->removed_output_stats;
     ovs_mutex_unlock(&ofproto_mutex);
 
     if (error) {
@@ -6279,12 +6314,20 @@ ofproto_get_pkt_stats(struct ofproto *ofproto, struct pkt_stats *stats)
 
     *stats = removed_stats;
 
+    if (output_stats != NULL) {
+        *output_stats = removed_output_stats;
+    }
+
     RULE_COLLECTION_FOR_EACH (rule, &rules) {
         struct pkt_stats rule_stats;
         long long int used;
 
         ofproto->ofproto_class->rule_get_stats(rule, &rule_stats, &used);
         pkt_stats_add(stats, rule_stats);
+        if (output_stats != NULL && rule->actions->n_output) {
+            pkt_stats_addmul(output_stats, rule_stats,
+                             rule->actions->n_output);
+        }
     }
 
     rule_collection_unref(&rules);
