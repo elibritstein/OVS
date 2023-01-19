@@ -331,6 +331,11 @@ struct ofproto_dpif {
     struct ovs_mutex stats_mutex;
     struct netdev_stats stats OVS_GUARDED; /* To account packets generated and
                                             * consumed in userspace. */
+    struct pkt_stats stats_start; /* Packet stats starting point. Contains the
+                                   * 'up' ofproto stats when resetting from
+                                   * dpif perspective.
+                                   * Written and read from the main thread so
+                                   * no lock necessary. */
 
     /* Spanning tree. */
     struct stp *stp;

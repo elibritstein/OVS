@@ -6413,6 +6413,7 @@ dpif_show_backer(const struct dpif_backer *backer, struct ds *ds)
             double pkts_ratio;
 
             ofproto_get_pkt_stats(&ofproto->up, &stats);
+            pkt_stats_sub(&stats, ofproto->stats_start);
 
             pkts_ratio = 0.0;
             if (stats.n_packets != 0.0) {
@@ -6455,6 +6456,48 @@ ofproto_unixctl_dpif_show(struct unixctl_conn *conn, int argc OVS_UNUSED,
 
     unixctl_command_reply(conn, ds_cstr(&ds));
     ds_destroy(&ds);
+}
+
+static void
+dpif_reset_backer_stats(struct dpif_backer *backer)
+{
+    const struct shash_node **ofprotos;
+    struct shash ofproto_shash;
+    size_t i;
+
+    shash_init(&ofproto_shash);
+    ofprotos = get_ofprotos(&ofproto_shash);
+    for (i = 0; i < shash_count(&ofproto_shash); i++) {
+        struct ofproto_dpif *ofproto = ofprotos[i]->data;
+        struct pkt_stats stats;
+
+        if (ofproto->backer != backer) {
+            continue;
+        }
+
+        ofproto_get_pkt_stats(&ofproto->up, &stats);
+        ofproto->stats_start = stats;
+    }
+    shash_destroy(&ofproto_shash);
+    free(ofprotos);
+}
+
+static void
+ofproto_unixctl_dpif_reset_stats(struct unixctl_conn *conn,
+                                 int argc OVS_UNUSED,
+                                 const char *argv[] OVS_UNUSED,
+                                 void *aux OVS_UNUSED)
+{
+    const struct shash_node **backers;
+    int i;
+
+    backers = shash_sort(&all_dpif_backers);
+    for (i = 0; i < shash_count(&all_dpif_backers); i++) {
+        dpif_reset_backer_stats(backers[i]->data);
+    }
+    free(backers);
+
+    unixctl_command_reply(conn, "DPIF statistics reset.");
 }
 
 static void
@@ -6628,6 +6671,8 @@ ofproto_unixctl_init(void)
                              ofproto_unixctl_dpif_dump_dps, NULL);
     unixctl_command_register("dpif/show", "", 0, 0, ofproto_unixctl_dpif_show,
                              NULL);
+    unixctl_command_register("dpif/reset-stats", "", 0, 0,
+                             ofproto_unixctl_dpif_reset_stats, NULL);
     unixctl_command_register("dpif/show-dp-features", "bridge", 1, 1,
                              ofproto_unixctl_dpif_show_dp_features, NULL);
     unixctl_command_register("dpif/dump-flows",

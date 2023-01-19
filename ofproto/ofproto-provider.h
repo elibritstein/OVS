@@ -91,6 +91,17 @@ pkt_stats_add(struct pkt_stats *dst, struct pkt_stats src)
                                            src.n_offload_bytes);
 }
 
+static inline void
+pkt_stats_sub(struct pkt_stats *dst, struct pkt_stats src)
+{
+    dst->n_packets = ovs_u64_safesub(dst->n_packets, src.n_packets);
+    dst->n_bytes = ovs_u64_safesub(dst->n_bytes, src.n_bytes);
+    dst->n_offload_packets = ovs_u64_safesub(dst->n_offload_packets,
+                                             src.n_offload_packets);
+    dst->n_offload_bytes = ovs_u64_safesub(dst->n_offload_bytes,
+                                           src.n_offload_bytes);
+}
+
 /* An OpenFlow switch.
  *
  * With few exceptions, ofproto implementations may look at these fields but
