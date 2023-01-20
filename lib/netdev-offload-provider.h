@@ -18,6 +18,7 @@
 #ifndef NETDEV_FLOW_API_PROVIDER_H
 #define NETDEV_FLOW_API_PROVIDER_H 1
 
+#include "conntrack-offload.h"
 #include "flow.h"
 #include "netdev-offload.h"
 #include "openvswitch/netdev.h"
@@ -111,6 +112,20 @@ struct netdev_flow_api {
     /* Queries a CT counter object. */
     int (*ct_counter_query)(struct netdev *, uintptr_t, long long, long long,
                             struct dpif_flow_stats *);
+
+    /* Offload a connection on a netdev.
+     * Return 0 if successful, otherwise returns a positive errno value. */
+    int (*conn_add)(struct netdev *, struct ct_flow_offload_item *ct_offload);
+
+    /* Delete a connection offload from a netdev.
+     * Return 0 if successful, otherwise returns a positive errno value. */
+    int (*conn_del)(struct netdev *, struct ct_flow_offload_item *ct_offload);
+
+    /* Queries a connection offloaded on a netdev.
+     * Return 0 if successful, otherwise returns a positive errno value. */
+    int (*conn_stats)(struct netdev *, struct ct_flow_offload_item *ct_offload,
+                      struct dpif_flow_stats *, struct dpif_flow_attrs *,
+                      long long int);
 };
 
 int netdev_register_flow_api_provider(const struct netdev_flow_api *);

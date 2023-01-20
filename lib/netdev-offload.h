@@ -18,6 +18,7 @@
 #ifndef NETDEV_OFFLOAD_H
 #define NETDEV_OFFLOAD_H 1
 
+#include "conntrack-offload.h"
 #include "openvswitch/netdev.h"
 #include "openvswitch/types.h"
 #include "dp-packet.h"
@@ -180,6 +181,12 @@ char *netdev_flow_counter_key_to_string(const struct flows_counter_key *,
                                         char *, size_t);
 bool netdev_is_ct_labels_mapping_enabled(void);
 bool netdev_is_zone_tables_disabled(void);
+
+int netdev_conn_add(struct netdev *, struct ct_flow_offload_item[1]);
+int netdev_conn_del(struct netdev *, struct ct_flow_offload_item[1]);
+int netdev_conn_stats(struct netdev *, struct ct_flow_offload_item[1],
+                      struct dpif_flow_stats *, struct dpif_flow_attrs *,
+                      long long int);
 
 struct dpif_port;
 int netdev_ports_insert(struct netdev *, struct dpif_port *);

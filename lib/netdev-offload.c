@@ -326,6 +326,45 @@ netdev_flow_del(struct netdev *netdev, const ovs_u128 *ufid,
            : EOPNOTSUPP;
 }
 
+int
+netdev_conn_add(struct netdev *netdev,
+                struct ct_flow_offload_item ct_offload[1])
+{
+    const struct netdev_flow_api *flow_api =
+        ovsrcu_get(const struct netdev_flow_api *, &netdev->flow_api);
+
+    return (flow_api && flow_api->conn_add)
+           ? flow_api->conn_add(netdev, ct_offload)
+           : EOPNOTSUPP;
+}
+
+int
+netdev_conn_del(struct netdev *netdev,
+                struct ct_flow_offload_item ct_offload[1])
+{
+    const struct netdev_flow_api *flow_api =
+        ovsrcu_get(const struct netdev_flow_api *, &netdev->flow_api);
+
+    return (flow_api && flow_api->conn_del)
+           ? flow_api->conn_del(netdev, ct_offload)
+           : EOPNOTSUPP;
+}
+
+int
+netdev_conn_stats(struct netdev *netdev,
+                  struct ct_flow_offload_item ct_offload[1],
+                  struct dpif_flow_stats *stats,
+                  struct dpif_flow_attrs *attrs,
+                  long long int now)
+{
+    const struct netdev_flow_api *flow_api =
+        ovsrcu_get(const struct netdev_flow_api *, &netdev->flow_api);
+
+    return (flow_api && flow_api->conn_stats)
+           ? flow_api->conn_stats(netdev, ct_offload, stats, attrs, now)
+           : EOPNOTSUPP;
+}
+
 static struct ovs_list *mark_release_lists;
 
 struct mark_release_item {
