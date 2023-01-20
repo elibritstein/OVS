@@ -4395,6 +4395,28 @@ add_set_flow_action__(struct flow_actions *actions,
     return 0;
 }
 
+static void
+add_full_set_action(struct flow_actions *actions,
+                    enum rte_flow_action_type type,
+                    const void *value, size_t size,
+                    struct act_vars *act_vars)
+{
+    void *spec;
+
+    spec = per_thread_xzalloc(size);
+    memcpy(spec, value, size);
+    add_flow_action(actions, type, spec);
+
+    if (type == RTE_FLOW_ACTION_TYPE_SET_IPV4_SRC ||
+        type == RTE_FLOW_ACTION_TYPE_SET_IPV4_DST ||
+        type == RTE_FLOW_ACTION_TYPE_SET_IPV6_SRC ||
+        type == RTE_FLOW_ACTION_TYPE_SET_IPV6_DST ||
+        type == RTE_FLOW_ACTION_TYPE_SET_TP_SRC ||
+        type == RTE_FLOW_ACTION_TYPE_SET_TP_DST) {
+        act_vars->pre_ct_tuple_rewrite |= act_vars->ct_mode == CT_MODE_NONE;
+    }
+}
+
 BUILD_ASSERT_DECL(sizeof(struct rte_flow_action_set_mac) ==
                   MEMBER_SIZEOF(struct ovs_key_ethernet, eth_src));
 BUILD_ASSERT_DECL(sizeof(struct rte_flow_action_set_mac) ==
@@ -6585,178 +6607,312 @@ ct_tables_init(struct netdev *netdev, unsigned int tid)
     return 0;
 }
 
-static void
-fill_ct_match(struct match *match, const struct ct_match *ct_match)
+static int
+conn_build_patterns(struct netdev *netdev,
+                    const struct ct_match *ct_match,
+                    struct flow_patterns *patterns,
+                    struct act_resources *act_resources,
+                    struct act_vars *act_vars)
 {
-    memset(match, 0, sizeof *match);
+    struct rte_flow_item_port_id *port_id_spec;
+    uint8_t proto = 0;
+
+    act_vars->ct_mode = CT_MODE_CT_CONN;
+    act_vars->is_ct_conn = true;
+
+    patterns->physdev = netdev;
+
+    port_id_spec = per_thread_xzalloc(sizeof *port_id_spec);
+    port_id_spec->id = netdev_dpdk_get_port_id(patterns->physdev);
+    add_flow_pattern(patterns, RTE_FLOW_ITEM_TYPE_PORT_ID, port_id_spec,
+                     NULL, NULL);
+
+    add_flow_pattern(patterns, RTE_FLOW_ITEM_TYPE_ETH, NULL, NULL, NULL);
+
+    /* IPv4 */
     if (ct_match->key.dl_type == htons(ETH_TYPE_IP)) {
-        /* Fill in ipv4 5-tuples */
-        match->flow.nw_src = ct_match->key.src.addr.ipv4;
-        match->flow.nw_dst = ct_match->key.dst.addr.ipv4;
-        match->wc.masks.nw_src = OVS_BE32_MAX;
-        match->wc.masks.nw_dst = OVS_BE32_MAX;
+        struct rte_flow_item_ipv4 *spec, *mask;
+
+        spec = per_thread_xzalloc(sizeof *spec);
+        mask = per_thread_xzalloc(sizeof *spec);
+
+        spec->hdr.src_addr = ct_match->key.src.addr.ipv4;
+        spec->hdr.dst_addr = ct_match->key.dst.addr.ipv4;
+        spec->hdr.next_proto_id = ct_match->key.nw_proto;
+
+        mask->hdr.src_addr = OVS_BE32_MAX;
+        mask->hdr.dst_addr = OVS_BE32_MAX;
+        mask->hdr.next_proto_id = UINT8_MAX;
+
+        add_flow_pattern(patterns, RTE_FLOW_ITEM_TYPE_IPV4, spec, mask, NULL);
+
+        /* Save proto for L4 protocol setup. */
+        proto = spec->hdr.next_proto_id;
+    }
+
+    /* IPv6 */
+    if (ct_match->key.dl_type == htons(ETH_TYPE_IPV6)) {
+        struct rte_flow_item_ipv6 *spec, *mask;
+
+        spec = per_thread_xzalloc(sizeof *spec);
+        mask = per_thread_xzalloc(sizeof *mask);
+
+        memcpy(spec->hdr.src_addr, &ct_match->key.src.addr.ipv6,
+               sizeof spec->hdr.src_addr);
+        memcpy(spec->hdr.dst_addr, &ct_match->key.dst.addr.ipv6,
+               sizeof spec->hdr.dst_addr);
+        spec->hdr.proto = ct_match->key.nw_proto;
+
+        memset(&mask->hdr.src_addr, 0xff, sizeof mask->hdr.src_addr);
+        memset(&mask->hdr.dst_addr, 0xff, sizeof mask->hdr.dst_addr);
+        mask->hdr.proto = UINT8_MAX;
+
+        add_flow_pattern(patterns, RTE_FLOW_ITEM_TYPE_IPV6, spec, mask, NULL);
+
+        /* Save proto for L4 protocol setup. */
+        proto = spec->hdr.proto;
+    }
+
+    if (proto == IPPROTO_TCP) {
+        struct rte_flow_item_tcp *spec, *mask;
+
+        spec = per_thread_xzalloc(sizeof *spec);
+        mask = per_thread_xzalloc(sizeof *mask);
+
+        spec->hdr.src_port  = ct_match->key.src.port;
+        spec->hdr.dst_port  = ct_match->key.dst.port;
+
+        mask->hdr.src_port  = OVS_BE16_MAX;
+        mask->hdr.dst_port  = OVS_BE16_MAX;
+        /* Any segment syn, rst or fin must miss and go to SW to trigger
+         * a connection state change. */
+        mask->hdr.tcp_flags = (TCP_SYN | TCP_RST | TCP_FIN) & 0xff;
+
+        add_flow_pattern(patterns, RTE_FLOW_ITEM_TYPE_TCP, spec, mask, NULL);
+    } else if (proto == IPPROTO_UDP) {
+        struct rte_flow_item_udp *spec, *mask;
+
+        spec = per_thread_xzalloc(sizeof *spec);
+        mask = per_thread_xzalloc(sizeof *mask);
+
+        spec->hdr.src_port  = ct_match->key.src.port;
+        spec->hdr.dst_port  = ct_match->key.dst.port;
+
+        mask->hdr.src_port  = OVS_BE16_MAX;
+        mask->hdr.dst_port  = OVS_BE16_MAX;
+
+        add_flow_pattern(patterns, RTE_FLOW_ITEM_TYPE_UDP, spec, mask, NULL);
     } else {
-        /* Fill in ipv6 5-tuples */
-        memcpy(&match->flow.ipv6_src,
-               &ct_match->key.src.addr.ipv6,
-               sizeof match->flow.ipv6_src);
-        memcpy(&match->flow.ipv6_dst,
-               &ct_match->key.dst.addr.ipv6,
-               sizeof match->flow.ipv6_dst);
-        memset(&match->wc.masks.ipv6_src, 0xFF,
-                sizeof match->wc.masks.ipv6_src);
-        memset(&match->wc.masks.ipv6_dst, 0xFF,
-                sizeof match->wc.masks.ipv6_dst);
+        VLOG_ERR_RL(&rl, "Unsupported L4 protocol: 0x02%" PRIx8, proto);
+        return -1;
     }
-    match->flow.dl_type = ct_match->key.dl_type;
-    match->flow.nw_proto = ct_match->key.nw_proto;
-    match->wc.masks.dl_type = OVS_BE16_MAX;
-    match->wc.masks.nw_proto = UINT8_MAX;
-    if (match->flow.nw_proto == IPPROTO_TCP) {
-        match->wc.masks.tcp_flags = htons(TCP_SYN | TCP_RST | TCP_FIN);
+
+    if (get_zone_id(ct_match->key.zone,
+                    &act_resources->ct_match_zone_id)) {
+        VLOG_ERR_RL(&rl, "Unable to find the offload zone id mapped to the "
+                    "CT zone %" PRIu16, ct_match->key.zone);
+        return -1;
     }
-    if (match->flow.nw_proto == IPPROTO_TCP ||
-        match->flow.nw_proto == IPPROTO_UDP) {
-        match->flow.tp_src = ct_match->key.src.port;
-        match->flow.tp_dst = ct_match->key.dst.port;
-        match->wc.masks.tp_src = OVS_BE16_MAX;
-        match->wc.masks.tp_dst = OVS_BE16_MAX;
+
+    if (add_pattern_match_reg_field(patterns,
+                                    REG_FIELD_CT_ZONE,
+                                    act_resources->ct_match_zone_id,
+                                    reg_fields[REG_FIELD_CT_ZONE].mask)) {
+        VLOG_ERR_RL(&rl, "Failed to add the CT zone %"PRIu16" register match",
+                    ct_match->key.zone);
+        return -1;
     }
-    match->flow.ct_zone = ct_match->key.zone;
-    match->wc.masks.ct_zone = UINT16_MAX;
-    match->flow.in_port.odp_port = ct_match->odp_port;
-    match->wc.masks.in_port.odp_port = u32_to_odp(UINT32_MAX);
+
+    add_flow_pattern(patterns, RTE_FLOW_ITEM_TYPE_END, NULL, NULL, NULL);
+    return 0;
 }
 
-static void
-set_ct_mark_labels_attr(struct ofpbuf *buf,
-                        uint16_t attr,
-                        void *offload_key,
-                        size_t size)
+static int
+conn_build_actions(struct netdev *netdev,
+                   struct ct_flow_offload_item ct_offload[1],
+                   struct flow_actions *actions,
+                   struct act_resources *act_resources,
+                   struct act_vars *act_vars)
 {
-    uint8_t *key, *mask;
+    struct flows_counter_key counter_id_key;
+    struct ct_miss_ctx miss_ctx;
+    struct indirect_ctx **pctx;
+    struct rte_flow_action *ia;
+    size_t size;
 
-    key = nl_msg_put_unspec_zero(buf, attr, 2 * size);
-    mask = key + size;
-    memcpy(key, offload_key, size);
-    memset(mask, 0xFF, size);
-}
+    if (add_count_action(netdev, actions, act_resources, act_vars)) {
+        return -1;
+    }
 
-static void
-create_ct_actions(struct ofpbuf *buf,
-                  struct ct_flow_offload_item *offload)
-{
-    size_t offset;
-    char helper[] = "offl,st(0x  ),id_key(0x                )";
-    char s[17];
-    char *end;
+    memset(&miss_ctx, 0, sizeof miss_ctx);
 
-    if (offload->nat.mod_flags) {
-        offset = nl_msg_start_nested(buf, OVS_ACTION_ATTR_SET_MASKED);
-        if (offload->ct_match.key.dl_type == htons(ETH_TYPE_IP)) {
-            struct ovs_key_ipv4 *ipv4_key = NULL, *ipv4_mask = NULL;
-
-            if (offload->nat.mod_flags & NAT_ACTION_SRC ||
-                offload->nat.mod_flags & NAT_ACTION_DST) {
-                ipv4_key = nl_msg_put_unspec_zero(buf, OVS_KEY_ATTR_IPV4,
-                                                  2 * sizeof *ipv4_key);
-                ipv4_mask = ipv4_key + 1;
+    /* NAT */
+    if (ct_offload->nat.mod_flags) {
+        if (ct_offload->ct_match.key.dl_type == htons(ETH_TYPE_IP)) {
+            /* IPv4 */
+            size = sizeof ct_offload->nat.key.src.addr.ipv4;
+            if (ct_offload->nat.mod_flags & NAT_ACTION_SRC) {
+                add_full_set_action(actions,
+                    RTE_FLOW_ACTION_TYPE_SET_IPV4_SRC,
+                    &ct_offload->nat.key.src.addr.ipv4, size, act_vars);
             }
-            if (offload->nat.mod_flags & NAT_ACTION_SRC) {
-                ipv4_key->ipv4_src = offload->nat.key.src.addr.ipv4;
-                ipv4_mask->ipv4_src = OVS_BE32_MAX;
-            }
-            if (offload->nat.mod_flags & NAT_ACTION_DST) {
-                ipv4_key->ipv4_dst = offload->nat.key.dst.addr.ipv4;
-                ipv4_mask->ipv4_dst = OVS_BE32_MAX;
+            if (ct_offload->nat.mod_flags & NAT_ACTION_DST) {
+                add_full_set_action(actions,
+                    RTE_FLOW_ACTION_TYPE_SET_IPV4_DST,
+                    &ct_offload->nat.key.dst.addr.ipv4, size, act_vars);
             }
         } else {
-            struct ovs_key_ipv6 *ipv6_key = NULL, *ipv6_mask = NULL;
-
-            if (offload->nat.mod_flags & NAT_ACTION_SRC ||
-                offload->nat.mod_flags & NAT_ACTION_DST) {
-                ipv6_key = nl_msg_put_unspec_zero(buf, OVS_KEY_ATTR_IPV6,
-                                                  2 * sizeof *ipv6_key);
-                ipv6_mask = ipv6_key + 1;
+            /* IPv6 */
+            size = sizeof ct_offload->nat.key.src.addr.ipv6;
+            if (ct_offload->nat.mod_flags & NAT_ACTION_SRC) {
+                add_full_set_action(actions,
+                    RTE_FLOW_ACTION_TYPE_SET_IPV6_SRC,
+                    &ct_offload->nat.key.src.addr.ipv6, size, act_vars);
             }
-            if (offload->nat.mod_flags & NAT_ACTION_SRC) {
-                ipv6_key->ipv6_src = offload->nat.key.src.addr.ipv6;
-                memset(&ipv6_mask->ipv6_src, 0xFF, sizeof ipv6_mask->ipv6_src);
-            }
-            if (offload->nat.mod_flags & NAT_ACTION_DST) {
-                ipv6_key->ipv6_dst = offload->nat.key.dst.addr.ipv6;
-                memset(&ipv6_mask->ipv6_dst, 0xFF, sizeof ipv6_mask->ipv6_dst);
+            if (ct_offload->nat.mod_flags & NAT_ACTION_DST) {
+                add_full_set_action(actions,
+                    RTE_FLOW_ACTION_TYPE_SET_IPV6_DST,
+                    &ct_offload->nat.key.dst.addr.ipv6, size, act_vars);
             }
         }
-        if (offload->nat.mod_flags & NAT_ACTION_SRC_PORT ||
-            offload->nat.mod_flags & NAT_ACTION_DST_PORT) {
-            if (offload->ct_match.key.nw_proto == IPPROTO_TCP) {
-                struct ovs_key_tcp *tcp_key, *tcp_mask;
-
-                tcp_key = nl_msg_put_unspec_zero(buf, OVS_KEY_ATTR_TCP,
-                                                 2 * sizeof *tcp_key);
-                tcp_mask = tcp_key + 1;
-                if (offload->nat.mod_flags & NAT_ACTION_SRC_PORT) {
-                    tcp_key->tcp_src = offload->nat.key.src.port;
-                    tcp_mask->tcp_src = OVS_BE16_MAX;
-                }
-                if (offload->nat.mod_flags & NAT_ACTION_DST_PORT) {
-                    tcp_key->tcp_dst = offload->nat.key.dst.port;
-                    tcp_mask->tcp_dst = OVS_BE16_MAX;
-                }
+        /* TCP | UDP */
+        if (ct_offload->nat.mod_flags & NAT_ACTION_SRC_PORT ||
+            ct_offload->nat.mod_flags & NAT_ACTION_DST_PORT) {
+            size = sizeof ct_offload->nat.key.src.port;
+            if (ct_offload->nat.mod_flags & NAT_ACTION_SRC_PORT) {
+                add_full_set_action(actions,
+                    RTE_FLOW_ACTION_TYPE_SET_TP_SRC,
+                    &ct_offload->nat.key.src.port, size, act_vars);
             }
-            if (offload->ct_match.key.nw_proto == IPPROTO_UDP) {
-                struct ovs_key_udp *udp_key, *udp_mask;
-
-                udp_key = nl_msg_put_unspec_zero(buf, OVS_KEY_ATTR_UDP,
-                                                 2 * sizeof *udp_key);
-                udp_mask = udp_key + 1;
-                if (offload->nat.mod_flags & NAT_ACTION_SRC_PORT) {
-                    udp_key->udp_src = offload->nat.key.src.port;
-                    udp_mask->udp_src = OVS_BE16_MAX;
-                }
-                if (offload->nat.mod_flags & NAT_ACTION_DST_PORT) {
-                    udp_key->udp_dst = offload->nat.key.dst.port;
-                    udp_mask->udp_dst = OVS_BE16_MAX;
-                }
+            if (ct_offload->nat.mod_flags & NAT_ACTION_DST_PORT) {
+                add_full_set_action(actions,
+                    RTE_FLOW_ACTION_TYPE_SET_TP_DST,
+                    &ct_offload->nat.key.dst.port, size, act_vars);
             }
         }
-        nl_msg_end_nested(buf, offset);
     }
-    offset = nl_msg_start_nested(buf, OVS_ACTION_ATTR_CT);
-    set_ct_mark_labels_attr(buf, OVS_CT_ATTR_MARK,
-                            &offload->mark_key, sizeof(uint32_t));
-    set_ct_mark_labels_attr(buf, OVS_CT_ATTR_LABELS,
-                            &offload->label_key, sizeof(ovs_u128));
-    nl_msg_put_u16(buf, OVS_CT_ATTR_ZONE, offload->ct_match.key.zone);
 
-    end = helper;
-    ovs_strcat(helper, sizeof helper, &end, "offl,st(0x");
-    ovs_strcat(helper, sizeof helper, &end, u32_to_hex(s, offload->ct_state));
-    ovs_strcat(helper, sizeof helper, &end, "),id_key(0x");
-    ovs_strcat(helper, sizeof helper, &end, uintptr_to_hex(s,
-                                                           offload->ctid_key));
-    ovs_strcat(helper, sizeof helper, &end, ")");
+    /* CT MARK */
+    add_action_set_reg_field(actions, REG_FIELD_CT_MARK,
+                             ct_offload->mark_key,
+                             reg_fields[REG_FIELD_CT_MARK].mask);
+    miss_ctx.mark = ct_offload->mark_key;
 
-    nl_msg_put_string(buf, OVS_CT_ATTR_HELPER, helper);
-    nl_msg_end_nested(buf, offset);
+    /* CT LABEL */
+    if (netdev_offload_dpdk_ct_labels_mapping) {
+        if (get_label_id(&ct_offload->label_key,
+                         &act_resources->ct_action_label_id)) {
+            VLOG_ERR_RL(&rl, "Failed to generate a label ID");
+            return -1;
+        }
+        add_action_set_reg_field(actions, REG_FIELD_CT_LABEL_ID,
+                                 act_resources->ct_action_label_id,
+                                 reg_fields[REG_FIELD_CT_LABEL_ID].mask);
+    } else {
+        add_action_set_reg_field(actions, REG_FIELD_CT_LABEL_ID,
+                                 ct_offload->label_key.u32[0],
+                                 reg_fields[REG_FIELD_CT_LABEL_ID].mask);
+    }
+    memcpy(&miss_ctx.label, &ct_offload->label_key, sizeof miss_ctx.label);
+
+    /* CT ZONE */
+    /* Nothing to do beside matching. */
+
+    /* CT STATE */
+    miss_ctx.state = ct_offload->ct_state;
+    add_action_set_reg_field(actions, REG_FIELD_CT_STATE,
+                             miss_ctx.state, 0xFF);
+
+    /* Shared counter. */
+    memset(&counter_id_key, 0, sizeof counter_id_key);
+    counter_id_key.ptr_key = ct_offload->ctid_key;
+
+    pctx = get_indirect_count_ctx(netdev, &counter_id_key, true);
+    if (!pctx) {
+        VLOG_ERR("Could not set CT shared count");
+        return -1;
+    }
+    act_resources->pshared_count_ctx = pctx;
+    ia = &actions->actions[actions->shared_count_action_pos];
+    ovs_assert(ia->type == RTE_FLOW_ACTION_TYPE_INDIRECT &&
+               ia->conf == NULL);
+    ia->conf = (*pctx)->act_hdl;
+
+    act_vars->pre_ct_tuple_rewrite = false;
+    if (get_ct_ctx_id(&miss_ctx, &act_resources->ct_miss_ctx_id)) {
+        VLOG_ERR("Could not get a CT context ID");
+        return -1;
+    }
+    add_action_set_reg_field(actions, REG_FIELD_CT_CTX,
+                             act_resources->ct_miss_ctx_id,
+                             reg_fields[REG_FIELD_CT_CTX].mask);
+
+    /* Last CT action is to go to Post-CT. */
+    add_jump_action(actions, POSTCT_TABLE_ID);
+    add_flow_action(actions, RTE_FLOW_ACTION_TYPE_END, NULL);
+
+    return 0;
+}
+
+static int
+netdev_offload_dpdk_insert_conn(struct netdev *netdev,
+                                struct ct_flow_offload_item ct_offload[1],
+                                struct act_resources *act_resources,
+                                struct flow_item *fi)
+{
+    struct flow_patterns patterns = {
+        .items = NULL,
+        .cnt = 0,
+        .s_tnl = DS_EMPTY_INITIALIZER,
+    };
+    struct flow_actions actions = {
+        .actions = NULL,
+        .cnt = 0,
+        .s_tnl = DS_EMPTY_INITIALIZER,
+    };
+    struct rte_flow_attr flow_attr;
+    struct rte_flow_error error;
+    struct act_vars act_vars;
+    int ret;
+
+    memset(&act_vars, 0, sizeof act_vars);
+    act_vars.vport = ODPP_NONE;
+
+    ret = conn_build_patterns(netdev, &ct_offload->ct_match,
+                              &patterns, act_resources, &act_vars);
+    if (ret) {
+        goto free_patterns;
+    }
+
+    ret = conn_build_actions(netdev, ct_offload,
+                             &actions, act_resources, &act_vars);
+    if (ret) {
+        goto free_actions;
+    }
+
+    memset(&flow_attr, 0, sizeof flow_attr);
+    flow_attr.transfer = 1;
+
+    ret = netdev_offload_dpdk_flow_create(netdev,
+                                          &flow_attr, &patterns, &actions,
+                                          &error, act_resources, &act_vars,
+                                          fi);
+free_actions:
+    free_flow_actions(&actions, true);
+free_patterns:
+    free_flow_patterns(&patterns);
+
+    return ret;
 }
 
 static int
 netdev_offload_dpdk_conn_add(struct netdev *netdev,
                              struct ct_flow_offload_item ct_offload[1])
 {
+    struct act_resources act_resources = { .flow_id = INVALID_FLOW_MARK, };
     struct ufid_to_rte_flow_data *rte_flow_data;
     const ovs_u128 *ufid = &ct_offload->ufid;
-    struct offload_info info = {
-        .flow_mark = INVALID_FLOW_MARK,
-        .is_ct_conn = true,
-        .orig_in_port = ct_offload->ct_match.orig_in_port,
-    };
-    struct nlattr *actions;
-    size_t actions_size;
-    struct ofpbuf buf;
-    struct match match;
+    struct flow_item flow_item;
 
     do_context_delayed_release();
 
@@ -6766,22 +6922,19 @@ netdev_offload_dpdk_conn_add(struct netdev *netdev,
         return EEXIST;
     }
 
-    fill_ct_match(&match, &ct_offload->ct_match);
-    ofpbuf_init(&buf, 0);
-    create_ct_actions(&buf, ct_offload);
-    actions = ofpbuf_at_assert(&buf, 0, sizeof(struct nlattr));
-    actions_size = buf.size;
-
     per_thread_init();
 
-    rte_flow_data = netdev_offload_dpdk_add_flow(netdev, &match, actions,
-                                                 actions_size, ufid, &info);
-
-    ofpbuf_uninit(&buf);
-
-    if (!rte_flow_data) {
+    if (netdev_offload_dpdk_insert_conn(netdev, ct_offload,
+                                        &act_resources, &flow_item)) {
         return EINVAL;
     }
+
+    rte_flow_data = ufid_to_rte_flow_associate(ufid, netdev, netdev,
+                                               &flow_item, &act_resources);
+    /* Only way for insertion to fail is if the netdev has no map anymore,
+     * which should never happen. */
+    ovs_assert(rte_flow_data != NULL);
+
     return 0;
 }
 
