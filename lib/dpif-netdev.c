@@ -3917,22 +3917,32 @@ dp_netdev_ct_add(struct ct_flow_offload_item *ct_offload,
 }
 
 static int
-dp_netdev_ct_offload_del(struct ct_flow_offload_item *ct_offload)
+dp_netdev_ct_offload(struct ct_flow_offload_item *ct_offload)
 {
     struct dp_netdev *dp = ct_offload->dp;
     const char *dpif_type_str = dpif_normalize_type(dp->class->type);
-    struct netdev *port;
+    struct netdev *netdev;
     int ret;
 
-    port = netdev_ports_get(ct_offload->ct_match.odp_port, dpif_type_str);
-    if (!port) {
+    netdev = netdev_ports_get(ct_offload->ct_match.odp_port, dpif_type_str);
+    if (OVS_UNLIKELY(!netdev)) {
         return ENODEV;
     }
 
     ovs_rwlock_rdlock(&dp->port_rwlock);
-    ret = netdev_flow_del(port, &ct_offload->ufid, NULL);
+    switch (ct_offload->op) {
+    case DP_NETDEV_FLOW_OFFLOAD_OP_ADD:
+        ret = netdev_conn_add(netdev, ct_offload);
+        break;
+    case DP_NETDEV_FLOW_OFFLOAD_OP_DEL:
+        ret = netdev_conn_del(netdev, ct_offload);
+        break;
+    case DP_NETDEV_FLOW_OFFLOAD_OP_MOD:
+    default:
+        OVS_NOT_REACHED();
+    }
     ovs_rwlock_unlock(&dp->port_rwlock);
-    netdev_close(port);
+    netdev_close(netdev);
 
     return ret;
 }
@@ -3965,13 +3975,11 @@ dp_offload_ct(struct dp_offload_thread_item *item)
         switch (ct_offload[dir].op) {
         case DP_NETDEV_FLOW_OFFLOAD_OP_ADD:
             op = "add";
-            ret = dp_netdev_ct_add(&ct_offload[dir],
-                                   dp_netdev_ct_offload_add_cb);
-
+            ret = dp_netdev_ct_offload(&ct_offload[dir]);
             break;
         case DP_NETDEV_FLOW_OFFLOAD_OP_DEL:
             op = "delete";
-            ret = dp_netdev_ct_offload_del(&ct_offload[dir]);
+            ret = dp_netdev_ct_offload(&ct_offload[dir]);
             if (ret == ENODEV) {
                 /* If the port was previously deleted, its offloads
                  * have been flushed. Count as deletion. */
@@ -4270,27 +4278,28 @@ dp_netdev_ct_offload_del_item(struct ct_flow_offload_item *ct_offload)
 }
 
 static int
-dpif_netdev_get_flow_offload_status(const struct dp_netdev *dp,
-                                    struct dp_netdev_flow *netdev_flow,
-                                    struct dpif_flow_stats *stats,
-                                    struct dpif_flow_attrs *attrs,
-                                    long long now,
-                                    long long prev_now);
-static int
 dp_netdev_ct_offload_active(struct ct_flow_offload_item *offload,
                             long long now, long long prev_now)
 {
-    struct dp_netdev_flow netdev_flow;
     struct dpif_flow_stats stats;
-    struct dpif_flow_attrs attrs;
+    const struct dp_netdev *dp;
+    struct netdev *netdev;
     int ret;
 
-    memset(&netdev_flow, 0, sizeof netdev_flow);
-    *CONST_CAST(odp_port_t *, &netdev_flow.flow.in_port.odp_port) =
-        offload->ct_match.odp_port;
-    *CONST_CAST(ovs_u128 *, &netdev_flow.mega_ufid) = offload->ufid;
-    ret = dpif_netdev_get_flow_offload_status(offload->dp, &netdev_flow,
-                                              &stats, &attrs, now, prev_now);
+    if (!netdev_is_flow_api_enabled()) {
+        return EINVAL;
+    }
+
+    dp = offload->dp;
+    netdev = netdev_ports_get(offload->ct_match.odp_port,
+                              dpif_normalize_type(dp->class->type));
+    if (!netdev) {
+        return ENODEV;
+    }
+
+    ret = netdev_conn_stats(netdev, offload, &stats, NULL, now);
+    netdev_close(netdev);
+
     if (ret) {
         return ret;
     }
