@@ -600,6 +600,31 @@ ovs_u128_is_superset(ovs_u128 super, ovs_u128 sub)
             uint_is_superset(super.u64.lo, sub.u64.lo));
 }
 
+static inline uint64_t
+ovs_u64_safeadd(uint64_t a, uint64_t b)
+{
+    return (UINT64_MAX - a < b) ? UINT64_MAX : a + b;
+}
+
+static inline uint64_t
+ovs_u64_safesub(uint64_t a, uint64_t b)
+{
+    return (a < b) ? 0 : a - b;
+}
+
+static inline uint64_t
+ovs_u64_safemul(uint64_t a, uint64_t b)
+{
+    static const uint64_t sqrt_u64_max = UINT64_C(1) << (64 / 2);
+
+    if ((a >= sqrt_u64_max || b >= sqrt_u64_max) &&
+        a > 0 && UINT64_MAX / a < b) {
+        return UINT64_MAX;
+    } else {
+        return a * b;
+    }
+}
+
 void xsleep(unsigned int seconds);
 void xnanosleep(uint64_t nanoseconds);
 

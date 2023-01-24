@@ -235,6 +235,11 @@ AT_KEYWORDS([sat math sat_math])
 AT_CHECK([ovstest test-util sat_math])
 AT_CLEANUP
 
+AT_SETUP([safe U64 operations])
+AT_KEYWORDS([math])
+AT_CHECK([ovstest test-util safe-u64])
+AT_CLEANUP
+
 AT_SETUP([snprintf])
 AT_CHECK([ovstest test-util snprintf])
 AT_CLEANUP

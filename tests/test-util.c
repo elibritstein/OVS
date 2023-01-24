@@ -1176,6 +1176,70 @@ test_sat_math(struct ovs_cmdl_context *ctx OVS_UNUSED)
     }
 }
 
+static void
+test_safe_u64(struct ovs_cmdl_context *ctx OVS_UNUSED)
+{
+    struct {
+        uint64_t       a,              b,           expected;
+    } add_cases[] = {
+        {              0,              0,                  0, },
+        {              1,              2,                  3, },
+        {              0,     UINT64_MAX,         UINT64_MAX, },
+        {     UINT64_MAX,              0,         UINT64_MAX, },
+        {             -1,              0,         UINT64_MAX, },
+        {             -1,             -1,         UINT64_MAX, },
+        { UINT64_MAX / 2, UINT64_MAX / 2,     UINT64_MAX - 1, },
+        {              2, UINT64_MAX / 2, UINT64_MAX / 2 + 2, },
+    },
+    sub_cases[] = {
+        {              0,              0,                  0, },
+        {              1,              2,                  0, },
+        {              0,     UINT64_MAX,                  0, },
+        {     UINT64_MAX,              0,         UINT64_MAX, },
+        {             -1,              0,         UINT64_MAX, },
+        {             -1,             -1,                  0, },
+        { UINT64_MAX / 2, UINT64_MAX / 2,                  0, },
+        {              2, UINT64_MAX / 2,                  0, },
+    },
+    mul_cases[] = {
+        {              0,              0,                  0, },
+        {              0,              2,                  0, },
+        {              1,              2,                  2, },
+        {              0,     UINT64_MAX,                  0, },
+        {     UINT64_MAX,              0,                  0, },
+        {             -1,              0,                  0, },
+        {              0,             -1,                  0, },
+        {             -1,             -1,         UINT64_MAX, },
+        {     4294967296,     4294967296,         UINT64_MAX, },
+        { UINT64_MAX / 2, UINT64_MAX / 2,         UINT64_MAX, },
+        {              2, UINT64_MAX / 2,     UINT64_MAX - 1, },
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(add_cases); i++) {
+        uint64_t a = add_cases[i].a;
+        uint64_t b = add_cases[i].b;
+        uint64_t expected = add_cases[i].expected;
+
+        ovs_assert(ovs_u64_safeadd(a, b) == expected);
+    }
+
+    for (size_t i = 0; i < ARRAY_SIZE(sub_cases); i++) {
+        uint64_t a = sub_cases[i].a;
+        uint64_t b = sub_cases[i].b;
+        uint64_t expected = sub_cases[i].expected;
+
+        ovs_assert(ovs_u64_safesub(a, b) == expected);
+    }
+
+    for (size_t i = 0; i < ARRAY_SIZE(mul_cases); i++) {
+        uint64_t a = mul_cases[i].a;
+        uint64_t b = mul_cases[i].b;
+        uint64_t expected = mul_cases[i].expected;
+
+        ovs_assert(ovs_u64_safemul(a, b) == expected);
+    }
+}
+
 #ifndef _WIN32
 static void
 test_file_name(struct ovs_cmdl_context *ctx)
@@ -1213,6 +1277,7 @@ static const struct ovs_cmdl_command commands[] = {
     {"ovs_scan", NULL, 0, 0, test_ovs_scan, OVS_RO},
     {"snprintf", NULL, 0, 0, test_snprintf, OVS_RO},
     {"sat_math", NULL, 0, 0, test_sat_math, OVS_RO},
+    {"safe-u64", NULL, 0, 0, test_safe_u64, OVS_RO},
 #ifndef _WIN32
     {"file_name", NULL, 1, INT_MAX, test_file_name, OVS_RO},
 #endif
