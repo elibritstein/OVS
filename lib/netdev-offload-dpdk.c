@@ -6139,6 +6139,21 @@ get_vport_netdev(const char *dpif_type,
     return aux.vport;
 }
 
+#define PKT_DUMP_MAX_LEN    80
+
+static void
+log_packet_err(struct netdev *netdev, struct dp_packet *pkt, char *str)
+{
+    struct ds s;
+
+    ds_init(&s);
+
+    VLOG_ERR("%s: %s. %s", netdev_get_name(netdev), str,
+             ds_cstr(dp_packet_ds_put_hex(&s, pkt, PKT_DUMP_MAX_LEN)));
+
+    ds_destroy(&s);
+}
+
 static int
 netdev_offload_dpdk_hw_miss_packet_recover(struct netdev *netdev,
                                            struct dp_packet *packet,
@@ -6162,7 +6177,7 @@ netdev_offload_dpdk_hw_miss_packet_recover(struct netdev *netdev,
             return 0;
         }
         if (find_sflow_ctx(sflow_id, &sflow_ctx)) {
-            VLOG_ERR("sFlow id %d is not found", sflow_id);
+            log_packet_err(netdev, packet, "sFlow id not found");
             return 0;
         }
         memcpy(sflow_attr->userdata, &sflow_ctx.cookie,
@@ -6178,7 +6193,7 @@ netdev_offload_dpdk_hw_miss_packet_recover(struct netdev *netdev,
         sflow_attr->userdata_len = sflow_ctx.sflow_attr.userdata_len;
         return EIO;
     } else if (find_flow_miss_ctx(flow_miss_ctx_id, &flow_miss_ctx)) {
-        VLOG_ERR("flow miss ctx id %d is not found", flow_miss_ctx_id);
+        log_packet_err(netdev, packet, "flow miss ctx id not found");
         return 0;
     }
 
@@ -6211,7 +6226,7 @@ netdev_offload_dpdk_hw_miss_packet_recover(struct netdev *netdev,
     }
     if (!get_packet_reg_field(packet, REG_FIELD_CT_CTX, &ct_ctx_id)) {
         if (find_ct_miss_ctx(ct_ctx_id, &ct_miss_ctx)) {
-            VLOG_ERR("ct ctx id %d is not found", ct_ctx_id);
+            log_packet_err(netdev, packet, "ct miss ctx id not found");
             return 0;
         }
         packet->md.ct_state = ct_miss_ctx.state;
