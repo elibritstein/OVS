@@ -2715,7 +2715,9 @@ dump_flow_action(struct ds *s, struct ds *s_extra,
         ds_put_format(s_extra, "flow indirect_action 0 create transfer"
                       " action_id %p action ",
                       actions->conf);
-        if (act_index == flow_actions->shared_age_action_pos) {
+        if (act_index == flow_actions->shared_age_action_pos &&
+            flow_actions->shared_count_action_pos !=
+            flow_actions->shared_age_action_pos) {
             ds_put_cstr(s_extra, "age timeout 0xffffff / end;");
         } else if (act_index == flow_actions->shared_count_action_pos) {
             ds_put_cstr(s_extra, "count / end;");
