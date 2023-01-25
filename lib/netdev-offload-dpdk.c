@@ -5934,16 +5934,24 @@ netdev_offload_dpdk_flow_get(struct netdev *netdev,
     if (!rte_flow_data->act_resources.pshared_count_ctx) {
         ret = netdev_dpdk_rte_flow_query_count(rte_flow_data->physdev,
                                            rte_flow, &query, &error);
+        if (ret) {
+            VLOG_DBG_RL(&rl, "%s: Failed to query ufid "UUID_FMT" flow: %p. "
+                        "%d (%s)", netdev_get_name(netdev),
+                        UUID_ARGS((struct uuid *) ufid), rte_flow,
+                        error.type, error.message);
+            goto out;
+        }
     } else {
         ctx = *rte_flow_data->act_resources.pshared_count_ctx;
         ret = netdev_dpdk_indirect_action_query(ctx->port_id, ctx->act_hdl,
                                                 &query, &error);
-    }
-    if (ret) {
-        VLOG_DBG_RL(&rl, "%s: Failed to query ufid "UUID_FMT" flow: %p",
-                    netdev_get_name(netdev), UUID_ARGS((struct uuid *) ufid),
-                    rte_flow);
-        goto out;
+        if (ret) {
+            VLOG_DBG_RL(&rl, "port-id=%d: Failed to query ufid "UUID_FMT
+                        " action %p. %d (%s)", ctx->port_id,
+                        UUID_ARGS((struct uuid *) ufid), ctx->act_hdl,
+                        error.type, error.message);
+            goto out;
+        }
     }
     rte_flow_data->stats.n_packets += (query.hits_set) ? query.hits : 0;
     rte_flow_data->stats.n_bytes += (query.bytes_set) ? query.bytes : 0;
