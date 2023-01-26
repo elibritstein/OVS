@@ -37,6 +37,7 @@
 
 struct dp_netdev_flow;
 struct dp_netdev_pmd_thread;
+struct ds;
 
 #ifdef  __cplusplus
 extern "C" {
@@ -752,6 +753,12 @@ dp_packet_set_allocated(struct dp_packet *b, uint16_t s)
     b->allocated_ = s;
 }
 
+static inline bool
+dp_packet_get_meta(const struct dp_packet *p OVS_UNUSED, uint32_t *meta OVS_UNUSED)
+{
+    return false;
+}
+
 #endif /* DPDK_NETDEV */
 
 static inline void
@@ -1157,6 +1164,9 @@ dp_packet_e2e_init(struct dp_packet *p)
     p->e2e_trace_flags = 0;
     p->e2e_trace_ct_ufids = 0;
 }
+
+struct ds *
+dp_packet_ds_put_hex(struct ds *s, struct dp_packet *b, uint32_t max_bytes);
 
 #ifdef  __cplusplus
 }

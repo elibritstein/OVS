@@ -506,3 +506,32 @@ dp_packet_resize_l2(struct dp_packet *b, int increment)
     dp_packet_adjust_layer_offset(&b->l2_5_ofs, increment);
     return dp_packet_data(b);
 }
+
+struct ds *
+dp_packet_ds_put_hex(struct ds *s, struct dp_packet *b, uint32_t max_bytes)
+{
+    uint32_t mark, meta;
+    uint32_t size, i;
+    uint8_t *p;
+
+    if (dp_packet_has_flow_mark(b, &mark)) {
+        ds_put_format(s, "mark=%"PRIu32", ", mark);
+    }
+    if (dp_packet_get_meta(b, &meta)) {
+        ds_put_format(s, "meta=%"PRIu32", ", meta);
+    }
+    size = dp_packet_size(b);
+    ds_put_format(s, "size=%"PRIu32". ", size);
+
+    ds_put_cstr(s, "Raw(hex_bytes('");
+    for (i = 0, p = dp_packet_data(b); i < MIN(size, max_bytes); i++, p++) {
+        ds_put_format(s, "%02"PRIx8, *p);
+    }
+    ds_put_cstr(s, "'))");
+
+    if (max_bytes < size) {
+        ds_put_format(s, "/Raw('\\x00' * %"PRIu32")", size - max_bytes);
+    }
+
+    return s;
+}
