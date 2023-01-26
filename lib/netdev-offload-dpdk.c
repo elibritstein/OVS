@@ -5396,6 +5396,164 @@ netdev_offload_dpdk_flow_create(struct netdev *netdev,
     return ret;
 }
 
+static void *
+find_vxlan_spec(struct vxlan_data *vxlan_data, enum rte_flow_item_type type)
+{
+    struct rte_flow_item *item;
+    int i;
+
+    for (i = 0, item = &vxlan_data->items[0]; i < TUNNEL_ITEMS_NUM;
+         i++, item++) {
+        if (item->type == type) {
+            return CONST_CAST(void *, item->spec);
+        }
+    }
+
+    return NULL;
+}
+
+static void *
+find_encap_spec(struct vxlan_data *vxlan_data,
+                struct raw_encap_data *raw_encap_data,
+                enum rte_flow_item_type type)
+{
+    void *rv;
+
+    if (vxlan_data) {
+        rv = find_vxlan_spec(vxlan_data, type);
+        if (rv == NULL) {
+            VLOG_DBG_RL(&rl, "Could not find vxlan spec type=%d", type);
+        }
+        return rv;
+    }
+
+    if (raw_encap_data) {
+        return NULL;
+    }
+
+    OVS_NOT_REACHED();
+}
+
+static void
+set_encap_field__(const void *value, void *hdr, void *mask, const size_t size)
+{
+    const uint8_t *v;
+    uint8_t *h, *m;
+    uint32_t i;
+
+    if (!mask) {
+        memcpy(hdr, value, size);
+        return;
+    }
+
+    for (i = 0, h = hdr, v = value, m = mask; i < size; i++) {
+        *h = (*h & ~*m) | (*v & *m);
+        h++;
+        v++;
+        *m++ = 0;
+    }
+}
+
+static int
+outer_encap_set_actions(struct vxlan_data *vxlan_data,
+                        struct raw_encap_data *raw_encap_data,
+                        const struct nlattr *set_actions,
+                        const size_t set_actions_len,
+                        bool masked)
+{
+    const struct nlattr *sa;
+    unsigned int sleft;
+
+#define set_encap_field(field, hdr)                                           \
+    set_encap_field__(&key->field, hdr,                                       \
+                    mask ? CONST_CAST(void *, &mask->field) : NULL,           \
+                    sizeof key->field)
+
+    NL_ATTR_FOR_EACH_UNSAFE (sa, sleft, set_actions, set_actions_len) {
+        if (nl_attr_type(sa) == OVS_KEY_ATTR_ETHERNET) {
+            const struct ovs_key_ethernet *key = nl_attr_get(sa);
+            const struct ovs_key_ethernet *mask = masked ? key + 1 : NULL;
+            struct rte_flow_item_eth *spec;
+
+            spec = find_encap_spec(vxlan_data, raw_encap_data,
+                                   RTE_FLOW_ITEM_TYPE_ETH);
+            if (!spec) {
+                return -1;
+            }
+
+            set_encap_field(eth_src, spec->src.addr_bytes);
+            set_encap_field(eth_dst, spec->dst.addr_bytes);
+
+            if (mask && !is_all_zeros(mask, sizeof *mask)) {
+                VLOG_DBG_RL(&rl, "Unsupported ETHERNET set action");
+                return -1;
+            }
+        } else if (nl_attr_type(sa) == OVS_KEY_ATTR_IPV4) {
+            const struct ovs_key_ipv4 *key = nl_attr_get(sa);
+            const struct ovs_key_ipv4 *mask = masked ? key + 1 : NULL;
+            struct rte_flow_item_ipv4 *spec;
+
+            spec = find_encap_spec(vxlan_data, raw_encap_data,
+                                   RTE_FLOW_ITEM_TYPE_IPV4);
+            if (!spec) {
+                return -1;
+            }
+
+            set_encap_field(ipv4_src, &spec->hdr.src_addr);
+            set_encap_field(ipv4_dst, &spec->hdr.dst_addr);
+            set_encap_field(ipv4_ttl, &spec->hdr.time_to_live);
+
+            if (mask && !is_all_zeros(mask, sizeof *mask)) {
+                VLOG_DBG_RL(&rl, "Unsupported IPv4 set action");
+                return -1;
+            }
+        } else if (nl_attr_type(sa) == OVS_KEY_ATTR_IPV6) {
+            const struct ovs_key_ipv6 *key = nl_attr_get(sa);
+            const struct ovs_key_ipv6 *mask = masked ? key + 1 : NULL;
+            struct rte_flow_item_ipv6 *spec;
+
+            spec = find_encap_spec(vxlan_data, raw_encap_data,
+                                   RTE_FLOW_ITEM_TYPE_IPV6);
+            if (!spec) {
+                return -1;
+            }
+
+            set_encap_field(ipv6_src, &spec->hdr.src_addr);
+            set_encap_field(ipv6_dst, &spec->hdr.dst_addr);
+            set_encap_field(ipv6_hlimit, &spec->hdr.hop_limits);
+
+            if (mask && !is_all_zeros(mask, sizeof *mask)) {
+                VLOG_DBG_RL(&rl, "Unsupported IPv6 set action");
+                return -1;
+            }
+        } else if (nl_attr_type(sa) == OVS_KEY_ATTR_UDP) {
+            const struct ovs_key_udp *key = nl_attr_get(sa);
+            const struct ovs_key_udp *mask = masked ? key + 1 : NULL;
+            struct rte_flow_item_udp *spec;
+
+            spec = find_encap_spec(vxlan_data, raw_encap_data,
+                                   RTE_FLOW_ITEM_TYPE_UDP);
+            if (!spec) {
+                return -1;
+            }
+
+            set_encap_field(udp_src, &spec->hdr.src_port);
+            set_encap_field(udp_dst, &spec->hdr.dst_port);
+
+            if (mask && !is_all_zeros(mask, sizeof *mask)) {
+                VLOG_DBG_RL(&rl, "Unsupported UDP set action");
+                return -1;
+            }
+        } else {
+            VLOG_DBG_RL(&rl,
+                        "Unsupported set action type %d", nl_attr_type(sa));
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
 static int
 parse_flow_actions(struct netdev *flowdev,
                    struct netdev *netdev,
@@ -5450,6 +5608,13 @@ parse_flow_actions(struct netdev *flowdev,
             const size_t set_actions_len = nl_attr_get_size(nla);
             bool masked = nl_attr_type(nla) == OVS_ACTION_ATTR_SET_MASKED;
 
+            if (vxlan_data || raw_encap_data) {
+                if (!outer_encap_set_actions(vxlan_data, raw_encap_data,
+                                             set_actions, set_actions_len,
+                                             masked)) {
+                    continue;
+                }
+            }
             if (parse_set_actions(actions, set_actions, set_actions_len,
                                   masked, act_vars)) {
                 return -1;
