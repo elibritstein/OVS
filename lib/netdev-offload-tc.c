@@ -301,7 +301,7 @@ del_filter_and_sgid(struct tcf_id *id)
 {
     sgid_free(id->sample_group_id);
     id->sample_group_id = 0;
-    return tc_del_filter(id);
+    return tc_del_flower_filter(id);
 }
 
 static bool
@@ -647,7 +647,7 @@ delete_chains_from_netdev(struct netdev *netdev, struct tcf_id *id)
          */
         HMAP_FOR_EACH_POP (chain_node, node, &map) {
             id->chain = chain_node->chain;
-            tc_del_filter(id);
+            tc_del_flower_filter(id);
             free(chain_node);
         }
     }
@@ -2765,13 +2765,13 @@ probe_multi_mask_per_prio(int ifindex)
 
     id2 = tc_make_tcf_id(ifindex, block_id, prio, TC_INGRESS);
     error = tc_replace_flower(&id2, &flower);
-    tc_del_filter(&id1);
+    tc_del_flower_filter(&id1);
 
     if (error) {
         goto out;
     }
 
-    tc_del_filter(&id2);
+    tc_del_flower_filter(&id2);
 
     multi_mask_per_prio = true;
     VLOG_INFO("probe tc: multiple masks on single tc prio is supported.");
@@ -2823,7 +2823,7 @@ probe_ct_state_support(int ifindex)
         goto out_del;
     }
 
-    tc_del_filter(&id);
+    tc_del_flower_filter(&id);
     ct_state_support = OVS_CS_F_NEW |
                        OVS_CS_F_ESTABLISHED |
                        OVS_CS_F_TRACKED |
@@ -2837,7 +2837,7 @@ probe_ct_state_support(int ifindex)
         goto out_del;
     }
 
-    tc_del_filter(&id);
+    tc_del_flower_filter(&id);
 
     /* Test for ct_state INVALID support */
     memset(&flower, 0, sizeof flower);
@@ -2848,7 +2848,7 @@ probe_ct_state_support(int ifindex)
         goto out;
     }
 
-    tc_del_filter(&id);
+    tc_del_flower_filter(&id);
     ct_state_support |= OVS_CS_F_INVALID;
 
     /* Test for ct_state REPLY support */
@@ -2864,7 +2864,7 @@ probe_ct_state_support(int ifindex)
     ct_state_support |= OVS_CS_F_REPLY_DIR;
 
 out_del:
-    tc_del_filter(&id);
+    tc_del_flower_filter(&id);
 out:
     tc_add_del_qdisc(ifindex, false, 0, TC_INGRESS);
     VLOG_INFO("probe tc: supported ovs ct_state bits: 0x%x", ct_state_support);
@@ -2939,7 +2939,7 @@ netdev_tc_init_flow_api(struct netdev *netdev)
 
     /* fallback here if delete chains fail */
     if (!get_chain_supported) {
-        tc_del_filter(&id);
+        tc_del_flower_filter(&id);
     }
 
     /* make sure there is no ingress/egress qdisc */
