@@ -5413,6 +5413,61 @@ find_vxlan_spec(struct vxlan_data *vxlan_data, enum rte_flow_item_type type)
 }
 
 static void *
+find_raw_encap_spec(struct raw_encap_data *raw_encap_data,
+                    enum rte_flow_item_type type)
+{
+    struct ovs_16aligned_ip6_hdr *ipv6;
+    struct udp_header *udp = NULL;
+    struct vlan_header *vlan;
+    struct eth_header *eth;
+    struct ip_header *ipv4;
+    uint8_t *next_hdr;
+    uint16_t proto;
+
+    eth = (struct eth_header *) raw_encap_data->conf.data;
+    if (type == RTE_FLOW_ITEM_TYPE_ETH) {
+        return eth;
+    }
+
+    next_hdr = (uint8_t *) (eth + 1);
+    proto = htons(eth->eth_type);
+    /* VLAN skipping */
+    while (eth_type_vlan(ntohs(proto))) {
+        vlan = (struct vlan_header *) next_hdr;
+        proto = htons(vlan->vlan_next_type);
+        next_hdr += sizeof *vlan;
+    }
+
+    if (proto == RTE_ETHER_TYPE_IPV4) {
+        ipv4 = (struct ip_header *) next_hdr;
+        if (type == RTE_FLOW_ITEM_TYPE_IPV4) {
+            return ipv4;
+        }
+        if (ipv4->ip_proto != IPPROTO_UDP) {
+            return NULL;
+        }
+        udp = (struct udp_header *) (ipv4 + 1);
+    }
+
+    if (proto == RTE_ETHER_TYPE_IPV6) {
+        ipv6 = (struct ovs_16aligned_ip6_hdr *) next_hdr;
+        if (type == RTE_FLOW_ITEM_TYPE_IPV6) {
+            return ipv6;
+        }
+        if (ipv6->ip6_nxt != IPPROTO_UDP) {
+            return NULL;
+        }
+        udp = (struct udp_header *) (ipv6 + 1);
+    }
+
+    if (udp && type == RTE_FLOW_ITEM_TYPE_UDP) {
+        return udp;
+    }
+
+    return NULL;
+}
+
+static void *
 find_encap_spec(struct vxlan_data *vxlan_data,
                 struct raw_encap_data *raw_encap_data,
                 enum rte_flow_item_type type)
@@ -5426,9 +5481,12 @@ find_encap_spec(struct vxlan_data *vxlan_data,
         }
         return rv;
     }
-
     if (raw_encap_data) {
-        return NULL;
+        rv = find_raw_encap_spec(raw_encap_data, type);
+        if (rv == NULL) {
+            VLOG_DBG_RL(&rl, "Could not find raw_encap spec type=%d", type);
+        }
+        return rv;
     }
 
     OVS_NOT_REACHED();
