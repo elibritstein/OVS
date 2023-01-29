@@ -91,13 +91,15 @@ datapath_read_value(double *values, void *it)
     ofprotos = ofproto_dpif_get_ofprotos(&ofproto_shash);
     for (i = 0; i < shash_count(&ofproto_shash); i++) {
         struct ofproto_dpif *ofproto = ofprotos[i]->data;
-        struct pkt_stats stats;
         struct pkt_stats tx_stats;
+        struct pkt_stats stats;
 
         if (ofproto->backer != backer) {
             continue;
         }
 
+        memset(&tx_stats, 0, sizeof tx_stats);
+        memset(&stats, 0, sizeof stats);
         ofproto_get_pkt_stats(&ofproto->up, &stats, &tx_stats);
         pkt_stats_add(&sum_tx_stats, tx_stats);
         pkt_stats_add(&sum_stats, stats);
