@@ -6322,6 +6322,7 @@ ofproto_get_pkt_stats(struct ofproto *ofproto,
         struct pkt_stats rule_stats;
         long long int used;
 
+        memset(&rule_stats, 0, sizeof rule_stats);
         ofproto->ofproto_class->rule_get_stats(rule, &rule_stats, &used);
         pkt_stats_add(stats, rule_stats);
         if (output_stats != NULL && rule->actions->n_output) {
