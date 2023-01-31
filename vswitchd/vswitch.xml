@@ -263,6 +263,20 @@
         </p>
       </column>
 
+      <column name="other_config" key="doca-init"
+              type='{"type": "boolean"}'>
+        <p>
+          Set this value to true to enable doca-flow hw offload.
+        </p>
+        <p>
+          The default value is <code>false</code>. Changing this value requires
+          restarting the daemon.
+        </p>
+        <p>
+          This is only relevant for userspace datapath.
+        </p>
+      </column>
+
       <column name="other_config" key="tc-policy"
               type='{"type": "string",
                      "enum": ["set", ["none", "skip_sw", "skip_hw"]]}'>
@@ -798,6 +812,11 @@
         true and the DPDK library is successfully initialized.
       </column>
 
+      <column name="doca_initialized">
+        True if <ref column="other_config" key="doca-init"/> is set to
+        true and the DOCA library is successfully initialized.
+      </column>
+
       <group title="Statistics">
         <p>
           The <code>statistics</code> column contains key-value pairs that
@@ -984,6 +1003,12 @@
       <column name="dpdk_version">
         <p>
           The version of the linked DPDK library.
+        </p>
+      </column>
+
+      <column name="doca_version">
+        <p>
+          The version of the linked DOCA Flow library.
         </p>
       </column>
 

@@ -1,6 +1,6 @@
 {"name": "Open_vSwitch",
- "version": "8.3.0",
- "cksum": "3781850481 26690",
+ "version": "8.3.1",
+ "cksum": "3548195427 26858",
  "tables": {
    "Open_vSwitch": {
      "columns": {
@@ -56,6 +56,11 @@
        "dpdk_initialized": {
          "type": "boolean"},
        "dpdk_version": {
+         "type": {"key": {"type": "string"},
+                  "min": 0, "max": 1}},
+       "doca_initialized": {
+         "type": "boolean"},
+       "doca_version": {
          "type": {"key": {"type": "string"},
                   "min": 0, "max": 1}}},
      "isRoot": true,

@@ -277,6 +277,7 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/ovs-atomic-pthreads.h \
 	lib/ovs-atomic-x86_64.h \
 	lib/ovs-atomic.h \
+	lib/ovs-doca.h \
 	lib/ovs-lldp.c \
 	lib/ovs-lldp.h \
 	lib/ovs-numa.c \
@@ -519,6 +520,14 @@ lib_libopenvswitch_la_SOURCES += \
 else
 lib_libopenvswitch_la_SOURCES += \
 	lib/dpdk-stub.c
+endif
+
+if DOCA_OFFLOAD
+lib_libopenvswitch_la_SOURCES += \
+	lib/ovs-doca.c
+else
+lib_libopenvswitch_la_SOURCES += \
+	lib/ovs-doca-stub.c
 endif
 
 if WIN32
