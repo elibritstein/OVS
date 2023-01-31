@@ -3723,7 +3723,7 @@ do_foreach_revalidator(metrics_visitor_fn visitor,
 }
 
 METRICS_COLLECTION(foreach_udpif_dbg, foreach_revalidator_dbg,
-                   do_foreach_revalidator, "id");
+                   do_foreach_revalidator, "thread_num");
 
 static struct histogram *
 revalidator_flow_del_latency_get(void *it)

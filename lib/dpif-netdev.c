@@ -6427,7 +6427,7 @@ do_foreach_hw_offload_threads(metrics_visitor_fn visitor,
 }
 
 METRICS_COLLECTION(dpif_netdev_offload, foreach_hw_offload_threads,
-                   do_foreach_hw_offload_threads, "id");
+                   do_foreach_hw_offload_threads, "thread_num");
 METRICS_COND(foreach_hw_offload_threads, foreach_hw_offload_threads_dbg,
              metrics_dbg_enabled);
 
