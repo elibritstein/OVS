@@ -941,6 +941,10 @@
         true and the DPDK library is successfully initialized.
       </column>
 
+      <column name="doca_initialized">
+        Always false.
+      </column>
+
       <group title="Statistics">
         <p>
           The <code>statistics</code> column contains key-value pairs that
@@ -1128,6 +1132,12 @@
       <column name="dpdk_version">
         <p>
           The version of the linked DPDK library.
+        </p>
+      </column>
+
+      <column name="doca_version">
+        <p>
+          The version of the linked DOCA library.
         </p>
       </column>
 
