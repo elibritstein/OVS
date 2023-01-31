@@ -38,9 +38,12 @@ function build_dpdk()
 
     # OVS compilation and "normal" unit tests (run in the CI) do not depend on
     # any DPDK driver.
-    # check-dpdk unit tests requires testpmd and some net/ driver.
+    # check-dpdk unit tests require testpmd and some net/ driver.
     DPDK_OPTS="$DPDK_OPTS -Denable_apps=test-pmd"
     enable_drivers="net/null,net/af_xdp,net/tap,net/virtio"
+    # For DOCA mlx5 driver is also required. net/mlx5 pulls in common/mlx5
+    # which requires bus/auxiliary.
+    enable_drivers+=",bus/auxiliary,common/mlx5,net/mlx5"
     DPDK_OPTS="$DPDK_OPTS -Denable_drivers=$enable_drivers"
     # OVS depends on the vhost library (and its dependencies).
     # net/tap depends on the gso library.
