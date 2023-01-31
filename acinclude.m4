@@ -392,6 +392,109 @@ AC_DEFUN([OVS_CHECK_LINUX_AF_XDP], [
   AM_CONDITIONAL([HAVE_AF_XDP], test "$AF_XDP_ENABLE" = true)
 ])
 
+dnl OVS_CHECK_DOCA
+dnl
+dnl Configure DOCA source tree
+AC_DEFUN([OVS_CHECK_DOCA], [
+  AC_ARG_WITH([doca],
+              [AS_HELP_STRING([--with-doca=static],
+                              [Specify "static" depending on the
+                              DOCA libraries to use. A custom DOCA install path
+                              can be used otherwise for local builds.])],
+              [have_doca=true])
+
+  if test "$have_dpdk" != true || test "$with_dpdk" = no; then
+    if test "$have_doca" = true && test "$with_doca" = static; then
+        AC_MSG_ERROR([Cannot compile link against doca without dpdk, please add --with-dpdk])
+    fi
+  fi
+  AC_MSG_CHECKING([whether doca is enabled])
+  if test "$have_doca" != true || test "$with_doca" = no; then
+    AC_MSG_RESULT([no])
+    DOCALIB_FOUND=false
+  else
+    AC_MSG_RESULT([yes])
+    if test -d "$with_doca"; then
+       DOCA_INSTALL="$with_doca"
+    elif test -d "/opt/mellanox/doca"; then
+       DOCA_INSTALL=/opt/mellanox/doca
+    else
+       DOCA_INSTALL=/usr/local
+    fi
+    DOCA_PKGCONFIG="$(find ${DOCA_INSTALL} -type f -name doca.pc -exec dirname {} \; | head -1)"
+    if test -n "$DOCA_PKGCONFIG"; then
+        export PKG_CONFIG_PATH="${PKG_CONFIG_PATH}:${DOCA_PKGCONFIG}"
+    fi
+
+    echo "checking for DOCA in PKG_CONFIG_PATH='${PKG_CONFIG_PATH}'"
+    case "$with_doca" in
+       "static"|"shared") DOCA_LINK="$with_doca" ;;
+       *) DOCA_LINK="" ;;
+    esac
+    case "$DOCA_LINK" in
+       ""|"static")
+         PKG_CHECK_MODULES_STATIC([DOCA], [doca], [
+             DOCA_INCLUDE="$DOCA_CFLAGS"
+             DOCA_LIB="$DOCA_LIBS"],
+             [AC_MSG_ERROR([unable to use doca-flow.pc for static build])])
+
+         dnl Statically linked private DOCA objects of form
+         dnl -l:file.a must be positioned between
+         dnl --whole-archive ... --no-whole-archive linker parameters.
+         dnl Old pkg-config versions misplace --no-whole-archive parameter
+         dnl and put it next to --whole-archive.
+         AC_MSG_CHECKING([for faulty pkg-config version])
+         echo "$DOCA_LIB" | grep -q 'whole-archive.*l:lib.*no-whole-archive'
+         status=$?
+         case $status in
+           0)
+             AC_MSG_RESULT([no])
+             ;;
+           1)
+             AC_MSG_RESULT([yes])
+             AC_MSG_ERROR([Please upgrade pkg-config])
+             ;;
+           *)
+             AC_MSG_ERROR([grep exited with status $status])
+             ;;
+         esac
+         ;;
+    esac
+
+    ovs_save_CFLAGS="$CFLAGS"
+    ovs_save_LDFLAGS="$LDFLAGS"
+    CFLAGS="$CFLAGS $DOCA_INCLUDE"
+
+    AC_COMPILE_IFELSE(
+      [AC_LANG_PROGRAM([#include <doca_flow.h>], [struct doca_flow_port *port = NULL ;])],
+      [], [AC_MSG_ERROR([unable to include doca_flow.h from '$DOCA_INCLUDE'])])
+
+    LIBS="$DOCA_LIB $ovs_save_libs_before_dpdk"
+    AC_MSG_CHECKING([for doca_flow.h])
+    AC_LINK_IFELSE(
+      [AC_LANG_PROGRAM([#include <doca_flow_net.h>
+                        #include <doca_flow.h>],
+                       [const struct doca_flow_cfg cfg = {};
+                        return doca_flow_init(&cfg);])],
+       [AC_MSG_RESULT([yes])
+        DOCALIB_FOUND=true],
+       [AC_MSG_RESULT([no])
+       AC_MSG_ERROR(m4_normalize([
+          Failed to link with DOCA, check the config.log for more details.
+          If a working DOCA library was not found in the default search path,
+          update PKG_CONFIG_PATH for pkg-config to find the .pc file in a
+          non-standard location.]))
+      ])
+    CFLAGS="$ovs_save_CFLAGS"
+    LDFLAGS="$ovs_save_LDFLAGS"
+    OVS_CFLAGS="$OVS_CFLAGS $DOCA_INCLUDE -Wno-deprecated-declarations -DALLOW_EXPERIMENTAL_API"
+
+    AC_DEFINE([DOCA_OFFLOAD], [1], [System uses the DOCA module.])
+  fi
+
+  AM_CONDITIONAL([DOCA_OFFLOAD], [$DOCALIB_FOUND])
+])
+
 dnl OVS_CHECK_DPDK
 dnl
 dnl Configure DPDK source tree
@@ -529,6 +632,7 @@ AC_DEFUN([OVS_CHECK_DPDK], [
            LIBFIX=" -lrte_bus_vdev -lrte_bus_pci -lrte_net_vhost "
          ;;
     esac
+    ovs_save_libs_before_dpdk="$LIBS $LIBFIX"
     LIBS="$DPDK_LIB $LIBS $LIBFIX"
     AC_LINK_IFELSE(
       [AC_LANG_PROGRAM([#include <rte_config.h>

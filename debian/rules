@@ -49,6 +49,14 @@ DPDK_PKGCONFIG := $(shell find $(DPDK_INSTALL) -type f -name libdpdk.pc -exec di
 DPDK_LIB_DIR := $(shell PKG_CONFIG_PATH=$(DPDK_PKGCONFIG) pkg-config --libs-only-L libdpdk)
 endif
 
+# WITH_DOCA is set only if /opt/mellanox/doca exists.
+DOCA_INSTALL ?= /opt/mellanox/doca
+ifneq (,$(shell readlink -e $(DOCA_INSTALL)))
+WITH_DOCA := --with-doca=$(DOCA_INSTALL)
+DOCA_PKGCONFIG := $(shell find $(DOCA_INSTALL) -type f -name doca-flow.pc -exec dirname {} \;)
+DOCA_LIB_DIR := $(shell PKG_CONFIG_PATH=$(DOCA_PKGCONFIG) pkg-config --libs-only-L doca-flow)
+endif
+
 BACKUP_PATH=debian/backup
 override_dh_auto_configure:
 	if [ -f config.status -a ! -f debian/config.status ]; then \
@@ -66,6 +74,7 @@ override_dh_auto_configure:
 	dh_auto_configure -- --enable-ssl \
 		$(BUILD_TYPE) \
 		$(WITH_DPDK) \
+		$(WITH_DOCA) \
 		$(DATAPATH_CONFIGURE_OPTS) $(EXTRA_CONFIGURE_OPTS)
 
 # No need for 'make clean': debian/clean drops that

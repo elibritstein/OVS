@@ -26,10 +26,15 @@
 %bcond_without libcapng
 # To enable DPDK support, specify '--with dpdk' when building
 %bcond_with dpdk
+# To enable DOCA support, specify '--with doca' when building
+%bcond_with doca
 # To enable AF_XDP support, specify '--with afxdp' when building
 %bcond_with afxdp
 %if %{with dpdk}
 %{!?dpdk_datadir:%define dpdk_datadir /opt/mellanox/dpdk}
+%endif
+%if %{with doca}
+%{!?doca_datadir:%define doca_datadir /opt/mellanox/doca}
 %endif
 
 # Do a static build using '--with static'
@@ -175,6 +180,9 @@ This package provides IPsec tunneling support for OVS tunnels.
 %endif
 %if %{with dpdk}
         --with-dpdk=$(dirname %{dpdk_datadir}) \
+%endif
+%if %{with doca}
+        --with-doca=$(dirname %{doca_datadir}) \
 %endif
 %if %{with afxdp}
         --enable-afxdp \
