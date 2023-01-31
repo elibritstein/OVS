@@ -55,6 +55,7 @@ dhcpv4
 dhcpv6
 dnat
 dns
+doca
 dpcls
 dpctl
 dpdk
