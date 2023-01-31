@@ -11,7 +11,9 @@ jobs:
       matrix:
         runner: [ubuntu-24.04]
     env:
-      dependencies: gcc libnuma-dev libxdp-dev ninja-build pkgconf
+      dependencies: >
+        gcc libnuma-dev libbpf-dev libxdp-dev ninja-build pkgconf
+        libibverbs-dev rdma-core
       CC: gcc
       DPDK_GIT: https://dpdk.org/git/dpdk-stable
       DPDK_VER: 25.11
@@ -66,6 +68,7 @@ jobs:
     - name: update APT cache
       if: steps.dpdk_cache.outputs.cache-hit != 'true'
       run:  sudo apt update || true
+
     - name: install common dependencies
       if: steps.dpdk_cache.outputs.cache-hit != 'true'
       run:  sudo apt install -y ${{ env.dependencies }}
@@ -137,7 +140,8 @@ jobs:
     env:
       dependencies: |
         automake libtool gcc bc libjemalloc2 libjemalloc-dev libssl-dev \
-        llvm-dev libnuma-dev selinux-policy-dev libxdp-dev lftp
+        llvm-dev libnuma-dev selinux-policy-dev libibverbs-dev rdma-core \
+        libbpf-dev libxdp-dev lftp
       CC:          ${{ matrix.compiler }}
       DPDK:        ${{ matrix.dpdk }}
       DPDK_SHARED: ${{ matrix.dpdk_shared }}
@@ -358,7 +362,7 @@ jobs:
     env:
       dependencies: |
         automake bc clang-tools libnuma-dev libunbound-dev libunwind-dev \
-        libssl-dev libtool libxdp-dev llvm-dev
+        libssl-dev libtool libibverbs-dev rdma-core libbpf-dev libxdp-dev llvm-dev
       CC:   clang
       DPDK: dpdk
       CLANG_ANALYZE: true
@@ -474,7 +478,7 @@ jobs:
     env:
       dependencies: |
         automake bc clang-tools libnuma-dev libunbound-dev libunwind-dev \
-        libssl-dev libtool libxdp-dev llvm-dev
+        libssl-dev libtool libibverbs-dev rdma-core libbpf-dev libxdp-dev llvm-dev
       CC:   clang
       DPDK: dpdk
       CLANG_ANALYZE: true
@@ -703,3 +707,83 @@ jobs:
         path: |
           rpm/rpmbuild/SRPMS/*.rpm
           rpm/rpmbuild/RPMS/*/*.rpm
+
+  build-doca:
+    needs: [build-dpdk]
+    env:
+      dependencies: |
+        automake libtool gcc bc libssl-dev llvm-dev libnuma-dev \
+        libunbound-dev libunwind-dev libsystemd-dev wget python3-pip \
+        libibverbs-dev rdma-core libbpf-dev libxdp-dev pkgconf
+      DOCA_REPO_PKG_URL: "https://www.mellanox.com/downloads/DOCA/DOCA_v3.3.0/host/doca-host_3.3.0-088000-26.01-ubuntu2404_amd64.deb"
+      CC:        ${{ matrix.compiler }}
+      DOCA_LINK: ${{ matrix.doca_link }}
+
+    name: doca ubuntu ${{ matrix.compiler }} ${{ matrix.doca_link }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler:  gcc
+            doca_link: static
+          - compiler:  gcc
+            doca_link: shared
+          - compiler:  clang
+            doca_link: static
+          - compiler:  clang
+            doca_link: shared
+
+    steps:
+    - name: checkout
+      uses: actions/checkout@v4
+
+    - name: update PATH
+      run:  |
+        echo "$HOME/bin"        >> $GITHUB_PATH
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+    - name: set up python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.python_default }}
+
+    - name: update APT cache
+      run:  sudo apt update || true
+    - name: install common dependencies
+      run:  sudo apt install -y ${{ env.dependencies }}
+
+    - name: get cached dpdk-dir
+      uses: actions/cache/restore@v5
+      with:
+        path: dpdk-dir
+        key: ${{ needs.build-dpdk.outputs.dpdk_key }}
+        fail-on-cache-miss: true
+
+    - name: install DOCA
+      run:  ./.ci/doca-install.sh
+
+    - name: build
+      run:  ./.ci/doca-build.sh
+
+    - name: copy logs on failure
+      if: failure() || cancelled()
+      run: |
+        # upload-artifact throws exceptions if it tries to upload socket
+        # files and we could have some socket files in testsuite.dir.
+        # Also, upload-artifact doesn't work well enough with wildcards.
+        # So, we're just archiving everything here to avoid any issues.
+        mkdir logs
+        cp config.log ./logs/
+        cp -r ./*/_build/sub/tests/testsuite.* ./logs/ || true
+        sudo cp -r ./tests/*testsuite.* ./logs/ || true
+        sudo tar -czvf logs.tgz logs/
+
+    - name: upload logs on failure
+      if: failure() || cancelled()
+      uses: actions/upload-artifact@v7
+      with:
+        name: logs-doca-ubuntu-${{ matrix.compiler }}-${{ matrix.doca_link }}
+        path: logs.tgz
