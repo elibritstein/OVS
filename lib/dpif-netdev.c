@@ -2489,7 +2489,7 @@ metrics_dpif_is_netdev(void *it)
     return dpif_is_netdev(it);
 }
 
-METRICS_COND(foreach_dpif_nolabel, foreach_dpif_netdev,
+METRICS_COND(foreach_dpif, foreach_dpif_netdev,
              metrics_dpif_is_netdev);
 
 METRICS_COND(foreach_dpif_netdev, foreach_dpif_netdev_ext,

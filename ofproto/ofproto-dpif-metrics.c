@@ -44,7 +44,7 @@ do_foreach_dpif_backer(metrics_visitor_fn visitor,
 }
 
 METRICS_COLLECTION(ofproto_dpif, foreach_dpif_backer,
-                   do_foreach_dpif_backer, "name");
+                   do_foreach_dpif_backer, "datapath");
 
 enum {
     OF_DATAPATH_HIT,
