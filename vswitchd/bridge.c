@@ -49,6 +49,7 @@
 #include "openvswitch/ofpbuf.h"
 #include "openvswitch/vconn.h"
 #include "openvswitch/vlog.h"
+#include "ovs-doca.h"
 #include "ovs-lldp.h"
 #include "ovs-numa.h"
 #include "packets.h"
@@ -450,6 +451,8 @@ bridge_init(const char *remote)
     ovsdb_idl_omit(idl, &ovsrec_open_vswitch_col_system_version);
     ovsdb_idl_omit_alert(idl, &ovsrec_open_vswitch_col_dpdk_version);
     ovsdb_idl_omit_alert(idl, &ovsrec_open_vswitch_col_dpdk_initialized);
+    ovsdb_idl_omit_alert(idl, &ovsrec_open_vswitch_col_doca_version);
+    ovsdb_idl_omit_alert(idl, &ovsrec_open_vswitch_col_doca_initialized);
 
     ovsdb_idl_omit_alert(idl, &ovsrec_bridge_col_datapath_id);
     ovsdb_idl_omit_alert(idl, &ovsrec_bridge_col_datapath_version);
@@ -3258,6 +3261,7 @@ run_status_update(void)
             connectivity_seqno = seq;
             status_txn = ovsdb_idl_txn_create(idl);
             dpdk_status(cfg);
+            ovs_doca_status(cfg);
             HMAP_FOR_EACH (br, node, &all_bridges) {
                 struct port *port;
 
@@ -3398,6 +3402,7 @@ bridge_run(void)
 
     if (cfg) {
         dpdk_init(&cfg->other_config);
+        ovs_doca_init(&cfg->other_config);
         userspace_tso_init(&cfg->other_config);
     }
 
