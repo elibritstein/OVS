@@ -11,7 +11,9 @@ jobs:
       matrix:
         runner: [ubuntu-24.04]
     env:
-      dependencies: gcc libnuma-dev libxdp-dev ninja-build pkgconf
+      dependencies: >
+        gcc libbpf-dev libibverbs-dev libnuma-dev libxdp-dev ninja-build pkgconf
+        rdma-core
       CC: gcc
       DPDK_GIT: https://dpdk.org/git/dpdk
       DPDK_VER: refs/heads/main
@@ -66,6 +68,7 @@ jobs:
     - name: update APT cache
       if: steps.dpdk_cache.outputs.cache-hit != 'true'
       run:  sudo apt update || true
+
     - name: install common dependencies
       if: steps.dpdk_cache.outputs.cache-hit != 'true'
       run:  sudo apt install -y ${{ env.dependencies }}
@@ -136,8 +139,9 @@ jobs:
     needs: [build-dpdk, build-libreswan]
     env:
       dependencies: |
-        automake libtool gcc bc libjemalloc2 libjemalloc-dev libssl-dev \
-        llvm-dev libnuma-dev selinux-policy-dev libxdp-dev lftp
+        automake bc gcc libbpf-dev libibverbs-dev libjemalloc-dev libjemalloc2 \
+        libnuma-dev libssl-dev libxdp-dev lftp llvm-dev rdma-core \
+        selinux-policy-dev libtool
       CC:          ${{ matrix.compiler }}
       DPDK:        ${{ matrix.dpdk }}
       DPDK_SHARED: ${{ matrix.dpdk_shared }}
@@ -361,8 +365,9 @@ jobs:
     needs: build-dpdk
     env:
       dependencies: |
-        automake bc clang-tools libnuma-dev libunbound-dev libunwind-dev \
-        libssl-dev libtool libxdp-dev llvm-dev
+        automake bc clang-tools libbpf-dev libibverbs-dev libnuma-dev \
+        libssl-dev libtool libunbound-dev libunwind-dev libxdp-dev llvm-dev \
+        rdma-core
       CC:   clang
       DPDK: dpdk
       CLANG_ANALYZE: true
@@ -477,8 +482,9 @@ jobs:
         needs.build-clang-analyze-cache.outputs.outcome == 'skipped'
     env:
       dependencies: |
-        automake bc clang-tools libnuma-dev libunbound-dev libunwind-dev \
-        libssl-dev libtool libxdp-dev llvm-dev
+        automake bc clang-tools libbpf-dev libibverbs-dev libnuma-dev \
+        libssl-dev libtool libunbound-dev libunwind-dev libxdp-dev llvm-dev \
+        rdma-core
       CC:   clang
       DPDK: dpdk
       CLANG_ANALYZE: true
@@ -708,3 +714,98 @@ jobs:
         path: |
           rpm/rpmbuild/SRPMS/*.rpm
           rpm/rpmbuild/RPMS/*/*.rpm
+
+  build-doca:
+    needs: [build-dpdk]
+    env:
+      dependencies: |
+        automake bc gcc libbpf-dev libdoca-sdk-dpdk-bridge-dev \
+        libdoca-sdk-flow-dev libibverbs-dev libnuma-dev libssl-dev \
+        libsystemd-dev libtool libunbound-dev libunwind-dev libxdp-dev \
+        llvm-dev pkgconf python3-pip rdma-core wget
+      DOCA_REPO_PKG_URL: "https://www.mellanox.com/downloads/DOCA/DOCA_v3.3.0/host/doca-host_3.3.0-088000-26.01-ubuntu2404_amd64.deb"
+      CC:        ${{ matrix.compiler }}
+      DOCA_LINK: ${{ matrix.doca_link }}
+
+    name: doca ubuntu ${{ matrix.compiler }} ${{ matrix.doca_link }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler:  gcc
+            doca_link: static
+          - compiler:  clang
+            doca_link: static
+            # Shared DOCA linking is temporarily disabled due to a symbol
+            # version mismatch: libdoca_dpdk_bridge.so v3.3.0 references
+            # rte_pmd_mlx5_disable_steering@@EXPERIMENTAL and
+            # rte_pmd_mlx5_driver_event_cb_register@@EXPERIMENTAL, which
+            # were promoted to stable in DPDK 25.11 and no longer exist
+            # under the @EXPERIMENTAL version tag.
+            # Re-enable once a DOCA SDK release built against a post-
+            # promotion DPDK 25.11 snapshot is available.
+            # - compiler:  gcc
+            #   doca_link: shared
+            # - compiler:  clang
+            #   doca_link: shared
+
+    steps:
+    - name: checkout
+      uses: actions/checkout@v6
+
+    - name: update PATH
+      run:  |
+        echo "$HOME/bin"        >> $GITHUB_PATH
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+    - name: set up python
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ env.python_default }}
+
+    - name: install DOCA repository
+      run: |
+        wget -q "$DOCA_REPO_PKG_URL" -O /tmp/doca-repo.deb
+        sudo dpkg -i /tmp/doca-repo.deb
+
+    - name: update APT cache
+      run: sudo apt update || true
+
+    - name: install common dependencies
+      run: sudo apt install -y ${{ env.dependencies }}
+
+    - name: get cached dpdk-dir
+      uses: actions/cache/restore@v5
+      with:
+        path: dpdk-dir
+        key: ${{ needs.build-dpdk.outputs.dpdk_key }}
+        fail-on-cache-miss: true
+
+    - name: prepare
+      run:  ./.ci/linux-prepare.sh
+
+    - name: build
+      run:  ./.ci/doca-build.sh
+
+    - name: copy logs on failure
+      if: failure() || cancelled()
+      run: |
+        # upload-artifact throws exceptions if it tries to upload socket
+        # files and we could have some socket files in testsuite.dir.
+        # Also, upload-artifact doesn't work well enough with wildcards.
+        # So, we're just archiving everything here to avoid any issues.
+        mkdir logs
+        cp config.log ./logs/
+        cp -r ./*/_build/sub/tests/testsuite.* ./logs/ || true
+        sudo cp -r ./tests/*testsuite.* ./logs/ || true
+        sudo tar -czvf logs.tgz logs/
+
+    - name: upload logs on failure
+      if: failure() || cancelled()
+      uses: actions/upload-artifact@v7
+      with:
+        name: logs-doca-ubuntu-${{ matrix.compiler }}-${{ matrix.doca_link }}
+        path: logs.tgz
