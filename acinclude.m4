@@ -374,6 +374,179 @@ AC_DEFUN([OVS_CHECK_LINUX_AF_XDP], [
   AM_CONDITIONAL([HAVE_AF_XDP], test "$AF_XDP_ENABLE" = true)
 ])
 
+dnl OVS_CHECK_DOCA
+dnl
+dnl Configure DOCA source tree
+AC_DEFUN([OVS_CHECK_DOCA], [
+  AC_ARG_WITH([doca],
+              [AS_HELP_STRING([--with-doca=static],
+                              [Specify "static" depending on the
+                              DOCA libraries to use. A custom DOCA install path
+                              can be used otherwise for local builds.])],
+              [have_doca=true])
+
+  if test "$have_dpdk" != true || test "$with_dpdk" = no; then
+    if test "$have_doca" = true; then
+      AC_MSG_ERROR([Cannot compile link against doca without dpdk, please add --with-dpdk])
+    fi
+  fi
+  AC_MSG_CHECKING([whether doca is enabled])
+  if test "$have_doca" != true || test "$with_doca" = no; then
+    AC_MSG_RESULT([no])
+    DOCALIB_FOUND=false
+  else
+    AC_MSG_RESULT([yes])
+    if test -d "$with_doca"; then
+      DOCA_INSTALL="$with_doca"
+    elif test -d "/opt/mellanox/doca"; then
+      DOCA_INSTALL=/opt/mellanox/doca
+    else
+      DOCA_INSTALL=/usr/local
+    fi
+    DOCA_PKGCONFIG="$(find ${DOCA_INSTALL} -type f -name doca-flow.pc -exec dirname {} \; | head -1)"
+    if test -n "$DOCA_PKGCONFIG"; then
+      if test -n "$PKG_CONFIG_PATH"; then
+        export PKG_CONFIG_PATH="${DOCA_PKGCONFIG}:${PKG_CONFIG_PATH}"
+      else
+        export PKG_CONFIG_PATH="${DOCA_PKGCONFIG}"
+      fi
+    fi
+
+    echo "checking for DOCA in PKG_CONFIG_PATH='${PKG_CONFIG_PATH}'"
+    case "$with_doca" in
+      "static"|"shared")
+        DOCA_LINK="$with_doca"
+        ;;
+      *)
+        if test "$enable_shared" = yes; then
+          DOCA_LINK="shared"
+        else
+          DOCA_LINK="static"
+        fi
+        ;;
+    esac
+
+    DOCA_PKGS="doca-flow doca-dpdk-bridge doca-common"
+    if test "$DOCA_LINK" = static; then
+      PKG_CHECK_MODULES_STATIC([DOCA], [$DOCA_PKGS], [],
+          [AC_MSG_ERROR([unable to use $DOCA_PKGS .pc files for $DOCA_LINK build])])
+    else
+      PKG_CHECK_MODULES([DOCA], [$DOCA_PKGS], [],
+          [AC_MSG_ERROR([unable to use $DOCA_PKGS .pc files for $DOCA_LINK build])])
+    fi
+    DOCA_INCLUDE="$DOCA_CFLAGS -DDOCA_ALLOW_EXPERIMENTAL_API"
+
+    if test "$DOCA_LINK" = static; then
+      # pkg-config --static may emit the same library in duplicate
+      # --whole-archive blocks when multiple packages share a dependency
+      # (both doca-flow and doca-dpdk-bridge pull in doca-common).
+      # Linking the same .a under --whole-archive twice causes "multiple
+      # definition" errors. Remove the second occurrence using a sed
+      # backreference, and strip redundant shared-lib flags (-l<lib>)
+      # since the static .a is already linked via --whole-archive.
+      DOCA_DEDUP_LIBS="doca_common doca_dpdk_bridge"
+      for lib in $DOCA_DEDUP_LIBS; do
+        lib_count=$(echo "$DOCA_LIBS" | grep -o "l:lib${lib}\.a" | wc -l)
+        if test "$lib_count" -ge 2; then
+          DOCA_LIBS=$(echo "$DOCA_LIBS" | sed "s@-Wl,--whole-archive -L[[^ ]]* -l:lib${lib}\.a -Wl,--no-whole-archive -Wl,--as-needed @@2g")
+        fi
+        if echo "$DOCA_LIBS" | grep -q "l:lib${lib}\.a"; then
+          DOCA_LIBS=$(echo "$DOCA_LIBS" | sed "s/-l${lib}//g")
+        fi
+      done
+    fi
+
+    USED_PATH=`$PKG_CONFIG --variable=prefix doca-flow`
+    echo "Using DOCA release: '$USED_PATH'"
+
+    ovs_save_CFLAGS="$CFLAGS"
+    ovs_save_LDFLAGS="$LDFLAGS"
+    # Statically linked libraries might have been built with sanitizers enabled.
+    # In such case, use the generated sanitizer cflags.
+    CFLAGS="$CFLAGS $SANITIZER_CFLAGS $DOCA_INCLUDE"
+
+    AC_MSG_CHECKING([for doca_flow.h])
+    AC_COMPILE_IFELSE(
+      [AC_LANG_PROGRAM([#include <doca_flow.h>],
+                       [struct doca_flow_port *port = NULL ;])],
+      [AC_MSG_RESULT([yes])],
+      [AC_MSG_RESULT([no])
+       AC_MSG_ERROR(m4_normalize([
+          Unable to include doca_flow.h, check the config.log for more details.
+          As a DOCA library was found in the current search path, a missing doca_flow.h
+          usually means that it was built without DOCA-flow support.
+          Verify that you fullfilled all DOCA-flow build dependencies and that it
+          was not automatically disabled.]))
+      ])
+
+    # DOCA's static pkg-config output already includes DPDK through
+    # its transitive dependency on libdpdk (via doca-dpdk-bridge), so
+    # no need to add DPDK_LIB separately for static link tests.
+    if test "$enable_shared" = yes; then
+      LIBS="$DOCA_LIBS $LIBS"
+    else
+      LIBS="$DOCA_LIBS $ovs_save_libs_before_dpdk"
+    fi
+    AC_MSG_CHECKING([for DOCA-flow link])
+    AC_LINK_IFELSE(
+      [AC_LANG_PROGRAM([#include <doca_flow_net.h>
+                        #include <doca_flow.h>],
+                       [struct doca_flow_cfg *cfg;
+                        int rv;
+                        doca_flow_cfg_create(&cfg);
+                        rv = doca_flow_init(cfg);
+                        doca_flow_cfg_destroy(cfg);
+                        return rv;])],
+      [AC_MSG_RESULT([yes])
+        DOCALIB_FOUND=true],
+      [AC_MSG_RESULT([no])
+        AC_MSG_ERROR(m4_normalize([
+           Unable to link with DOCA-flow, check the config.log for more details.
+           If a working DOCA-flow library was not found in the current search path,
+           update PKG_CONFIG_PATH for pkg-config to find the .pc file in a proper location.]))
+      ])
+    CFLAGS="$ovs_save_CFLAGS"
+    LDFLAGS="$ovs_save_LDFLAGS"
+    OVS_CFLAGS="$OVS_CFLAGS $DOCA_INCLUDE -Wno-deprecated-declarations -DALLOW_EXPERIMENTAL_API"
+
+    # DOCA libraries are very specific in their ordering and inherit DPDK
+    # libraries which contain --whole-archive. Autotools will reorder
+    # them, breaking static links. Use the same solution as DPDK below.
+    # Transform the pkg-config output into a single linker parameter, separated
+    # by commas and wrapped by -Wl.
+    DOCA_LDFLAGS=$(echo "$DOCA_LIBS" | tr -s ' ' ',' | sed 's/-Wl,//g')
+    # Replace -pthread with -lpthread for LD and remove the last extra comma.
+    DOCA_LDFLAGS=$(echo "$DOCA_LDFLAGS"| sed 's/,$//' | sed 's/-pthread/-lpthread/g')
+    # Prepend "-Wl,".
+    DOCA_LDFLAGS="-Wl,$DOCA_LDFLAGS"
+
+    # The full DOCA linker parameters must be made available to every
+    # object trying to link against libopenvswitch. It means every
+    # binary generated will contain DOCA unfortunately.
+    if test "$DOCA_LINK" = static; then
+      # DOCA's static pkg-config output already includes DPDK through
+      # its transitive dependency on libdpdk (via doca-dpdk-bridge).
+      OVS_LDFLAGS="$OVS_LDFLAGS $DOCA_LDFLAGS"
+      # Clear to prevent double linkage from Makefile.am
+      DPDK_vswitchd_LDFLAGS=""
+    else
+      # For shared builds, DPDK is not in DOCA's output (libdpdk is in
+      # Requires.private, not followed by pkg-config without --static).
+      # Link DPDK separately. Add PMD drivers explicitly as they may
+      # not be in Libs field for shared builds.
+      for pmd in rte_net_mlx5 rte_net_vhost; do
+        if ! echo "$DPDK_LIB" | grep -q "\-l$pmd"; then
+          DPDK_LIB="$DPDK_LIB -l$pmd"
+        fi
+      done
+      OVS_LDFLAGS="$OVS_LDFLAGS $DOCA_LDFLAGS $DPDK_LIB"
+    fi
+    AC_DEFINE([DOCA_NETDEV], [1], [System uses the DOCA module.])
+  fi
+
+  AM_CONDITIONAL([DOCA_NETDEV], [$DOCALIB_FOUND])
+])
+
 dnl OVS_CHECK_DPDK
 dnl
 dnl Configure DPDK source tree
@@ -478,6 +651,7 @@ AC_DEFUN([OVS_CHECK_DPDK], [
     OVS_FIND_DEPENDENCY([dlopen], [dl], [libdl])
 
     AC_MSG_CHECKING([whether linking with dpdk works])
+    ovs_save_libs_before_dpdk="$LIBS"
     LIBS="$DPDK_LIB $LIBS"
     AC_LINK_IFELSE(
       [AC_LANG_PROGRAM([#include <rte_config.h>

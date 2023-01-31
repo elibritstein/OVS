@@ -699,3 +699,61 @@ jobs:
         path: |
           rpm/rpmbuild/SRPMS/*.rpm
           rpm/rpmbuild/RPMS/*/*.rpm
+
+  build-doca:
+    env:
+      dependencies: |
+        automake libtool gcc bc libssl-dev llvm-dev libnuma-dev \
+        libunbound-dev libunwind-dev libsystemd-dev wget python3-pip
+      DOCA_REPO_PKG_URL: "https://www.mellanox.com/downloads/DOCA/DOCA_v3.3.0/host/doca-host_3.3.0-088000-26.01-ubuntu2404_amd64.deb"
+      CC:        ${{ matrix.compiler }}
+      DOCA_LINK: ${{ matrix.doca_link }}
+
+    name: doca ubuntu ${{ matrix.compiler }} ${{ matrix.doca_link }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler:  gcc
+            doca_link: static
+          - compiler:  gcc
+            doca_link: shared
+          - compiler:  clang
+            doca_link: static
+          - compiler:  clang
+            doca_link: shared
+
+    steps:
+    - name: checkout
+      uses: actions/checkout@v4
+
+    - name: update PATH
+      run:  |
+        echo "$HOME/bin"        >> $GITHUB_PATH
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+    - name: set up python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.python_default }}
+
+    - name: update APT cache
+      run:  sudo apt update || true
+    - name: install common dependencies
+      run:  sudo apt install -y ${{ env.dependencies }}
+
+    - name: install DOCA
+      run:  ./.ci/doca-install.sh
+
+    - name: build
+      run:  ./.ci/doca-build.sh
+
+    - name: upload logs on failure
+      if: failure() || cancelled()
+      uses: actions/upload-artifact@v4
+      with:
+        name: logs-doca-ubuntu-${{ matrix.compiler }}-${{ matrix.doca_link }}
+        path: config.log

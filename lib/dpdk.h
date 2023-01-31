@@ -18,6 +18,7 @@
 #define DPDK_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef DPDK_NETDEV
 
