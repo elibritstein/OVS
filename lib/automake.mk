@@ -517,6 +517,10 @@ lib_libopenvswitch_la_SOURCES += \
 	lib/dpdk-stub.c
 endif
 
+lib_libopenvswitch_la_SOURCES += \
+	lib/ovs-doca.c \
+	lib/ovs-doca.h
+
 if WIN32
 lib_libopenvswitch_la_SOURCES += \
 	lib/dpif-netlink.c \
