@@ -270,6 +270,8 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/ovs-atomic-pthreads.h \
 	lib/ovs-atomic-x86_64.h \
 	lib/ovs-atomic.h \
+	lib/ovs-doca.c \
+	lib/ovs-doca.h \
 	lib/ovs-lldp.c \
 	lib/ovs-lldp.h \
 	lib/ovs-numa.c \
