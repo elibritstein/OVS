@@ -67,8 +67,6 @@ bool netdev_offload_ct_on_ct_nat = false;
 bool ct_labels_mapping = false;
 bool disable_zone_tables = false;
 
-#define DEFAULT_OFFLOAD_THREAD_NB 1
-
 static unsigned int offload_thread_nb = DEFAULT_OFFLOAD_THREAD_NB;
 DEFINE_EXTERN_PER_THREAD_DATA(netdev_offload_thread_id, OVSTHREAD_ID_UNSET);
 

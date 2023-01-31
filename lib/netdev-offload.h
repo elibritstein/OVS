@@ -33,6 +33,7 @@
 extern "C" {
 #endif
 
+#define DEFAULT_OFFLOAD_THREAD_NB 1
 #define MAX_OFFLOAD_METERS 4
 
 struct netdev_class;
