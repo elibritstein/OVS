@@ -3510,11 +3510,13 @@ ctd_conn_clean(struct ctd_conn_clean_msg *msg)
         hash = conn_key_hash(&conn->nat_conn->key, ct->hash_basis);
         ctd_msg_dest_set(m, hash);
         ctd_msg_fate_set(m, CTD_MSG_FATE_CTD);
+    } else {
+        ctd_msg_fate_set(m, CTD_MSG_FATE_FREE);
     }
     conn_unref(conn);
     atomic_count_dec(&ct->n_conn);
+    atomic_count_dec(&ct->l4_counters[conn->key.nw_proto]);
 
     conntrack_unlock(ct);
     conn_unlock(conn);
-    ctd_msg_fate_set(m, CTD_MSG_FATE_FREE);
 }
