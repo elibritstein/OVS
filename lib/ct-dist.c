@@ -3468,6 +3468,9 @@ ctd_conn_clean(struct ctd_conn_clean_msg *msg)
     hash = conn_key_hash(&conn->key, ct->hash_basis);
     cmap_remove(&ct->conns, &conn->cm_node, hash);
 
+    conntrack_unlock(ct);
+    conn_unlock(conn);
+
     zl = zone_limit_lookup(ct, conn->admit_zone);
     if (zl && zl->czl.zone_limit_seq == conn->zone_limit_seq) {
         atomic_count_dec(&zl->czl.count);
@@ -3483,7 +3486,4 @@ ctd_conn_clean(struct ctd_conn_clean_msg *msg)
     conn_unref(conn);
     atomic_count_dec(&ct->n_conn);
     atomic_count_dec(&ct->l4_counters[conn->key.nw_proto]);
-
-    conntrack_unlock(ct);
-    conn_unlock(conn);
 }
