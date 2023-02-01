@@ -14,25 +14,32 @@
  * limitations under the License.
  */
 
-#include <config.h>
+#ifndef CT_DIST_PRIVATE_H
+#define CT_DIST_PRIVATE_H
+
 #include <stdint.h>
 
 #include "conntrack.h"
 #include "ct-dist.h"
 #include "ct-dist-msg.h"
-#include "ct-dist-thread.h"
+#include "smap.h"
 
-void
-ctd_msg_conn_clean_send(struct conntrack *ct, struct conn *conn, uint32_t hash)
-{
-    struct ctd_msg_conn_clean *msg;
+#ifdef  __cplusplus
+extern "C" {
+#endif
 
-    msg = xmalloc(sizeof *msg);
-    msg->hdr.ct = ct;
-    msg->conn = conn;
-    ctd_msg_type_set(&msg->hdr, CTD_MSG_CLEAN);
+void ctd_conn_clean(struct ctd_msg_conn_clean *msg);
 
-    ctd_msg_dest_set(&msg->hdr, hash);
-    ctd_msg_fate_set(&msg->hdr, CTD_MSG_FATE_CTD);
-    ctd_send_msg_to_thread(&msg->hdr, ctd_h2tid(hash));
+int ctd_conntrack_execute(struct dp_packet *pkt);
+void *ctd_clean_thread_main(void *f_);
+void ctd_nat_candidate(struct dp_packet *pkt);
+
+uint32_t conn_key_hash(const struct conn_key *, uint32_t basis);
+long long int conn_expiration(const struct conn *conn);
+bool conn_unref(struct conn *conn);
+
+#ifdef  __cplusplus
 }
+#endif
+
+#endif /* CT_DIST_PRIVATE_H */

@@ -41,7 +41,7 @@
 #include "conntrack-offload.h"
 #include "conntrack-tp.h"
 #include "coverage.h"
-#include "ct-dist-thread.h"
+#include "ct-dist.h"
 #include "ct-dpif.h"
 #include "csum.h"
 #include "dp-packet.h"

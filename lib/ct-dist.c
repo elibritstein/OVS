@@ -30,9 +30,12 @@
 #include "conntrack-tp.h"
 #include "coverage.h"
 #include "csum.h"
+#include "ct-dist-private.h"
+#include "ct-dist.h"
 #include "ct-dist-thread.h"
 #include "ct-dpif.h"
 #include "dp-packet.h"
+#include "dpif-netdev-private.h"
 #include "flow.h"
 #include "netdev.h"
 #include "odp-netlink.h"
@@ -84,7 +87,6 @@ struct zone_limit {
     struct conntrack_zone_limit czl;
 };
 
-static uint32_t conn_key_hash(const struct conn_key *, uint32_t basis);
 static void conn_key_reverse(struct conn_key *);
 static bool valid_new(struct dp_packet *pkt, struct conn_key *);
 static struct conn *new_conn(struct conntrack *ct, struct dp_packet *pkt,
@@ -96,7 +98,6 @@ static enum ct_update_res conn_update(struct conntrack *ct, struct conn *conn,
                                       struct dp_packet *pkt,
                                       struct conn_lookup_ctx *ctx,
                                       long long now);
-static long long int conn_expiration(const struct conn *);
 static bool conn_expired(struct conn *, long long now);
 static void set_mark(struct dp_packet *, struct conn *conn,
                      uint32_t, uint32_t)
@@ -316,7 +317,7 @@ conn_do_delete(struct conn *conn,
     ovsrcu_gc(delete_cb, conn, gc_node);
 }
 
-static inline bool
+bool
 conn_unref(struct conn *conn)
 {
     if (ovs_refcount_unref(&conn->exp.refcount) == 1) {
@@ -2172,7 +2173,7 @@ ct_endpoint_hash_add(uint32_t hash, const struct ct_endpoint *ep)
 }
 
 /* Symmetric */
-static uint32_t
+uint32_t
 conn_key_hash(const struct conn_key *key, uint32_t basis)
 {
     uint32_t hsrc, hdst, hash;
@@ -2512,7 +2513,7 @@ conn_update(struct conntrack *ct, struct conn *conn, struct dp_packet *pkt,
     return update_res;
 }
 
-static long long int
+long long int
 conn_expiration(const struct conn *conn)
 {
     long long int hw_expiration;
@@ -3486,4 +3487,229 @@ ctd_conn_clean(struct ctd_msg_conn_clean *msg)
     conn_unref(conn);
     atomic_count_dec(&ct->n_conn);
     atomic_count_dec(&ct->l4_counters[conn->key.nw_proto]);
+}
+
+void
+ctd_init(struct conntrack *ct, const struct smap *ovs_other_config)
+{
+    static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
+
+    if (!ovsthread_once_start(&once)) {
+        return;
+    }
+
+    ctd_n_threads = smap_get_ullong(ovs_other_config, "n-ct-threads",
+                                DEFAULT_CT_DIST_THREAD_NB);
+    if (ctd_n_threads > MAX_CT_DIST_THREAD_NB) {
+        VLOG_WARN("Invalid number of threads requested: %u. Limiting to %u",
+                  ctd_n_threads, MAX_CT_DIST_THREAD_NB);
+        ctd_n_threads = MAX_CT_DIST_THREAD_NB;
+    }
+
+    ct->n_threads = ctd_n_threads;
+    if (ctd_n_threads) {
+        ctd_thread_create(ct);
+    }
+
+    ovsthread_once_done(&once);
+}
+
+bool
+ctd_exec(struct conntrack *conntrack,
+         struct dp_netdev_pmd_thread *pmd,
+         const struct flow *flow,
+         struct dp_packet_batch *packets_,
+         const struct nlattr *ct_action,
+         struct dp_netdev_flow *dp_flow OVS_UNUSED,
+         const struct nlattr *actions OVS_UNUSED,
+         size_t actions_len OVS_UNUSED,
+         uint32_t depth OVS_UNUSED)
+{
+    const struct ovs_key_ct_labels *setlabel = NULL;
+    struct nat_action_info_t *nat_action_info_ref;
+    struct nat_action_info_t nat_action_info;
+    struct dp_packet OVS_UNUSED *packet;
+    const uint32_t *setmark = NULL;
+    const char *helper = NULL;
+    bool nat_config = false;
+    const struct nlattr *b;
+    bool commit = false;
+    bool force = false;
+    uint32_t tp_id = 0;
+    unsigned int left;
+    uint16_t zone = 0;
+
+    nat_action_info_ref = NULL;
+    NL_ATTR_FOR_EACH_UNSAFE (b, left, nl_attr_get(ct_action),
+                             nl_attr_get_size(ct_action)) {
+        enum ovs_ct_attr sub_type = nl_attr_type(b);
+
+        switch(sub_type) {
+        case OVS_CT_ATTR_FORCE_COMMIT:
+            force = true;
+            /* fall through. */
+        case OVS_CT_ATTR_COMMIT:
+            commit = true;
+            break;
+        case OVS_CT_ATTR_ZONE:
+            zone = nl_attr_get_u16(b);
+            break;
+        case OVS_CT_ATTR_HELPER:
+            helper = nl_attr_get_string(b);
+            break;
+        case OVS_CT_ATTR_MARK:
+            setmark = nl_attr_get(b);
+            break;
+        case OVS_CT_ATTR_LABELS:
+            setlabel = nl_attr_get(b);
+            break;
+        case OVS_CT_ATTR_EVENTMASK:
+            /* Silently ignored, as userspace datapath does not generate
+             * netlink events. */
+            break;
+        case OVS_CT_ATTR_TIMEOUT:
+            if (!str_to_uint(nl_attr_get_string(b), 10, &tp_id)) {
+                VLOG_WARN("Invalid Timeout Policy ID: %s.",
+                          nl_attr_get_string(b));
+                tp_id = DEFAULT_TP_ID;
+            }
+            break;
+        case OVS_CT_ATTR_NAT: {
+            const struct nlattr *b_nest;
+            unsigned int left_nest;
+            bool ip_min_specified = false;
+            bool proto_num_min_specified = false;
+            bool ip_max_specified = false;
+            bool proto_num_max_specified = false;
+            memset(&nat_action_info, 0, sizeof nat_action_info);
+            nat_action_info_ref = &nat_action_info;
+
+            NL_NESTED_FOR_EACH_UNSAFE (b_nest, left_nest, b) {
+                enum ovs_nat_attr sub_type_nest = nl_attr_type(b_nest);
+
+                switch (sub_type_nest) {
+                case OVS_NAT_ATTR_SRC:
+                case OVS_NAT_ATTR_DST:
+                    nat_config = true;
+                    nat_action_info.nat_action |=
+                        ((sub_type_nest == OVS_NAT_ATTR_SRC)
+                            ? NAT_ACTION_SRC : NAT_ACTION_DST);
+                    break;
+                case OVS_NAT_ATTR_IP_MIN:
+                    memcpy(&nat_action_info.min_addr,
+                           nl_attr_get(b_nest),
+                           nl_attr_get_size(b_nest));
+                    ip_min_specified = true;
+                    break;
+                case OVS_NAT_ATTR_IP_MAX:
+                    memcpy(&nat_action_info.max_addr,
+                           nl_attr_get(b_nest),
+                           nl_attr_get_size(b_nest));
+                    ip_max_specified = true;
+                    break;
+                case OVS_NAT_ATTR_PROTO_MIN:
+                    nat_action_info.min_port =
+                        nl_attr_get_u16(b_nest);
+                    proto_num_min_specified = true;
+                    break;
+                case OVS_NAT_ATTR_PROTO_MAX:
+                    nat_action_info.max_port =
+                        nl_attr_get_u16(b_nest);
+                    proto_num_max_specified = true;
+                    break;
+                case OVS_NAT_ATTR_PERSISTENT:
+                case OVS_NAT_ATTR_PROTO_HASH:
+                case OVS_NAT_ATTR_PROTO_RANDOM:
+                    break;
+                case OVS_NAT_ATTR_UNSPEC:
+                case __OVS_NAT_ATTR_MAX:
+                    OVS_NOT_REACHED();
+                }
+            }
+
+            if (ip_min_specified && !ip_max_specified) {
+                nat_action_info.max_addr = nat_action_info.min_addr;
+            }
+            if (proto_num_min_specified && !proto_num_max_specified) {
+                nat_action_info.max_port = nat_action_info.min_port;
+            }
+            if (proto_num_min_specified || proto_num_max_specified) {
+                if (nat_action_info.nat_action & NAT_ACTION_SRC) {
+                    nat_action_info.nat_action |= NAT_ACTION_SRC_PORT;
+                } else if (nat_action_info.nat_action & NAT_ACTION_DST) {
+                    nat_action_info.nat_action |= NAT_ACTION_DST_PORT;
+                }
+            }
+            break;
+        }
+        case OVS_CT_ATTR_UNSPEC:
+        case __OVS_CT_ATTR_MAX:
+            OVS_NOT_REACHED();
+        }
+    }
+
+    /* We won't be able to function properly in this case, hence
+     * complain loudly. */
+    if (nat_config && !commit) {
+        static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 5);
+        VLOG_WARN_RL(&rl, "NAT specified without commit.");
+    }
+
+    if (conntrack->n_threads == 0) {
+        conntrack_execute(conntrack, packets_, flow->dl_type, force,
+                          commit, zone, setmark, setlabel, flow->tp_src,
+                          flow->tp_dst, helper, nat_action_info_ref,
+                          pmd->ctx.now, tp_id);
+        return false;
+    }
+
+    /* Each packet is sent separately on a message to the appropriate
+     * ct-thread (by its ct-hash).
+     * Batching it is TBD.
+     */
+    DP_PACKET_BATCH_FOR_EACH (i, packet, packets_) {
+        struct ctd_msg *m = &packet->cme.hdr;
+        struct ctd_msg_exec *e = &packet->cme;
+
+        ctd_msg_type_set(m, CTD_MSG_EXEC);
+        ctd_msg_fate_set(m, CTD_MSG_FATE_TBD);
+        m->timestamp_ms = pmd->ctx.now / 1000;
+        m->ct = conntrack,
+        *e = (struct ctd_msg_exec) {
+            .dl_type = flow->dl_type,
+            .force = force,
+            .commit = commit,
+            .zone = zone,
+            .setmark = setmark,
+            .setlabel = setlabel,
+            .tp_src = flow->tp_src,
+            .tp_dst = flow->tp_dst,
+            .helper = helper,
+            .nat_action_info = nat_action_info,
+            .nat_action_info_ref = NULL,
+            .tp_id = tp_id,
+            .pmd = pmd,
+            .flow = dp_flow,
+            .actions_len = actions_len,
+            .depth = depth,
+        };
+        if (nat_action_info_ref) {
+            e->nat_action_info_ref = &e->nat_action_info;
+        }
+        conn_key_extract(conntrack, packet, e->dl_type, &e->ct_lookup_ctx,
+                         e->zone);
+
+        if (dp_flow) {
+            dp_netdev_flow_ref(dp_flow);
+        }
+        memcpy(e->actions_buf, actions, actions_len);
+        ctd_send_msg_to_thread(m, ctd_h2tid(e->ct_lookup_ctx.hash));
+    }
+
+    /* Empty the batch, to stop its processing in this context.
+     * It will be completed in the ct2pmd context.
+     */
+    dp_packet_batch_init(packets_);
+
+    return true;
 }

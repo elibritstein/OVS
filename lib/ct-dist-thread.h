@@ -17,29 +17,23 @@
 #ifndef CT_DIST_THREAD_H
 #define CT_DIST_THREAD_H 1
 
+#include "conntrack.h"
+#include "conntrack-private.h"
+#include "ct-dist.h"
 #include "ct-dist-msg.h"
 #include "mpsc-queue.h"
 #include "ovs-atomic.h"
 #include "ovs-thread.h"
 #include "util.h"
 
-struct conntrack;
-struct dp_netdev_flow;
-struct dp_netdev_pmd_thread;
-struct dp_packet;
-struct dp_packet_batch;
-struct flow;
-struct nlattr;
-struct smap;
+#ifdef  __cplusplus
+extern "C" {
+#endif
 
 #define DEFAULT_CT_DIST_THREAD_NB 0
 #define MAX_CT_DIST_THREAD_NB     10
 DECLARE_EXTERN_PER_THREAD_DATA(unsigned int, ct_thread_id);
 extern unsigned int ctd_n_threads;
-
-#ifdef  __cplusplus
-extern "C" {
-#endif
 
 struct ct_thread {
     PADDED_MEMBERS(CACHE_LINE_SIZE,
@@ -47,9 +41,6 @@ struct ct_thread {
         struct conntrack *ct;
     );
 };
-
-void
-ctd_init(struct conntrack *ct, const struct smap *ovs_other_config);
 
 static inline unsigned int
 ct_thread_id(void)
@@ -68,18 +59,7 @@ ctd_h2tid(uint32_t hash)
     return fastrange32(hash, ctd_n_threads);
 }
 
-bool
-ctd_exec(struct conntrack *conntrack,
-         struct dp_netdev_pmd_thread *pmd,
-         const struct flow *flow,
-         struct dp_packet_batch *packets_,
-         const struct nlattr *ct_action,
-         struct dp_netdev_flow *dp_flow,
-         const struct nlattr *actions,
-         size_t actions_len,
-         uint32_t depth);
-void
-ctd_conn_clean(struct ctd_msg_conn_clean *msg);
+void ctd_thread_create(struct conntrack *ct);
 void ctd_send_msg_to_thread(struct ctd_msg *m, unsigned int id);
 
 #ifdef  __cplusplus

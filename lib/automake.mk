@@ -96,8 +96,10 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/csum.c \
 	lib/csum.h \
 	lib/ct-dist.c \
+	lib/ct-dist.h \
 	lib/ct-dist-msg.c \
 	lib/ct-dist-msg.h \
+	lib/ct-dist-private.h \
 	lib/ct-dist-thread.c \
 	lib/ct-dist-thread.h \
 	lib/ct-dpif.c \
