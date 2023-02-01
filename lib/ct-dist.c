@@ -316,25 +316,6 @@ conn_do_delete(struct conn *conn,
     ovsrcu_gc(delete_cb, conn, gc_node);
 }
 
-static void
-conn_clean_cmn(struct conntrack *ct, struct conn *conn)
-    OVS_REQUIRES(conn->lock, ct->ct_lock)
-{
-    if (conn->alg) {
-        expectation_clean(ct, &conn->key);
-    }
-
-    conntrack_offload_del_conn(ct, conn);
-
-    uint32_t hash = conn_key_hash(&conn->key, ct->hash_basis);
-    cmap_remove(&ct->conns, &conn->cm_node, hash);
-
-    struct zone_limit *zl = zone_limit_lookup(ct, conn->admit_zone);
-    if (zl && zl->czl.zone_limit_seq == conn->zone_limit_seq) {
-        atomic_count_dec(&zl->czl.count);
-    }
-}
-
 static inline bool
 conn_unref(struct conn *conn)
 {
@@ -343,34 +324,6 @@ conn_unref(struct conn *conn)
         return true;
     }
     return false;
-}
-
-/* Must be called with 'conn' of 'conn_type' CT_CONN_TYPE_DEFAULT.  Also
- * removes the associated nat 'conn' from the lookup datastructures. */
-static void
-conn_clean(struct conntrack *ct, struct conn *conn)
-    OVS_EXCLUDED(conn->lock, ct->ct_lock)
-{
-    ovs_assert(conn->conn_type == CT_CONN_TYPE_DEFAULT);
-
-    if (atomic_flag_test_and_set(&conn->reclaimed)) {
-        return;
-    }
-
-    conn_lock(conn);
-    conntrack_lock(ct);
-
-    conn_clean_cmn(ct, conn);
-    if (conn->nat_conn) {
-        uint32_t hash = conn_key_hash(&conn->nat_conn->key, ct->hash_basis);
-        cmap_remove(&ct->conns, &conn->nat_conn->cm_node, hash);
-    }
-    conn_unref(conn);
-    atomic_count_dec(&ct->n_conn);
-    atomic_count_dec(&ct->l4_counters[conn->key.nw_proto]);
-
-    conntrack_unlock(ct);
-    conn_unlock(conn);
 }
 
 static void
@@ -2659,18 +2612,18 @@ ctd_flush(struct conntrack *ct, const uint16_t *zone)
     struct conn *conn;
     uint32_t hash;
 
+    if (ct->n_threads == 0) {
+        return conntrack_flush(ct, zone);
+    }
+
     CMAP_FOR_EACH (conn, cm_node, &ct->conns) {
         if ((!zone || *zone == conn->key.zone) &&
             conn->conn_type == CT_CONN_TYPE_DEFAULT) {
             /* Pass NAT conn, they will be cleaned when
              * their master conn is removed.
              */
-            if (ct->n_threads) {
-                hash = conn_key_hash(&conn->key, ct->hash_basis);
-                ctd_send_conn_clean_msg(ct, conn, hash);
-            } else {
-                conn_clean(ct, conn);
-            }
+            hash = conn_key_hash(&conn->key, ct->hash_basis);
+            ctd_send_conn_clean_msg(ct, conn, hash);
         }
     }
 
@@ -2687,17 +2640,17 @@ ctd_flush_tuple(struct conntrack *ct,
     struct conn *conn;
     uint32_t hash;
 
+    if (ct->n_threads == 0) {
+        return conntrack_flush_tuple(ct, tuple, zone);
+    }
+
     memset(&key, 0, sizeof(key));
     tuple_to_conn_key(tuple, zone, &key);
 
     conn_lookup(ct, &key, time_msec(), &conn, NULL);
     if (conn && conn->conn_type == CT_CONN_TYPE_DEFAULT) {
-        if (ct->n_threads) {
-            hash = conn_key_hash(&conn->key, ct->hash_basis);
-            ctd_send_conn_clean_msg(ct, conn, hash);
-        } else {
-            conn_clean(ct, conn);
-        }
+        hash = conn_key_hash(&conn->key, ct->hash_basis);
+        ctd_send_conn_clean_msg(ct, conn, hash);
     } else {
         VLOG_WARN("Must flush tuple using the original pre-NATed tuple");
         error = ENOENT;
@@ -3472,6 +3425,7 @@ void
 ctd_conn_clean(struct ctd_conn_clean_msg *msg)
 {
     struct ctd_msg *m = &msg->hdr;
+    struct zone_limit *zl;
     struct conntrack *ct;
     struct conn *conn;
     uint32_t hash;
@@ -3505,7 +3459,20 @@ ctd_conn_clean(struct ctd_conn_clean_msg *msg)
     conn_lock(conn);
     conntrack_lock(ct);
 
-    conn_clean_cmn(ct, conn);
+    if (conn->alg) {
+        expectation_clean(ct, &conn->key);
+    }
+
+    conntrack_offload_del_conn(ct, conn);
+
+    hash = conn_key_hash(&conn->key, ct->hash_basis);
+    cmap_remove(&ct->conns, &conn->cm_node, hash);
+
+    zl = zone_limit_lookup(ct, conn->admit_zone);
+    if (zl && zl->czl.zone_limit_seq == conn->zone_limit_seq) {
+        atomic_count_dec(&zl->czl.count);
+    }
+
     if (conn->nat_conn) {
         hash = conn_key_hash(&conn->nat_conn->key, ct->hash_basis);
         ctd_msg_dest_set(m, hash);
