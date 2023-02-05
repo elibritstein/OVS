@@ -450,9 +450,7 @@ dpif_remove_netdev_ports(struct dpif *dpif) {
     struct dpif_port dpif_port;
 
     DPIF_PORT_FOR_EACH (&dpif_port, &port_dump, dpif) {
-        if (!dpif_is_tap_port(dpif_port.type)) {
-            netdev_ports_remove(dpif_port.port_no, dpif_type_str);
-        }
+        netdev_ports_remove(dpif_port.port_no, dpif_type_str);
     }
 }
 
@@ -614,22 +612,19 @@ dpif_port_add(struct dpif *dpif, struct netdev *netdev, odp_port_t *port_nop)
     error = dpif->dpif_class->port_add(dpif, netdev, &port_no,
                                        &datapath_netdev);
     if (!error) {
+        const char *dpif_type_str = dpif_normalize_type(dpif_type(dpif));
+        struct dpif_port dpif_port;
+
         VLOG_DBG_RL(&dpmsg_rl, "%s: added %s as port %"PRIu32,
                     dpif_name(dpif), netdev_name, port_no);
 
-        if (!dpif_is_tap_port(netdev_get_type(netdev))) {
+        netdev_set_dpif_type(datapath_netdev, dpif_type_str);
 
-            const char *dpif_type_str = dpif_normalize_type(dpif_type(dpif));
-            struct dpif_port dpif_port;
-
-            netdev_set_dpif_type(datapath_netdev, dpif_type_str);
-
-            dpif_port.type = CONST_CAST(char *, netdev_get_type(netdev));
-            dpif_port.name = CONST_CAST(char *, netdev_name);
-            dpif_port.port_no = port_no;
-            if (netdev_ports_insert(datapath_netdev, &dpif_port) == EAGAIN) {
-                error = EAGAIN;
-            }
+        dpif_port.type = CONST_CAST(char *, netdev_get_type(netdev));
+        dpif_port.name = CONST_CAST(char *, netdev_name);
+        dpif_port.port_no = port_no;
+        if (netdev_ports_insert(datapath_netdev, &dpif_port) == EAGAIN) {
+            error = EAGAIN;
         }
     }
     if (error) {
