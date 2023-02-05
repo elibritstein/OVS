@@ -1995,6 +1995,18 @@ dump_flow_pattern(struct ds *s,
         ds_put_cstr(s, "/ ");
     } else if (item->type == RTE_FLOW_ITEM_TYPE_VOID) {
         ds_put_cstr(s, "void / ");
+    } else if (item->type == OVS_RTE_FLOW_ITEM_TYPE(HASH)) {
+        const struct rte_flow_item_mark *hash_spec = item->spec;
+        const struct rte_flow_item_mark *hash_mask = item->mask;
+
+        ds_put_cstr(s, "hash / ");
+        if (hash_spec) {
+            ds_put_format(s, "id spec %d ", hash_spec->id);
+        }
+        if (hash_mask) {
+            ds_put_format(s, "id mask %d ", hash_mask->id);
+        }
+        ds_put_cstr(s, "/ ");
     } else {
         ds_put_format(s, "unknown rte flow pattern (%d)\n", item->type);
     }
@@ -2442,6 +2454,8 @@ dpdk_offload_rte_create(struct netdev *netdev,
     for (it = items; it->type != RTE_FLOW_ITEM_TYPE_END; it++) {
         if (it->type == OVS_RTE_FLOW_ITEM_TYPE(FLOW_INFO)) {
             it->type = RTE_FLOW_ITEM_TYPE_MARK;
+        } else if (it->type == OVS_RTE_FLOW_ITEM_TYPE(HASH)) {
+            return -1;
         }
     }
 
@@ -3758,6 +3772,18 @@ parse_flow_match(struct netdev *netdev,
             memset(&consumed_masks->ct_label, 0,
                    sizeof consumed_masks->ct_label);
         }
+    }
+
+    if (match->wc.masks.dp_hash) {
+        struct rte_flow_item_mark *spec, *mask;
+
+        spec = per_thread_xzalloc(sizeof *spec);
+        mask = per_thread_xzalloc(sizeof *mask);
+        spec->id = match->flow.dp_hash;
+        mask->id = match->wc.masks.dp_hash;
+        add_flow_pattern(patterns, OVS_RTE_FLOW_ITEM_TYPE_HASH, spec, mask,
+                         NULL);
+        match->wc.masks.dp_hash = 0;
     }
 
     add_flow_pattern(patterns, RTE_FLOW_ITEM_TYPE_END, NULL, NULL, NULL);

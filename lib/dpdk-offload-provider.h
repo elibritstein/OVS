@@ -109,6 +109,7 @@ enum {
 /* Proprietary rte-flow item enums. */
 enum {
     OVS_RTE_FLOW_ITEM_TYPE_FLOW_INFO = INT_MIN,
+    OVS_RTE_FLOW_ITEM_TYPE_HASH,
 };
 
 #define OVS_RTE_FLOW_ITEM_TYPE(TYPE) \

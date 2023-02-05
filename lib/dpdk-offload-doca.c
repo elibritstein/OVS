@@ -886,6 +886,26 @@ doca_translate_items(struct netdev *netdev OVS_UNUSED,
                 doca_spec->meta.pkt_meta |= (spec->id & reg_mask) << reg_offset;
                 doca_mask->meta.pkt_meta |= reg_mask << reg_offset;
             }
+        } else if (item_type == OVS_RTE_FLOW_ITEM_TYPE(HASH)) {
+            uint32_t reg_offset = reg_fields[REG_FIELD_DP_HASH].offset;
+            const struct rte_flow_item_mark *hash_spec = items->spec;
+            const struct rte_flow_item_mark *hash_mask = items->mask;
+            uint32_t reg_mask = reg_fields[REG_FIELD_DP_HASH].mask;
+
+            /* In case of non-IPv4, the first flow with the hash function is
+             * not offloaded, so there is no point to offload this flow as it
+             * will never be hit.
+             */
+            if (doca_hdr_mask->l3_type != DOCA_FLOW_L3_TYPE_IP4) {
+                return -1;
+            }
+            if (!hash_spec || !hash_mask || hash_mask->id & ~reg_mask) {
+                /* Can't support larger mask. */
+                return -1;
+            }
+
+            doca_spec->meta.pkt_meta |= (hash_spec->id & reg_mask) << reg_offset;
+            doca_mask->meta.pkt_meta |= reg_mask << reg_offset;
         } else {
             VLOG_DBG_RL(&rl, "item %d is not supported", item_type);
             return -1;
