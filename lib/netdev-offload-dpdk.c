@@ -471,10 +471,13 @@ dump_table_id(struct ds *s, void *data,
               void *priv OVS_UNUSED, void *priv_arg OVS_UNUSED)
 {
     struct table_id_data *table_id_data = data;
+    const char *netdev_name;
 
+    netdev_name = table_id_data->netdev
+                  ? netdev_get_name(table_id_data->netdev)
+                  : NULL;
     ds_put_format(s, "%s, vport=%"PRIu32", recirc_id=%"PRIu32,
-                  netdev_get_name(table_id_data->netdev), table_id_data->vport,
-                  table_id_data->recirc_id);
+                  netdev_name, table_id_data->vport, table_id_data->recirc_id);
     return s;
 }
 
@@ -792,6 +795,10 @@ get_table_id(odp_port_t vport,
     if (is_e2e_cache) {
         *table_id = E2E_BASE_TABLE_ID | vport;
         return 0;
+    }
+
+    if (vport != ODPP_NONE) {
+        table_id_data.netdev = NULL;
     }
 
     table_id_init();
