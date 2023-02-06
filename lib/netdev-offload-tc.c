@@ -3000,7 +3000,8 @@ netdev_tc_init_flow_api(struct netdev *netdev)
     int ifindex;
     int error;
 
-    if (netdev_vport_is_vport_class(netdev->netdev_class)
+    if ((netdev_vport_is_vport_class(netdev->netdev_class) ||
+         !strcmp(netdev_get_type(netdev), "tap"))
         && strcmp(netdev_get_dpif_type(netdev), "system")) {
         VLOG_DBG("%s: vport doesn't belong to the system datapath. Skipping.",
                  netdev_get_name(netdev));

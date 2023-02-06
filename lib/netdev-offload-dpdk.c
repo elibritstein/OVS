@@ -5819,7 +5819,8 @@ netdev_offload_dpdk_init_flow_api(struct netdev *netdev)
         .op = init_esw_members_op,
     };
 
-    if (netdev_vport_is_vport_class(netdev->netdev_class)
+    if ((netdev_vport_is_vport_class(netdev->netdev_class) ||
+         !strcmp(netdev_get_type(netdev), "tap"))
         && !strcmp(netdev_get_dpif_type(netdev), "system")) {
         VLOG_DBG("%s: vport belongs to the system datapath. Skipping.",
                  netdev_get_name(netdev));
@@ -5830,7 +5831,8 @@ netdev_offload_dpdk_init_flow_api(struct netdev *netdev)
      * in DPDK and are not compatible with the offload API so do not init it.
      */
     if (!netdev_dpdk_is_ethdev(netdev) &&
-        !netdev_vport_is_vport_class(netdev->netdev_class)) {
+        !netdev_vport_is_vport_class(netdev->netdev_class) &&
+        strcmp(netdev_get_type(netdev), "tap")) {
         return EOPNOTSUPP;
     }
 
@@ -6058,7 +6060,7 @@ flush_in_vport_cb(struct netdev *vport,
     struct netdev *netdev = aux;
 
     /* Only vports are related to physical devices. */
-    if (netdev_vport_is_vport_class(vport->netdev_class)) {
+    if (!netdev_dpdk_is_ethdev(netdev)) {
         flush_netdev_flows_in_related(netdev, vport);
     }
 
@@ -6078,7 +6080,7 @@ netdev_offload_dpdk_flow_flush(struct netdev *netdev)
         return -1;
     }
 
-    if (!netdev_vport_is_vport_class(netdev->netdev_class)) {
+    if (netdev_dpdk_is_ethdev(netdev)) {
         /* If the flushed netdev is an ESW manager, flush its members too. */
         if (netdev_dpdk_is_esw_mgr(netdev)) {
             netdev_ports_traverse(netdev->dpif_type, esw_members_cb, &aux);
@@ -6579,7 +6581,7 @@ rte_aux_tables_uninit(struct netdev *netdev)
 {
     struct netdev_offload_dpdk_data *data;
 
-    if (netdev_vport_is_vport_class(netdev->netdev_class)) {
+    if (!netdev_dpdk_is_ethdev(netdev)) {
         return;
     }
 
@@ -6597,7 +6599,7 @@ rte_aux_tables_init(struct netdev *netdev)
     struct netdev_offload_dpdk_data *data;
     int ret = 0;
 
-    if (netdev_vport_is_vport_class(netdev->netdev_class)) {
+    if (!netdev_dpdk_is_ethdev(netdev)) {
         return 0;
     }
 

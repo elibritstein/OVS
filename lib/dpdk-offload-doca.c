@@ -2072,7 +2072,7 @@ dpdk_offload_doca_netdev_data_destroy(void *data)
 {
     struct netdev *netdev = data;
 
-    if (netdev_vport_is_vport_class(netdev->netdev_class)) {
+    if (!netdev_dpdk_is_ethdev(netdev)) {
         return 0;
     }
 
@@ -2816,7 +2816,7 @@ dpdk_offload_doca_aux_tables_uninit(struct netdev *netdev)
 {
     struct netdev_offload_dpdk_data *data;
 
-    if (netdev_vport_is_vport_class(netdev->netdev_class)) {
+    if (!netdev_dpdk_is_ethdev(netdev)) {
         return;
     }
 
@@ -2832,7 +2832,7 @@ dpdk_offload_doca_aux_tables_init(struct netdev *netdev)
     struct netdev_offload_dpdk_data *data;
     struct doca_eswitch_ctx *ctx;
 
-    if (netdev_vport_is_vport_class(netdev->netdev_class)) {
+    if (!netdev_dpdk_is_ethdev(netdev)) {
         return 0;
     }
 
