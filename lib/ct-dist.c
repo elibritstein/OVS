@@ -937,7 +937,7 @@ CTD_MSG_NAT_CANDIDATE_RESPONSE:
                 }
                 ctd_nat_reorder_packet_from_orig(pkt, nc);
                 if (conn_expired(nc, now)) {
-                    ctd_send_conn_clean_msg(ct, nc, ctx->hash);
+                    ctd_msg_conn_clean_send(ct, nc, ctx->hash);
                     return NULL;
                 }
                 ctd_msg_type_set(m, CTD_MSG_EXEC);
@@ -1547,7 +1547,7 @@ ctd_conn_batch_clean(struct conntrack *ct,
         }
 
         hash = conn_key_hash(&conns[i]->key, ct->hash_basis);
-        ctd_send_conn_clean_msg(ct, conns[i], hash);
+        ctd_msg_conn_clean_send(ct, conns[i], hash);
     }
 
     *batch_count = 0;
@@ -2623,7 +2623,7 @@ ctd_flush(struct conntrack *ct, const uint16_t *zone)
              * their master conn is removed.
              */
             hash = conn_key_hash(&conn->key, ct->hash_basis);
-            ctd_send_conn_clean_msg(ct, conn, hash);
+            ctd_msg_conn_clean_send(ct, conn, hash);
         }
     }
 
@@ -2650,7 +2650,7 @@ ctd_flush_tuple(struct conntrack *ct,
     conn_lookup(ct, &key, time_msec(), &conn, NULL);
     if (conn && conn->conn_type == CT_CONN_TYPE_DEFAULT) {
         hash = conn_key_hash(&conn->key, ct->hash_basis);
-        ctd_send_conn_clean_msg(ct, conn, hash);
+        ctd_msg_conn_clean_send(ct, conn, hash);
     } else {
         VLOG_WARN("Must flush tuple using the original pre-NATed tuple");
         error = ENOENT;
@@ -3422,7 +3422,7 @@ ctd_nat_candidate(struct dp_packet *pkt)
 }
 
 void
-ctd_conn_clean(struct ctd_conn_clean_msg *msg)
+ctd_conn_clean(struct ctd_msg_conn_clean *msg)
 {
     struct ctd_msg *m = &msg->hdr;
     struct zone_limit *zl;

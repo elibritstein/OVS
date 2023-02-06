@@ -138,11 +138,14 @@ struct ctd_msg_exec {
 };
 BUILD_ASSERT_DECL(offsetof(struct ctd_msg_exec, hdr) == 0);
 
-struct ctd_conn_clean_msg {
+struct ctd_msg_conn_clean {
     struct ctd_msg hdr;
     struct conn *conn;
 };
-BUILD_ASSERT_DECL(offsetof(struct ctd_conn_clean_msg, hdr) == 0);
+BUILD_ASSERT_DECL(offsetof(struct ctd_msg_conn_clean, hdr) == 0);
+
+void ctd_msg_conn_clean_send(struct conntrack *ct, struct conn *conn,
+                             uint32_t hash);
 
 #ifdef  __cplusplus
 }

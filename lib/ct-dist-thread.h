@@ -35,6 +35,7 @@ struct smap;
 #define DEFAULT_CT_DIST_THREAD_NB 0
 #define MAX_CT_DIST_THREAD_NB     10
 DECLARE_EXTERN_PER_THREAD_DATA(unsigned int, ct_thread_id);
+extern unsigned int ctd_n_threads;
 
 #ifdef  __cplusplus
 extern "C" {
@@ -61,6 +62,12 @@ ct_thread_id(void)
     return id;
 }
 
+static inline unsigned int
+ctd_h2tid(uint32_t hash)
+{
+    return fastrange32(hash, ctd_n_threads);
+}
+
 bool
 ctd_exec(struct conntrack *conntrack,
          struct dp_netdev_pmd_thread *pmd,
@@ -72,9 +79,8 @@ ctd_exec(struct conntrack *conntrack,
          size_t actions_len,
          uint32_t depth);
 void
-ctd_conn_clean(struct ctd_conn_clean_msg *msg);
-void
-ctd_send_conn_clean_msg(struct conntrack *ct, struct conn *conn, uint32_t hash);
+ctd_conn_clean(struct ctd_msg_conn_clean *msg);
+void ctd_send_msg_to_thread(struct ctd_msg *m, unsigned int id);
 
 #ifdef  __cplusplus
 }

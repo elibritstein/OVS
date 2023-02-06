@@ -19,6 +19,7 @@
 
 #include "conntrack-private.h"
 #include "conntrack.h"
+#include "ct-dist-msg.h"
 #include "ct-dist-thread.h"
 #include "dp-packet.h"
 #include "dpif.h"
@@ -41,8 +42,8 @@ VLOG_DEFINE_THIS_MODULE(ct_dist);
 #define CT_THREAD_QUIESCE_INTERVAL_MS 10
 
 static void *ct_thread_main(void *arg);
-static unsigned int n_threads;
 DEFINE_EXTERN_PER_THREAD_DATA(ct_thread_id, OVSTHREAD_ID_UNSET);
+unsigned int ctd_n_threads;
 
 void
 ctd_init(struct conntrack *ct, const struct smap *ovs_other_config)
@@ -54,22 +55,22 @@ ctd_init(struct conntrack *ct, const struct smap *ovs_other_config)
         return;
     }
 
-    n_threads = smap_get_ullong(ovs_other_config, "n-ct-threads",
+    ctd_n_threads = smap_get_ullong(ovs_other_config, "n-ct-threads",
                                 DEFAULT_CT_DIST_THREAD_NB);
-    if (n_threads > MAX_CT_DIST_THREAD_NB) {
+    if (ctd_n_threads > MAX_CT_DIST_THREAD_NB) {
         VLOG_WARN("Invalid number of threads requested: %u. Limiting to %u",
-                  n_threads, MAX_CT_DIST_THREAD_NB);
-        n_threads = MAX_CT_DIST_THREAD_NB;
+                  ctd_n_threads, MAX_CT_DIST_THREAD_NB);
+        ctd_n_threads = MAX_CT_DIST_THREAD_NB;
     }
 
-    ct->n_threads = n_threads;
-    if (n_threads == 0) {
+    ct->n_threads = ctd_n_threads;
+    if (ctd_n_threads == 0) {
         goto out;
     }
 
-    ct->threads = xcalloc(n_threads, sizeof *ct->threads);
+    ct->threads = xcalloc(ctd_n_threads, sizeof *ct->threads);
 
-    for (tid = 0; tid < n_threads; tid++) {
+    for (tid = 0; tid < ctd_n_threads; tid++) {
         struct ct_thread *thread;
 
         thread = &ct->threads[tid];
@@ -89,13 +90,7 @@ out:
     ovsthread_once_done(&once);
 }
 
-static unsigned int
-ctd_h2tid(uint32_t hash)
-{
-    return fastrange32(hash, n_threads);
-}
-
-static void
+void
 ctd_send_msg_to_thread(struct ctd_msg *m, unsigned int id)
 {
     struct ct_thread *thread;
@@ -107,7 +102,7 @@ ctd_send_msg_to_thread(struct ctd_msg *m, unsigned int id)
 static void *
 ct_thread_main(void *arg)
 {
-    struct ctd_conn_clean_msg *clean_msg = NULL;
+    struct ctd_msg_conn_clean *clean_msg = NULL;
     struct mpsc_queue_node *queue_node;
     struct ct_thread *thread = arg;
     struct dp_packet *pkt = NULL;
@@ -150,7 +145,7 @@ ct_thread_main(void *arg)
             ctd_nat_candidate(pkt);
             break;
         case CTD_MSG_CLEAN:
-            clean_msg = CONTAINER_OF(m, struct ctd_conn_clean_msg, hdr);
+            clean_msg = CONTAINER_OF(m, struct ctd_msg_conn_clean, hdr);
             ctd_conn_clean(clean_msg);
             break;
         default:
@@ -331,7 +326,7 @@ ctd_exec(struct conntrack *conntrack,
         VLOG_WARN_RL(&rl, "NAT specified without commit.");
     }
 
-    if (n_threads == 0) {
+    if (ctd_n_threads == 0) {
         conntrack_execute(conntrack, packets_, flow->dl_type, force,
                           commit, zone, setmark, setlabel, flow->tp_src,
                           flow->tp_dst, helper, nat_action_info_ref,
@@ -388,19 +383,4 @@ ctd_exec(struct conntrack *conntrack,
     dp_packet_batch_init(packets_);
 
     return true;
-}
-
-void
-ctd_send_conn_clean_msg(struct conntrack *ct, struct conn *conn, uint32_t hash)
-{
-    struct ctd_conn_clean_msg *msg;
-
-    msg = xmalloc(sizeof *msg);
-    msg->hdr.ct = ct;
-    msg->conn = conn;
-    ctd_msg_type_set(&msg->hdr, CTD_MSG_CLEAN);
-
-    ctd_msg_dest_set(&msg->hdr, hash);
-    ctd_msg_fate_set(&msg->hdr, CTD_MSG_FATE_CTD);
-    ctd_send_msg_to_thread(&msg->hdr, ctd_h2tid(hash));
 }
