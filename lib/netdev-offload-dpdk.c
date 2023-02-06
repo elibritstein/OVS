@@ -5424,7 +5424,7 @@ find_raw_encap_spec(struct raw_encap_data *raw_encap_data,
     uint8_t *next_hdr;
     uint16_t proto;
 
-    eth = (struct eth_header *) raw_encap_data->conf.data;
+    eth = ALIGNED_CAST(struct eth_header *, raw_encap_data->conf.data);
     if (type == RTE_FLOW_ITEM_TYPE_ETH) {
         return eth;
     }
@@ -5433,13 +5433,13 @@ find_raw_encap_spec(struct raw_encap_data *raw_encap_data,
     proto = htons(eth->eth_type);
     /* VLAN skipping */
     while (eth_type_vlan(ntohs(proto))) {
-        vlan = (struct vlan_header *) next_hdr;
+        vlan = ALIGNED_CAST(struct vlan_header *, next_hdr);
         proto = htons(vlan->vlan_next_type);
         next_hdr += sizeof *vlan;
     }
 
     if (proto == RTE_ETHER_TYPE_IPV4) {
-        ipv4 = (struct ip_header *) next_hdr;
+        ipv4 = ALIGNED_CAST(struct ip_header *, next_hdr);
         if (type == RTE_FLOW_ITEM_TYPE_IPV4) {
             return ipv4;
         }
@@ -5450,7 +5450,7 @@ find_raw_encap_spec(struct raw_encap_data *raw_encap_data,
     }
 
     if (proto == RTE_ETHER_TYPE_IPV6) {
-        ipv6 = (struct ovs_16aligned_ip6_hdr *) next_hdr;
+        ipv6 = ALIGNED_CAST(struct ovs_16aligned_ip6_hdr *, next_hdr);
         if (type == RTE_FLOW_ITEM_TYPE_IPV6) {
             return ipv6;
         }
