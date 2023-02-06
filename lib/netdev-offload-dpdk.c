@@ -6220,29 +6220,24 @@ netdev_offload_dpdk_hw_miss_packet_recover(struct netdev *netdev,
         }
 
         if (flow_miss_ctx.vport != ODPP_NONE) {
+           vport_netdev = netdev_ports_get(flow_miss_ctx.vport,
+                                           netdev->dpif_type);
+           if (!vport_netdev) {
+               return -1;
+           }
+           netdev_close(vport_netdev);
             if (is_all_zeros(&flow_miss_ctx.tnl, sizeof flow_miss_ctx.tnl)) {
-                vport_netdev = netdev_ports_get(flow_miss_ctx.vport,
-                                                netdev->dpif_type);
-                if (vport_netdev) {
+                if (vport_netdev->netdev_class->pop_header) {
                     parse_tcp_flags(packet, NULL, NULL, NULL);
-                    if (vport_netdev->netdev_class->pop_header) {
-                        if (!vport_netdev->netdev_class->pop_header(packet)) {
-                            netdev_close(vport_netdev);
-                            return -1;
-                        }
-                        packet->md.in_port.odp_port = flow_miss_ctx.vport;
-                    } else {
-                        VLOG_ERR("vport nedtdev=%s with no pop_header method",
-                                 netdev_get_name(vport_netdev));
-                        netdev_close(vport_netdev);
-                        return EOPNOTSUPP;
+                    if (!vport_netdev->netdev_class->pop_header(packet)) {
+                        return -1;
                     }
                 }
             } else {
                 memcpy(&packet->md.tunnel, &flow_miss_ctx.tnl,
                        sizeof packet->md.tunnel);
-                packet->md.in_port.odp_port = flow_miss_ctx.vport;
             }
+            packet->md.in_port.odp_port = flow_miss_ctx.vport;
         }
     }
 
