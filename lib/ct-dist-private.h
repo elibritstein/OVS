@@ -31,7 +31,6 @@ extern "C" {
 void ctd_conn_clean(struct ctd_msg_conn_clean *msg);
 
 int ctd_conntrack_execute(struct dp_packet *pkt);
-void *ctd_clean_thread_main(void *f_);
 void ctd_nat_candidate(struct dp_packet *pkt);
 
 uint32_t conn_key_hash(const struct conn_key *, uint32_t basis);
