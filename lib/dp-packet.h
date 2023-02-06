@@ -27,7 +27,7 @@
 #endif
 
 #include "conntrack.h"
-#include "ct-dist-thread.h"
+#include "ct-dist-msg.h"
 #include "mpsc-queue.h"
 #include "netdev-afxdp.h"
 #include "netdev-dpdk.h"
