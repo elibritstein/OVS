@@ -787,7 +787,7 @@ ctd_nat_conn_init(struct dp_packet *pkt,
                   struct conn *nat_conn)
 {
     struct ctd_msg *m = &pkt->cme.hdr;
-    struct ctd_exec *e = &pkt->cme.e;
+    struct ctd_msg_exec *e = &pkt->cme;
 
     memcpy(&nat_conn->key, &conn->rev_key, sizeof nat_conn->key);
     memcpy(&nat_conn->rev_key, &conn->key, sizeof nat_conn->rev_key);
@@ -840,7 +840,7 @@ ctd_conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
                    enum ct_alg_ctl_type ct_alg_ctl, uint32_t tp_id)
 {
     struct ctd_msg *m = &pkt->cme.hdr;
-    struct ctd_exec *e = &pkt->cme.e;
+    struct ctd_msg_exec *e = &pkt->cme;
     struct conn *nat_conn = NULL;
     struct zone_limit *zl = NULL;
     struct nat_lookup_info *nli;
@@ -1201,7 +1201,7 @@ static struct conn *
 ctd_process_one_init(struct dp_packet *pkt)
 {
     struct ctd_msg *m = &pkt->cme.hdr;
-    struct ctd_exec *e = &pkt->cme.e;
+    struct ctd_msg_exec *e = &pkt->cme;
     struct conn_lookup_ctx *ctx;
     struct conntrack *ct;
     struct conn *conn;
@@ -1239,7 +1239,7 @@ static struct conn *
 ctd_process_conn_type_un_nat(struct dp_packet *pkt, struct conn *conn)
 {
     struct ctd_msg *m = &pkt->cme.hdr;
-    struct ctd_exec *e = &pkt->cme.e;
+    struct ctd_msg_exec *e = &pkt->cme;
     struct conn_lookup_ctx *ctx;
     struct conntrack *ct;
     uint16_t zone;
@@ -1273,7 +1273,7 @@ ctd_process_one(struct dp_packet *pkt)
     const struct ovs_key_ct_labels *setlabel;
     const struct alg_exp_node *alg_exp;
     struct ctd_msg *m = &pkt->cme.hdr;
-    struct ctd_exec *e = &pkt->cme.e;
+    struct ctd_msg_exec *e = &pkt->cme;
     enum ct_alg_ctl_type ct_alg_ctl;
     bool create_new_conn = false;
     struct nat_lookup_info *nli;
@@ -1427,7 +1427,7 @@ ctd_conntrack_execute(struct dp_packet *pkt)
     const struct nat_action_info_t *nat_action_info;
     const struct ovs_key_ct_labels *setlabel;
     struct ctd_msg *m = &pkt->cme.hdr;
-    struct ctd_exec *e = &pkt->cme.e;
+    struct ctd_msg_exec *e = &pkt->cme;
     struct dp_packet_batch pkt_batch;
     struct conn_lookup_ctx *ctx;
     const uint32_t *setmark;
@@ -3339,7 +3339,7 @@ static void
 ctd_nat_rev_key_init(struct dp_packet *pkt, const struct conn *conn)
 {
     struct ctd_msg *m = &pkt->cme.hdr;
-    struct ctd_exec *e = &pkt->cme.e;
+    struct ctd_msg_exec *e = &pkt->cme;
     struct nat_action_info_t *nai;
     struct nat_lookup_info *nli;
     union ct_addr addr = {0};
@@ -3370,7 +3370,7 @@ ctd_nat_candidate(struct dp_packet *pkt)
 {
     const struct nat_action_info_t *nat_action_info;
     struct ctd_msg *m = &pkt->cme.hdr;
-    struct ctd_exec *e = &pkt->cme.e;
+    struct ctd_msg_exec *e = &pkt->cme;
     struct nat_lookup_info *nli;
     struct conn *nat_conn = NULL;
     struct conn_lookup_ctx *ctx;

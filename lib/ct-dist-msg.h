@@ -114,7 +114,8 @@ struct nat_lookup_info {
     uint32_t hash;
 };
 
-struct ctd_exec {
+struct ctd_msg_exec {
+    struct ctd_msg hdr;
     ovs_be16 dl_type;
     bool force;
     bool commit;
@@ -135,6 +136,7 @@ struct ctd_exec {
     uint32_t depth;
     struct nat_lookup_info nli;
 };
+BUILD_ASSERT_DECL(offsetof(struct ctd_msg_exec, hdr) == 0);
 
 struct ctd_conn_clean_msg {
     struct ctd_msg hdr;

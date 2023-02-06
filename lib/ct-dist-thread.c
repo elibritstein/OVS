@@ -164,7 +164,7 @@ ct_thread_main(void *arg)
         case CTD_MSG_FATE_PMD:
             /* Send back to the PMD. */
             ctd_msg_fate_set(m, CTD_MSG_FATE_TBD);
-            mpsc_queue_insert(&pkt->cme.e.pmd->ct2pmd.queue, &m->node);
+            mpsc_queue_insert(&pkt->cme.pmd->ct2pmd.queue, &m->node);
             break;
         case CTD_MSG_FATE_CTD:
             ctd_msg_fate_set(m, CTD_MSG_FATE_TBD);
@@ -345,13 +345,13 @@ ctd_exec(struct conntrack *conntrack,
      */
     DP_PACKET_BATCH_FOR_EACH (i, packet, packets_) {
         struct ctd_msg *m = &packet->cme.hdr;
-        struct ctd_exec *e = &packet->cme.e;
+        struct ctd_msg_exec *e = &packet->cme;
 
         ctd_msg_type_set(m, CTD_MSG_EXEC);
         ctd_msg_fate_set(m, CTD_MSG_FATE_TBD);
         m->timestamp_ms = pmd->ctx.now / 1000;
         m->ct = conntrack,
-        *e = (struct ctd_exec) {
+        *e = (struct ctd_msg_exec) {
             .dl_type = flow->dl_type,
             .force = force,
             .commit = commit,

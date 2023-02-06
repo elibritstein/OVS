@@ -13967,7 +13967,7 @@ ct2ct_merge_flows(struct e2e_cache_ovs_flow **flows,
 static void
 ct2pmd_handle(struct dp_packet *pkt)
 {
-    struct ctd_exec *e = &pkt->cme.e;
+    struct ctd_msg_exec *e = &pkt->cme;
     struct dp_packet_batch batch;
     struct dp_netdev_flow *flow;
     struct nlattr *actions;

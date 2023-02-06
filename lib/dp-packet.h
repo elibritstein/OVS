@@ -147,12 +147,6 @@ struct e2e_cache_trace_message {
     OVS_ALIGNED_VAR((sizeof(void *))) struct e2e_cache_trace_info data[0];
 });
 
-struct ctd_msg_exec {
-    struct ctd_msg hdr;
-    struct ctd_exec e;
-};
-BUILD_ASSERT_DECL(offsetof(struct ctd_msg_exec, hdr) == 0);
-
 /* Buffer for holding packet data.  A dp_packet is automatically reallocated
  * as necessary if it grows too large for the available memory.
  * By default the packet type is set to Ethernet (PT_ETH).
