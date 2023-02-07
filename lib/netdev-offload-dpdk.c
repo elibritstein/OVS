@@ -2445,6 +2445,7 @@ struct act_vars {
     uint8_t vlan_pcp;
     uint8_t proto;
     bool has_dp_hash;
+    odp_port_t tnl_push_out_port;
 };
 
 static int
@@ -4469,17 +4470,20 @@ add_recirc_action(struct netdev *netdev,
         return -1;
     }
     memset(&miss_ctx, 0, sizeof miss_ctx);
-    miss_ctx.vport = act_vars->vport;
+    if (act_vars->tnl_push_out_port != ODPP_NONE) {
+        miss_ctx.vport = act_vars->tnl_push_out_port;
+    } else {
+        miss_ctx.vport = act_vars->vport;
+    }
     miss_ctx.recirc_id = nl_attr_get_u32(nla);
     miss_ctx.skip_actions = act_vars->pre_ct_cnt;
     miss_ctx.has_dp_hash = act_vars->has_dp_hash;
-    if (act_vars->vport != ODPP_NONE) {
+    if (act_vars->tnl_type != TNL_TYPE_NONE) {
         get_tnl_masked(&miss_ctx.tnl, NULL, act_vars->tnl_key,
                        &act_vars->tnl_mask);
     }
-    if (get_table_id(act_vars->vport, miss_ctx.recirc_id,
-                     netdev, act_vars->is_e2e_cache,
-                     &act_resources->next_table_id)) {
+    if (get_table_id(miss_ctx.vport, miss_ctx.recirc_id, netdev,
+                     act_vars->is_e2e_cache, &act_resources->next_table_id)) {
         return -1;
     }
     if (!act_vars->is_e2e_cache &&
@@ -4487,7 +4491,7 @@ add_recirc_action(struct netdev *netdev,
                              &act_resources->flow_miss_ctx_id)) {
         return -1;
     }
-    if (act_vars->vport != ODPP_NONE && act_vars->recirc_id == 0) {
+    if (act_vars->tnl_type != TNL_TYPE_NONE && act_vars->recirc_id == 0) {
         if (get_tnl_id(act_vars->tnl_key, &act_vars->tnl_mask,
                        &act_resources->tnl_id)) {
             return -1;
@@ -5367,6 +5371,7 @@ parse_flow_actions(struct netdev *flowdev,
         } else if (nl_attr_type(nla) == OVS_ACTION_ATTR_TUNNEL_PUSH) {
             const struct ovs_action_push_tnl *tnl_push = nl_attr_get(nla);
 
+            act_vars->tnl_push_out_port = tnl_push->out_port;
             if (tnl_push->tnl_type == OVS_VPORT_TYPE_VXLAN) {
                 vxlan_data = add_vxlan_encap_action(actions, tnl_push->header);
                 if (vxlan_data) {
@@ -5565,7 +5570,10 @@ netdev_offload_dpdk_add_flow(struct netdev *netdev,
         .cnt = 0,
         .s_tnl = DS_EMPTY_INITIALIZER,
     };
-    struct act_vars act_vars = { .vport = ODPP_NONE };
+    struct act_vars act_vars = {
+        .vport = ODPP_NONE,
+        .tnl_push_out_port = ODPP_NONE,
+    };
     struct ufid_to_rte_flow_data *flows_data = NULL;
     int ret;
 
