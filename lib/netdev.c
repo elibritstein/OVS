@@ -987,7 +987,7 @@ netdev_push_header(const struct netdev *netdev,
                          netdev_get_name(netdev));
         } else {
             netdev->netdev_class->push_header(netdev, packet, data);
-            pkt_metadata_init(&packet->md, data->out_port);
+            pkt_metadata_reset(&packet->md, data->out_port);
             dp_packet_batch_refill(batch, packet, i);
         }
     }

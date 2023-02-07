@@ -161,7 +161,7 @@ pkt_metadata_init_conn(struct pkt_metadata *md)
 }
 
 static inline void
-pkt_metadata_init(struct pkt_metadata *md, odp_port_t port)
+pkt_metadata_reset(struct pkt_metadata *md, odp_port_t port)
 {
     /* This is called for every packet in userspace datapath and affects
      * performance if all the metadata is initialized. Hence, fields should
@@ -194,8 +194,14 @@ pkt_metadata_init(struct pkt_metadata *md, odp_port_t port)
     md->tunnel.ip_dst = 0;
     md->tunnel.ipv6_dst = in6addr_any;
     md->in_port.odp_port = port;
-    md->orig_in_port = port;
     md->conn = NULL;
+}
+
+static inline void
+pkt_metadata_init(struct pkt_metadata *md, odp_port_t port)
+{
+    pkt_metadata_reset(md, port);
+    md->orig_in_port = port;
 }
 
 /* This function prefetches the cachelines touched by pkt_metadata_init()
