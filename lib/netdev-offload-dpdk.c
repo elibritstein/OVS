@@ -3369,6 +3369,7 @@ parse_flow_match(struct netdev *netdev,
     }
 
     patterns->physdev = netdev;
+    act_vars->tnl_type = TNL_TYPE_NONE;
 #ifdef ALLOW_EXPERIMENTAL_API /* Packet restoration API required. */
     if (netdev_vport_is_vport_class(netdev->netdev_class)) {
         act_vars->vport = match->flow.in_port.odp_port;
@@ -3394,8 +3395,16 @@ parse_flow_match(struct netdev *netdev,
                                  act_vars)) {
             return -1;
         }
-    } else {
-        act_vars->tnl_type = TNL_TYPE_NONE;
+    } else if (!strcmp(netdev_get_type(netdev), "tap")) {
+        act_vars->vport = match->flow.in_port.odp_port;
+        patterns->physdev = netdev_ports_get(orig_in_port, netdev->dpif_type);
+        if (patterns->physdev == NULL) {
+            return -1;
+        }
+        netdev_close(patterns->physdev);
+        if (netdev_dpdk_get_esw_mgr_port_id(patterns->physdev) < 0) {
+            return -1;
+        }
     }
 #endif
 
