@@ -455,8 +455,12 @@ ufid_to_rte_flow_disassociate(struct ufid_to_rte_flow_data *data)
  * "data_size" is the size of the data in the elements.
  * "priv_size" is the size of the priv data in the elements. priv is just
  *     allocated with the object, and used by users.
- * "priv_ref" is called upon a reference to the priv.
- * "priv_unref" is called upon a un-reference to the priv.
+ * "priv_init" is called upon the first reference to a priv.
+ * "priv_uninit" is called upon the last dereference to a priv.
+ *               It should be possible to then call 'priv_init' again
+ *               to re-initialize the priv in a correct state.
+ * "priv_init_done" is used to protect against multiple calls to
+ *                  priv_init.
  */
 struct context_metadata {
     const char *name;
@@ -471,8 +475,9 @@ struct context_metadata {
     size_t data_size;
     bool delayed_release;
     size_t priv_size;
-    int (*priv_ref)(void *priv, void *priv_arg, uint32_t id);
-    void (*priv_unref)(void *priv);
+    int (*priv_init)(void *priv, void *priv_arg, uint32_t id);
+    void (*priv_uninit)(void *priv);
+    bool priv_init_done;
 };
 
 struct context_release_item;
@@ -488,7 +493,6 @@ struct context_data {
     void *priv;
     uint32_t id;
     struct ovs_refcount refcount;
-    uint32_t priv_refcount;
 };
 
 static int
@@ -522,18 +526,16 @@ get_context_data_id_by_data(struct context_metadata *md,
                         data_cur->id);
             ds_destroy(&s);
             *id = data_cur->id;
-            if (md->priv_ref) {
-                ovs_mutex_lock(&md->maps_lock);
-                if (data_cur->priv_refcount == 0) {
-                    int ret;
+            if (md->priv_init && !md->priv_init_done) {
+                int ret;
 
-                    ret = md->priv_ref(data_cur->priv, priv_arg, *id);
-                    if (ret) {
-                        ovs_mutex_unlock(&md->maps_lock);
-                        return -1;
-                    }
+                ovs_mutex_lock(&md->maps_lock);
+                ret = md->priv_init(data_cur->priv, priv_arg, *id);
+                if (ret) {
+                    ovs_mutex_unlock(&md->maps_lock);
+                    return -1;
                 }
-                data_cur->priv_refcount++;
+                md->priv_init_done = true;
                 ovs_mutex_unlock(&md->maps_lock);
             }
             return 0;
@@ -556,13 +558,13 @@ get_context_data_id_by_data(struct context_metadata *md,
     data_cur->priv = (uint8_t *) data_cur->data + data_size;
     memcpy(data_cur->data, data_req->data, md->data_size);
     ovs_refcount_init(&data_cur->refcount);
-    data_cur->priv_refcount = 1;
     data_cur->id = alloc_id;
     ovs_mutex_lock(&md->maps_lock);
-    if (md->priv_ref && md->priv_ref(data_cur->priv, priv_arg, alloc_id)) {
+    if (md->priv_init && md->priv_init(data_cur->priv, priv_arg, alloc_id)) {
         ovs_mutex_unlock(&md->maps_lock);
         goto err_priv_ref;
     }
+    md->priv_init_done = true;
     data_cur->d2i_hash = dhash;
     cmap_insert(&md->d2i_map, &data_cur->d2i_node, dhash);
     ihash = hash_add(0, data_cur->id);
@@ -731,13 +733,17 @@ context_delayed_release(struct context_metadata *md, uint32_t id,
     item->id = id;
     item->data = data;
     item->associated = associated;
-    if (md->priv_unref) {
-        ovs_mutex_lock(&md->maps_lock);
-        if (item->data->priv_refcount == 1) {
-            md->priv_unref(item->data->priv);
+    if (md->priv_uninit && md->priv_init_done) {
+        if (ovs_refcount_read(&data->refcount) == 1) {
+            /* Immediately uninit the priv, even if the
+             * data release is delayed. If another object takes
+             * a ref on the data, the priv will then be re-initialized.
+             */
+            ovs_mutex_lock(&md->maps_lock);
+            md->priv_uninit(item->data->priv);
+            md->priv_init_done = false;
+            ovs_mutex_unlock(&md->maps_lock);
         }
-        item->data->priv_refcount--;
-        ovs_mutex_unlock(&md->maps_lock);
     }
     if (!md->delayed_release) {
         context_release(item);
@@ -1181,13 +1187,15 @@ get_table_id(odp_port_t vport,
              uint32_t *table_id);
 
 static int
-table_id_ctx_ref(void *priv_, void *priv_arg_, uint32_t table_id)
+table_id_ctx_init(void *priv_, void *priv_arg_, uint32_t table_id)
 {
     struct table_id_data *priv_arg = priv_arg_;
     struct table_id_ctx_priv *priv = priv_;
     uint32_t e2e_table_id;
 
-    priv->netdev = NULL;
+    if (priv->netdev != NULL) {
+        return 0;
+    }
 
     if (!netdev_is_e2e_cache_enabled() || priv_arg->recirc_id != 0) {
        return 0;
@@ -1209,7 +1217,7 @@ table_id_ctx_ref(void *priv_, void *priv_arg_, uint32_t table_id)
 }
 
 static void
-table_id_ctx_unref(void *priv_)
+table_id_ctx_uninit(void *priv_)
 {
     struct table_id_ctx_priv *priv = priv_;
 
@@ -1219,6 +1227,7 @@ table_id_ctx_unref(void *priv_)
 
     netdev_offload_dpdk_destroy_flow(priv->netdev, priv->miss_flow, NULL, true);
     netdev_close(priv->netdev);
+    priv->netdev = NULL;
 }
 
 static struct context_metadata table_id_md = {
@@ -1231,8 +1240,8 @@ static struct context_metadata table_id_md = {
     .id_free = table_id_free,
     .data_size = sizeof(struct table_id_data),
     .priv_size = sizeof(struct table_id_ctx_priv),
-    .priv_ref = table_id_ctx_ref,
-    .priv_unref = table_id_ctx_unref,
+    .priv_init = table_id_ctx_init,
+    .priv_uninit = table_id_ctx_uninit,
 };
 
 static int
@@ -1583,10 +1592,14 @@ struct flow_miss_ctx_priv {
 };
 
 static int
-flow_miss_ctx_ref(void *priv_, void *priv_arg_, uint32_t mark_id)
+flow_miss_ctx_init(void *priv_, void *priv_arg_, uint32_t mark_id)
 {
     struct flow_miss_ctx_priv_arg *priv_arg = priv_arg_;
     struct flow_miss_ctx_priv *priv = priv_;
+
+    if (priv->netdev != NULL) {
+        return 0;
+    }
 
     priv->netdev = netdev_ref(priv_arg->netdev);
     priv->miss_flow = add_miss_flow(priv->netdev, priv_arg->table_id,
@@ -1602,7 +1615,7 @@ flow_miss_ctx_ref(void *priv_, void *priv_arg_, uint32_t mark_id)
 }
 
 static void
-flow_miss_ctx_unref(void *priv_)
+flow_miss_ctx_uninit(void *priv_)
 {
     struct flow_miss_ctx_priv *priv = priv_;
 
@@ -1612,6 +1625,7 @@ flow_miss_ctx_unref(void *priv_)
 
     netdev_offload_dpdk_destroy_flow(priv->netdev, priv->miss_flow, NULL, true);
     netdev_close(priv->netdev);
+    priv->netdev = NULL;
 }
 
 static struct context_metadata flow_miss_ctx_md = {
@@ -1627,8 +1641,8 @@ static struct context_metadata flow_miss_ctx_md = {
     .data_size = sizeof(struct flow_miss_ctx),
     .delayed_release = true,
     .priv_size = sizeof(struct flow_miss_ctx_priv),
-    .priv_ref = flow_miss_ctx_ref,
-    .priv_unref = flow_miss_ctx_unref,
+    .priv_init = flow_miss_ctx_init,
+    .priv_uninit = flow_miss_ctx_uninit,
 };
 
 static int
