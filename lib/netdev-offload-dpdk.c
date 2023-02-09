@@ -23,6 +23,7 @@
 
 #include "cmap.h"
 #include "conntrack-offload.h"
+#include "offload-metadata.h"
 #include "dpif-netdev.h"
 #include "id-fpool.h"
 #include "netdev-offload.h"
@@ -174,8 +175,8 @@ struct act_resources {
     uint32_t ct_action_zone_id;
     uint32_t ct_match_label_id;
     uint32_t ct_action_label_id;
-    struct indirect_ctx **pshared_age_ctx;
-    struct indirect_ctx **pshared_count_ctx;
+    struct indirect_ctx *shared_age_ctx;
+    struct indirect_ctx *shared_count_ctx;
     uint32_t sflow_id;
     uint32_t meter_id;
 };
@@ -440,454 +441,6 @@ ufid_to_rte_flow_disassociate(struct ufid_to_rte_flow_data *data)
     ovsrcu_gc(rte_flow_data_gc, data, gc_node);
 }
 
-/* A generic data structure used for mapping data to id and id to data. The
- * elements are reference coutned. Changes may come from multiple threads,
- * writes are locked.
- * "name" and "dump_context_data" are used for log messages.
- * "maps_lock" is the hashmaps lock for MT-safety.
- * "d2i_map" is the data-to-id map.
- * "i2d_map" is the id-to-data map.
- * "associated_i2d_map" is a id-to-data map used to associate already
- *      allocated ids.
- * "has_associated_map" is true if this metadata has an associated map.
- * "id_alloc" is used to allocate an id for a new data.
- * "id_free" is used to free an id for the last data release.
- * "data_size" is the size of the data in the elements.
- * "priv_size" is the size of the priv data in the elements. priv is just
- *     allocated with the object, and used by users.
- * "priv_init" is called upon the first reference to a priv.
- * "priv_uninit" is called upon the last dereference to a priv.
- *               It should be possible to then call 'priv_init' again
- *               to re-initialize the priv in a correct state.
- * "priv_init_done" is used to protect against multiple calls to
- *                  priv_init.
- */
-struct context_metadata {
-    const char *name;
-    struct ds *(*dump_context_data)(struct ds *s, void *data);
-    struct ovs_mutex maps_lock;
-    struct cmap d2i_map;
-    struct cmap i2d_map;
-    struct cmap associated_i2d_map;
-    bool has_associated_map;
-    uint32_t (*id_alloc)(void);
-    void (*id_free)(uint32_t id);
-    size_t data_size;
-    bool delayed_release;
-    size_t priv_size;
-    int (*priv_init)(void *priv, void *priv_arg, uint32_t id);
-    void (*priv_uninit)(void *priv);
-    bool priv_init_done;
-};
-
-struct context_release_item;
-
-struct context_data {
-    struct cmap_node d2i_node;
-    uint32_t d2i_hash;
-    struct cmap_node i2d_node;
-    uint32_t i2d_hash;
-    struct cmap_node associated_i2d_node;
-    uint32_t associated_i2d_hash;
-    void *data;
-    void *priv;
-    uint32_t id;
-    struct ovs_refcount refcount;
-};
-
-static int
-get_context_data_id_by_data(struct context_metadata *md,
-                            struct context_data *data_req,
-                            void *priv_arg,
-                            uint32_t *id)
-{
-    struct context_data *data_cur;
-    size_t dhash, ihash;
-    uint32_t alloc_id;
-    size_t data_size;
-    struct ds s;
-
-    ds_init(&s);
-
-    dhash = hash_bytes(data_req->data, md->data_size, 0);
-    CMAP_FOR_EACH_WITH_HASH (data_cur, d2i_node, dhash, &md->d2i_map) {
-        if (!memcmp(data_req->data, data_cur->data, md->data_size)) {
-            if (!ovs_refcount_try_ref_rcu(&data_cur->refcount)) {
-                /* If a reference could not be taken, it means that
-                 * while the data has been found within the map, it has
-                 * since been removed and related ID freed. At this point,
-                 * allocate a new data node altogether. */
-                break;
-            }
-            VLOG_DBG_RL(&rl,
-                        "%s: %s: '%s', refcnt=%u, id=%d", __func__, md->name,
-                        ds_cstr(md->dump_context_data(&s, data_cur->data)),
-                        ovs_refcount_read(&data_cur->refcount),
-                        data_cur->id);
-            ds_destroy(&s);
-            *id = data_cur->id;
-            if (md->priv_init && !md->priv_init_done) {
-                int ret;
-
-                ovs_mutex_lock(&md->maps_lock);
-                ret = md->priv_init(data_cur->priv, priv_arg, *id);
-                if (ret) {
-                    ovs_mutex_unlock(&md->maps_lock);
-                    return -1;
-                }
-                md->priv_init_done = true;
-                ovs_mutex_unlock(&md->maps_lock);
-            }
-            return 0;
-        }
-    }
-
-    alloc_id = md->id_alloc();
-    if (alloc_id == 0) {
-        goto err_id_alloc;
-    }
-    data_cur = xzalloc(sizeof *data_cur);
-    if (!data_cur) {
-        goto err;
-    }
-    data_size = ROUND_UP(md->data_size, 8);
-    data_cur->data = xmalloc(data_size + md->priv_size);
-    if (!data_cur->data) {
-        goto err_data_alloc;
-    }
-    data_cur->priv = (uint8_t *) data_cur->data + data_size;
-    memcpy(data_cur->data, data_req->data, md->data_size);
-    ovs_refcount_init(&data_cur->refcount);
-    data_cur->id = alloc_id;
-    ovs_mutex_lock(&md->maps_lock);
-    if (md->priv_init && md->priv_init(data_cur->priv, priv_arg, alloc_id)) {
-        ovs_mutex_unlock(&md->maps_lock);
-        goto err_priv_ref;
-    }
-    md->priv_init_done = true;
-    data_cur->d2i_hash = dhash;
-    cmap_insert(&md->d2i_map, &data_cur->d2i_node, dhash);
-    ihash = hash_add(0, data_cur->id);
-    data_cur->i2d_hash = ihash;
-    cmap_insert(&md->i2d_map, &data_cur->i2d_node, ihash);
-    VLOG_DBG_RL(&rl, "%s: %s: '%s', refcnt=%d, id=%d", __func__, md->name,
-                ds_cstr(md->dump_context_data(&s, data_cur->data)),
-                ovs_refcount_read(&data_cur->refcount),
-                data_cur->id);
-    *id = data_cur->id;
-
-    ovs_mutex_unlock(&md->maps_lock);
-    ds_destroy(&s);
-    return 0;
-
-err_priv_ref:
-    free(data_cur->data);
-err_data_alloc:
-    free(data_cur);
-err:
-    VLOG_ERR_RL(&rl, "%s: %s: error. '%s'", __func__, md->name,
-                ds_cstr(md->dump_context_data(&s, data_req->data)));
-err_id_alloc:
-    ds_destroy(&s);
-    return -1;
-}
-
-static int
-get_context_data_by_id(struct context_metadata *md, uint32_t id, void *data)
-{
-    size_t ihash = hash_add(0, id);
-    struct context_data *data_cur;
-    struct ds s;
-
-    ds_init(&s);
-    if (md->has_associated_map) {
-        CMAP_FOR_EACH_WITH_HASH (data_cur, associated_i2d_node, ihash,
-                                 &md->associated_i2d_map) {
-            if (data_cur->id == id) {
-                memcpy(data, data_cur->data, md->data_size);
-                ds_destroy(&s);
-                return 0;
-            }
-        }
-    }
-    CMAP_FOR_EACH_WITH_HASH (data_cur, i2d_node, ihash, &md->i2d_map) {
-        if (data_cur->id == id) {
-            memcpy(data, data_cur->data, md->data_size);
-            ds_destroy(&s);
-            return 0;
-        }
-    }
-
-    ds_destroy(&s);
-    return -1;
-}
-
-static struct ovs_list *context_release_lists;
-
-struct context_release_item {
-    struct ovs_list node;
-    struct ovsrcu_gc_node gc_node;
-    long long int timestamp;
-    struct context_metadata *md;
-    uint32_t id;
-    struct context_data *data;
-    bool associated;
-};
-
-static void
-context_item_gc(struct context_release_item *item)
-{
-    free(item->data->data);
-    free(item->data);
-    free(item);
-}
-
-static void
-context_release(struct context_release_item *item)
-{
-    struct context_metadata *md = item->md;
-    struct context_data *data = item->data;
-    struct context_data *data_cur;
-    size_t ihash;
-
-    VLOG_DBG_RL(&rl, "%s: md=%s, id=%d. associated=%d", __func__, md->name,
-                item->id, item->associated);
-
-    ovs_mutex_lock(&md->maps_lock);
-
-    if (!item->associated
-        && ovs_refcount_unref(&item->data->refcount) > 1) {
-        /* Data has been referenced again since delayed release request. */
-        goto maps_unlock;
-    }
-
-    ihash = hash_add(0, item->id);
-
-    if (item->associated) {
-        CMAP_FOR_EACH_WITH_HASH_PROTECTED (data_cur, associated_i2d_node,
-                                           ihash,
-                                           &item->md->associated_i2d_map) {
-            if (data_cur->id == item->id) {
-                break;
-            }
-        }
-    } else {
-        CMAP_FOR_EACH_WITH_HASH_PROTECTED (data_cur, i2d_node, ihash,
-                                           &item->md->i2d_map) {
-            if (data_cur->id == item->id) {
-                break;
-            }
-        }
-    }
-
-    if (data_cur && data_cur->id == item->id) {
-        if (!item->associated) {
-            cmap_remove(&md->i2d_map, &data->i2d_node, data->i2d_hash);
-            cmap_remove(&md->d2i_map, &data->d2i_node, data->d2i_hash);
-            item->md->id_free(item->id);
-        } else {
-            cmap_remove(&md->associated_i2d_map,
-                        &data->associated_i2d_node,
-                        data->associated_i2d_hash);
-        }
-        ovsrcu_gc(context_item_gc, item, gc_node);
-        ovs_mutex_unlock(&md->maps_lock);
-        return;
-    }
-
-maps_unlock:
-    ovs_mutex_unlock(&md->maps_lock);
-    free(item);
-}
-
-static void
-context_delayed_release_init(void)
-{
-    static struct ovsthread_once init_once =
-        OVSTHREAD_ONCE_INITIALIZER;
-
-    if (ovsthread_once_start(&init_once)) {
-        size_t i;
-
-        context_release_lists = xcalloc(netdev_offload_thread_nb(),
-                                        sizeof *context_release_lists);
-        for (i = 0; i < netdev_offload_thread_nb(); i++) {
-            ovs_list_init(&context_release_lists[i]);
-        }
-        ovsthread_once_done(&init_once);
-    }
-}
-
-static void
-context_delayed_release(struct context_metadata *md, uint32_t id,
-                        struct context_data *data, bool associated)
-{
-    struct ovs_list *context_release_list;
-    struct context_release_item *item;
-    unsigned int tid;
-
-    context_delayed_release_init();
-
-    item = xzalloc(sizeof *item);
-    item->md = md;
-    item->id = id;
-    item->data = data;
-    item->associated = associated;
-    if (md->priv_uninit && md->priv_init_done) {
-        if (ovs_refcount_read(&data->refcount) == 1) {
-            /* Immediately uninit the priv, even if the
-             * data release is delayed. If another object takes
-             * a ref on the data, the priv will then be re-initialized.
-             */
-            ovs_mutex_lock(&md->maps_lock);
-            md->priv_uninit(item->data->priv);
-            md->priv_init_done = false;
-            ovs_mutex_unlock(&md->maps_lock);
-        }
-    }
-    if (!md->delayed_release) {
-        context_release(item);
-        return;
-    }
-
-    tid = netdev_offload_thread_id();
-    context_release_list = &context_release_lists[tid];
-
-    item->timestamp = time_msec();
-    ovs_list_push_back(context_release_list, &item->node);
-    VLOG_DBG_RL(&rl, "%s: md=%s, id=%d, associated=%d, timestamp=%llu",
-                __func__, item->md->name, item->id, associated,
-                item->timestamp);
-}
-
-#define DELAYED_RELEASE_TIMEOUT_MS 250
-/* In ofproto/ofproto-dpif-rid.c, function recirc_run. Timeout for expired
- * flows is 250 msec. Set this timeout the same.
- */
-
-static void
-do_context_delayed_release(void)
-{
-    struct ovs_list *context_release_list;
-    struct context_release_item *item;
-    struct ovs_list *list;
-    long long int now;
-    unsigned int tid;
-
-    context_delayed_release_init();
-
-    tid = netdev_offload_thread_id();
-    context_release_list = &context_release_lists[tid];
-
-    now = time_msec();
-    while (!ovs_list_is_empty(context_release_list)) {
-        list = ovs_list_front(context_release_list);
-        item = CONTAINER_OF(list, struct context_release_item, node);
-        if (now < item->timestamp + DELAYED_RELEASE_TIMEOUT_MS) {
-            break;
-        }
-        VLOG_DBG_RL(&rl, "%s: md=%s, id=%d, associated=%d, timestamp=%llu, "
-                    "now=%llu", __func__, item->md->name, item->id,
-                    item->associated, item->timestamp, now);
-        ovs_list_remove(list);
-        context_release(item);
-    }
-}
-
-static void
-put_context_data_by_id(struct context_metadata *md, uint32_t id)
-{
-    struct context_data *data_cur;
-    size_t ihash;
-    struct ds s;
-
-    if (id == 0) {
-        return;
-    }
-    ihash = hash_add(0, id);
-    CMAP_FOR_EACH_WITH_HASH (data_cur, i2d_node, ihash, &md->i2d_map) {
-        if (data_cur->id == id) {
-            ds_init(&s);
-            VLOG_DBG_RL(&rl,
-                        "%s: %s: '%s', refcnt=%u, id=%d", __func__, md->name,
-                        ds_cstr(md->dump_context_data(&s, data_cur->data)),
-                        ovs_refcount_read(&data_cur->refcount),
-                        data_cur->id);
-            ds_destroy(&s);
-            context_delayed_release(md, id, data_cur, false);
-            return;
-        }
-    }
-    VLOG_ERR_RL(&rl,
-                "%s: %s: error. id=%d not found", __func__, md->name, id);
-}
-
-static int
-associate_id_data(struct context_metadata *md,
-                  struct context_data *data_req)
-{
-    struct context_data *data_cur;
-    size_t ihash;
-    struct ds s;
-
-    ds_init(&s);
-    data_cur = xzalloc(sizeof *data_cur);
-    if (!data_cur) {
-        goto err;
-    }
-    data_cur->data = xmalloc(md->data_size);
-    if (!data_cur->data) {
-        goto err_data_alloc;
-    }
-    memcpy(data_cur->data, data_req->data, md->data_size);
-    ovs_refcount_init(&data_cur->refcount);
-    data_cur->id = data_req->id;
-    ihash = hash_add(0, data_cur->id);
-    ovs_mutex_lock(&md->maps_lock);
-    data_cur->associated_i2d_hash = ihash;
-    cmap_insert(&md->associated_i2d_map, &data_cur->associated_i2d_node,
-                ihash);
-    ovs_mutex_unlock(&md->maps_lock);
-    VLOG_DBG_RL(&rl, "%s: %s: '%s', refcnt=%d, id=%d", __func__, md->name,
-                ds_cstr(md->dump_context_data(&s, data_cur->data)),
-                ovs_refcount_read(&data_cur->refcount),
-                data_cur->id);
-    ds_destroy(&s);
-    return 0;
-
-err_data_alloc:
-    free(data_cur);
-err:
-    VLOG_ERR_RL(&rl, "%s: %s: error. '%s'", __func__, md->name,
-                ds_cstr(md->dump_context_data(&s, data_cur->data)));
-    ds_destroy(&s);
-    return -1;
-}
-
-static int
-disassociate_id_data(struct context_metadata *md, uint32_t id)
-{
-    struct context_data *data_cur;
-    size_t ihash;
-    struct ds s;
-
-    ihash = hash_add(0, id);
-    CMAP_FOR_EACH_WITH_HASH (data_cur, associated_i2d_node, ihash,
-                             &md->associated_i2d_map) {
-        if (data_cur->id == id) {
-            ds_init(&s);
-            VLOG_DBG_RL(&rl, "%s: %s: '%s', id=%d", __func__, md->name,
-                        ds_cstr(md->dump_context_data(&s, data_cur->data)),
-                        data_cur->id);
-            ds_destroy(&s);
-            context_delayed_release(md, id, data_cur, true);
-            return 0;
-        }
-    }
-    VLOG_DBG_RL(&rl, "%s: %s: error. id=%d not found", __func__, md->name, id);
-    return -1;
-}
-
 enum {
     REG_FIELD_CT_STATE,
     REG_FIELD_CT_ZONE,
@@ -968,7 +521,8 @@ struct table_id_data {
 };
 
 static struct ds *
-dump_table_id(struct ds *s, void *data)
+dump_table_id(struct ds *s, void *data,
+              void *priv OVS_UNUSED, void *priv_arg OVS_UNUSED)
 {
     struct table_id_data *table_id_data = data;
 
@@ -979,7 +533,8 @@ dump_table_id(struct ds *s, void *data)
 }
 
 static struct ds *
-dump_label_id(struct ds *s, void *data)
+dump_label_id(struct ds *s, void *data,
+              void *priv OVS_UNUSED, void *priv_arg OVS_UNUSED)
 {
     ovs_u128 not_mapped_ct_label = *(ovs_u128 *) data;
 
@@ -994,22 +549,17 @@ dump_label_id(struct ds *s, void *data)
 #define MAX_LABEL_ID     (reg_fields[REG_FIELD_CT_LABEL_ID].mask - 1)
 
 static struct id_fpool *label_id_pool = NULL;
+static struct offload_metadata *label_id_md;
+
+static void label_id_init(void);
 
 static uint32_t
 label_id_alloc(void)
 {
-    static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
     unsigned int tid = netdev_offload_thread_id();
     uint32_t label_id;
 
-    if (ovsthread_once_start(&init_once)) {
-        unsigned int nb_thread = netdev_offload_thread_nb();
-
-        /* Haven't initiated yet, do it here */
-        label_id_pool = id_fpool_create(nb_thread, MIN_LABEL_ID, MAX_LABEL_ID);
-
-        ovsthread_once_done(&init_once);
-    }
+    label_id_init();
     if (id_fpool_new_id(label_id_pool, tid, &label_id)) {
         return label_id;
     }
@@ -1024,40 +574,58 @@ label_id_free(uint32_t label_id)
     id_fpool_free_id(label_id_pool, tid, label_id);
 }
 
-static struct context_metadata label_id_md = {
-    .name = "label_id",
-    .dump_context_data = dump_label_id,
-    .maps_lock = OVS_MUTEX_INITIALIZER,
-    .d2i_map = CMAP_INITIALIZER,
-    .i2d_map = CMAP_INITIALIZER,
-    .id_alloc = label_id_alloc,
-    .id_free = label_id_free,
-    .data_size = sizeof(ovs_u128),
-};
+static void
+label_id_init(void)
+{
+    static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
+
+    if (ovsthread_once_start(&init_once)) {
+        struct offload_metadata_parameters params = {
+            .id_alloc = label_id_alloc,
+            .id_free = label_id_free,
+        };
+        unsigned int nb_thread = netdev_offload_thread_nb();
+
+        label_id_pool = id_fpool_create(nb_thread, MIN_LABEL_ID, MAX_LABEL_ID);
+        label_id_md = offload_metadata_create(nb_thread, "label_id",
+                                              sizeof(ovs_u128), dump_label_id,
+                                              params);
+
+        ovsthread_once_done(&init_once);
+    }
+}
 
 static int
 get_label_id(ovs_u128 *ct_label, uint32_t *ct_label_id)
 {
-    struct context_data label_id_context = {
-        .data = ct_label,
-    };
+    label_id_init();
 
     if (is_all_zeros(ct_label, sizeof *ct_label)) {
         *ct_label_id = 0;
         return 0;
     }
-    return get_context_data_id_by_data(&label_id_md, &label_id_context, NULL,
-                                       ct_label_id);
+
+    return offload_metadata_id_ref(label_id_md, ct_label,
+                       NULL, ct_label_id);
 }
 
 static void
 put_label_id(uint32_t label_id)
 {
-    put_context_data_by_id(&label_id_md, label_id);
+    offload_metadata_id_unref(label_id_md,
+                              netdev_offload_thread_id(),
+                              label_id);
 }
 
+
+static struct id_fpool *zone_id_pool = NULL;
+static struct offload_metadata *zone_id_md;
+
+static void zone_id_init(void);
+
 static struct ds *
-dump_zone_id(struct ds *s, void *data)
+dump_zone_id(struct ds *s, void *data,
+             void *priv OVS_UNUSED, void *priv_arg OVS_UNUSED)
 {
     uint16_t not_mapped_ct_zone = *(uint16_t *) data;
 
@@ -1065,23 +633,14 @@ dump_zone_id(struct ds *s, void *data)
     return s;
 }
 
-static struct id_fpool *zone_id_pool = NULL;
-
 static uint32_t
 zone_id_alloc(void)
 {
-    static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
     unsigned int tid = netdev_offload_thread_id();
     uint32_t zone_id;
 
-    if (ovsthread_once_start(&init_once)) {
-        unsigned int nb_thread = netdev_offload_thread_nb();
+    zone_id_init();
 
-        /* Haven't initiated yet, do it here */
-        zone_id_pool = id_fpool_create(nb_thread, MIN_ZONE_ID, MAX_ZONE_ID);
-
-        ovsthread_once_done(&init_once);
-    }
     if (id_fpool_new_id(zone_id_pool, tid, &zone_id)) {
         return zone_id;
     }
@@ -1096,32 +655,38 @@ zone_id_free(uint32_t zone_id)
     id_fpool_free_id(zone_id_pool, tid, zone_id);
 }
 
-static struct context_metadata zone_id_md = {
-    .name = "zone_id",
-    .dump_context_data = dump_zone_id,
-    .maps_lock = OVS_MUTEX_INITIALIZER,
-    .d2i_map = CMAP_INITIALIZER,
-    .i2d_map = CMAP_INITIALIZER,
-    .id_alloc = zone_id_alloc,
-    .id_free = zone_id_free,
-    .data_size = sizeof(uint16_t),
-};
+static void
+zone_id_init(void)
+{
+    static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
+
+    if (ovsthread_once_start(&init_once)) {
+        struct offload_metadata_parameters params = {
+            .id_alloc = zone_id_alloc,
+            .id_free = zone_id_free,
+        };
+        unsigned int nb_thread = netdev_offload_thread_nb();
+
+        zone_id_pool = id_fpool_create(nb_thread, MIN_ZONE_ID, MAX_ZONE_ID);
+        zone_id_md = offload_metadata_create(nb_thread, "zone_id",
+                                             sizeof(uint16_t), dump_zone_id,
+                                             params);
+
+        ovsthread_once_done(&init_once);
+    }
+}
 
 static int
 get_zone_id(uint16_t ct_zone, uint32_t *ct_zone_id)
 {
-    struct context_data zone_id_context = {
-        .data = &ct_zone,
-    };
-
-    return get_context_data_id_by_data(&zone_id_md, &zone_id_context, NULL,
-                                       ct_zone_id);
+    zone_id_init();
+    return offload_metadata_id_ref(zone_id_md, &ct_zone, NULL, ct_zone_id);
 }
 
 static void
 put_zone_id(uint32_t zone_id)
 {
-    put_context_data_by_id(&zone_id_md, zone_id);
+    offload_metadata_id_unref(zone_id_md, netdev_offload_thread_id(), zone_id);
 }
 
 #define CT_TABLE_ID      0xfc000000
@@ -1134,21 +699,17 @@ put_zone_id(uint32_t zone_id)
 #define MISS_TABLE_ID    (UINT32_MAX - 1)
 
 static struct id_fpool *table_id_pool = NULL;
+static struct offload_metadata *table_id_md;
+static void
+table_id_init(void);
+
 static uint32_t
 table_id_alloc(void)
 {
-    static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
     unsigned int tid = netdev_offload_thread_id();
     uint32_t id;
 
-    if (ovsthread_once_start(&init_once)) {
-        unsigned int nb_thread = netdev_offload_thread_nb();
-
-        /* Haven't initiated yet, do it here */
-        table_id_pool = id_fpool_create(nb_thread, MIN_TABLE_ID, MAX_TABLE_ID);
-
-        ovsthread_once_done(&init_once);
-    }
+    table_id_init();
     if (id_fpool_new_id(table_id_pool, tid, &id)) {
         return id;
     }
@@ -1230,19 +791,29 @@ table_id_ctx_uninit(void *priv_)
     priv->netdev = NULL;
 }
 
-static struct context_metadata table_id_md = {
-    .name = "table_id",
-    .dump_context_data = dump_table_id,
-    .maps_lock = OVS_MUTEX_INITIALIZER,
-    .d2i_map = CMAP_INITIALIZER,
-    .i2d_map = CMAP_INITIALIZER,
-    .id_alloc = table_id_alloc,
-    .id_free = table_id_free,
-    .data_size = sizeof(struct table_id_data),
-    .priv_size = sizeof(struct table_id_ctx_priv),
-    .priv_init = table_id_ctx_init,
-    .priv_uninit = table_id_ctx_uninit,
-};
+static void
+table_id_init(void)
+{
+    static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
+
+    if (ovsthread_once_start(&init_once)) {
+        struct offload_metadata_parameters params = {
+            .id_alloc = table_id_alloc,
+            .id_free = table_id_free,
+            .priv_size = sizeof(struct table_id_ctx_priv),
+            .priv_init = table_id_ctx_init,
+            .priv_uninit = table_id_ctx_uninit,
+        };
+        unsigned int nb_thread = netdev_offload_thread_nb();
+
+        table_id_pool = id_fpool_create(nb_thread, MIN_TABLE_ID, MAX_TABLE_ID);
+        table_id_md = offload_metadata_create(nb_thread, "table_id",
+                                              sizeof(struct table_id_data),
+                                              dump_table_id, params);
+
+        ovsthread_once_done(&init_once);
+    }
+}
 
 static int
 get_table_id(odp_port_t vport,
@@ -1256,9 +827,6 @@ get_table_id(odp_port_t vport,
         .vport = vport,
         .recirc_id = recirc_id,
     };
-    struct context_data table_id_context = {
-        .data = &table_id_data,
-    };
 
     if (vport == ODPP_NONE && recirc_id == 0 &&
         !(netdev_is_e2e_cache_enabled() && !is_e2e_cache)) {
@@ -1271,8 +839,11 @@ get_table_id(odp_port_t vport,
         return 0;
     }
 
-    return get_context_data_id_by_data(&table_id_md, &table_id_context,
-                                       &table_id_data, table_id);
+    table_id_init();
+    return offload_metadata_id_ref(table_id_md,
+                       &table_id_data,
+                       &table_id_data,
+                       table_id);
 }
 
 static void
@@ -1281,7 +852,9 @@ put_table_id(uint32_t table_id)
     if (table_id > MAX_TABLE_ID) {
         return;
     }
-    put_context_data_by_id(&table_id_md, table_id);
+    offload_metadata_id_unref(table_id_md,
+                              netdev_offload_thread_id(),
+                              table_id);
 }
 
 struct sflow_ctx {
@@ -1291,7 +864,8 @@ struct sflow_ctx {
 };
 
 static struct ds *
-dump_sflow_id(struct ds *s, void *data)
+dump_sflow_id(struct ds *s, void *data,
+              void *priv OVS_UNUSED, void *priv_arg OVS_UNUSED)
 {
     struct sflow_ctx *sflow_ctx = data;
     struct user_action_cookie *cookie;
@@ -1306,22 +880,16 @@ dump_sflow_id(struct ds *s, void *data)
 #define MAX_SFLOW_ID     (reg_fields[REG_FIELD_SFLOW_CTX].mask - 1)
 
 static struct id_fpool *sflow_id_pool = NULL;
+static struct offload_metadata *sflow_id_md;
+static void sflow_id_init(void);
 
 static uint32_t
 sflow_id_alloc(void)
 {
-    static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
     unsigned int tid = netdev_offload_thread_id();
     uint32_t id;
 
-    if (ovsthread_once_start(&init_once)) {
-        unsigned int nb_thread = netdev_offload_thread_nb();
-
-        /* Haven't initiated yet, do it here */
-        sflow_id_pool = id_fpool_create(nb_thread, MIN_SFLOW_ID, MAX_SFLOW_ID);
-
-        ovsthread_once_done(&init_once);
-    }
+    sflow_id_init();
     if (id_fpool_new_id(sflow_id_pool, tid, &id)) {
         return id;
     }
@@ -1336,60 +904,62 @@ sflow_id_free(uint32_t sflow_id)
     id_fpool_free_id(sflow_id_pool, tid, sflow_id);
 }
 
-static struct context_metadata sflow_id_md = {
-    .name = "sflow_id",
-    .dump_context_data = dump_sflow_id,
-    .maps_lock = OVS_MUTEX_INITIALIZER,
-    .d2i_map = CMAP_INITIALIZER,
-    .i2d_map = CMAP_INITIALIZER,
-    .id_alloc = sflow_id_alloc,
-    .id_free = sflow_id_free,
-    .data_size = sizeof(struct sflow_ctx),
-};
+static void
+sflow_id_init(void)
+{
+    static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
+
+    if (ovsthread_once_start(&init_once)) {
+        struct offload_metadata_parameters params = {
+            .id_alloc = sflow_id_alloc,
+            .id_free = sflow_id_free,
+        };
+        unsigned int nb_thread = netdev_offload_thread_nb();
+
+        sflow_id_pool = id_fpool_create(nb_thread, MIN_SFLOW_ID, MAX_SFLOW_ID);
+        sflow_id_md = offload_metadata_create(nb_thread, "sflow_id",
+                                              sizeof(struct sflow_ctx),
+                                              dump_sflow_id, params);
+
+        ovsthread_once_done(&init_once);
+    }
+}
 
 static int
 get_sflow_id(struct sflow_ctx *sflow_ctx, uint32_t *sflow_id)
 {
-    struct context_data sflow_id_context = {
-        .data = sflow_ctx,
-    };
-
-    return get_context_data_id_by_data(&sflow_id_md, &sflow_id_context,
-                                       NULL, sflow_id);
+    sflow_id_init();
+    return offload_metadata_id_ref(sflow_id_md, sflow_ctx, NULL, sflow_id);
 }
 
 static void
 put_sflow_id(uint32_t sflow_id)
 {
-    put_context_data_by_id(&sflow_id_md, sflow_id);
+    offload_metadata_id_unref(sflow_id_md,
+                              netdev_offload_thread_id(),
+                              sflow_id);
 }
 
 static int
 find_sflow_ctx(int sflow_id, struct sflow_ctx *ctx)
 {
-    return get_context_data_by_id(&sflow_id_md, sflow_id, ctx);
+    return offload_metadata_data_from_id(sflow_id_md, sflow_id, ctx);
 }
 
 #define MIN_CT_CTX_ID 1
 #define MAX_CT_CTX_ID (reg_fields[REG_FIELD_CT_CTX].mask - 1)
 
 static struct id_fpool *ct_ctx_pool = NULL;
+static struct offload_metadata *ct_ctx_md;
+static void ct_ctx_init(void);
 
 static uint32_t
 ct_ctx_id_alloc(void)
 {
-    static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
     unsigned int tid = netdev_offload_thread_id();
     uint32_t id;
 
-    if (ovsthread_once_start(&init_once)) {
-        unsigned int nb_thread = netdev_offload_thread_nb();
-
-        /* Haven't initiated yet, do it here */
-        ct_ctx_pool = id_fpool_create(nb_thread, MIN_CT_CTX_ID, MAX_CT_CTX_ID);
-
-        ovsthread_once_done(&init_once);
-    }
+    ct_ctx_init();
     if (id_fpool_new_id(ct_ctx_pool, tid, &id)) {
         return id;
     }
@@ -1412,7 +982,8 @@ struct ct_miss_ctx {
 };
 
 static struct ds *
-dump_ct_ctx_id(struct ds *s, void *data)
+dump_ct_ctx_id(struct ds *s, void *data,
+               void *priv OVS_UNUSED, void *priv_arg OVS_UNUSED)
 {
     struct ct_miss_ctx *ct_ctx_data = data;
     ovs_be128 label;
@@ -1425,61 +996,69 @@ dump_ct_ctx_id(struct ds *s, void *data)
     return s;
 }
 
-static struct context_metadata ct_miss_ctx_md = {
-    .name = "ct_miss_ctx",
-    .dump_context_data = dump_ct_ctx_id,
-    .maps_lock = OVS_MUTEX_INITIALIZER,
-    .d2i_map = CMAP_INITIALIZER,
-    .i2d_map = CMAP_INITIALIZER,
-    .id_alloc = ct_ctx_id_alloc,
-    .id_free = ct_ctx_id_free,
-    .data_size = sizeof(struct ct_miss_ctx),
-    .delayed_release = true,
-};
+/* In ofproto/ofproto-dpif-rid.c, function recirc_run. Timeout for expired
+ * flows is 250 msec. Set this timeout the same.
+ */
+#define DELAYED_RELEASE_TIMEOUT_MS 250
+
+static void
+ct_ctx_init(void)
+{
+    static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
+
+    if (ovsthread_once_start(&init_once)) {
+        struct offload_metadata_parameters params = {
+            .id_alloc = ct_ctx_id_alloc,
+            .id_free = ct_ctx_id_free,
+            .release_delay_ms = DELAYED_RELEASE_TIMEOUT_MS,
+        };
+        unsigned int nb_thread = netdev_offload_thread_nb();
+
+        ct_ctx_pool = id_fpool_create(nb_thread, MIN_CT_CTX_ID, MAX_CT_CTX_ID);
+        ct_ctx_md = offload_metadata_create(nb_thread, "ct_miss_ctx",
+                                            sizeof(struct ct_miss_ctx),
+                                            dump_ct_ctx_id, params);
+
+        ovsthread_once_done(&init_once);
+    }
+}
 
 static int
 get_ct_ctx_id(struct ct_miss_ctx *ct_miss_ctx_data, uint32_t *ct_ctx_id)
 {
-    struct context_data ct_ctx = {
-        .data = ct_miss_ctx_data,
-    };
-
-    return get_context_data_id_by_data(&ct_miss_ctx_md, &ct_ctx, NULL,
-                                       ct_ctx_id);
+    ct_ctx_init();
+    return offload_metadata_id_ref(ct_ctx_md, ct_miss_ctx_data,
+                                   NULL, ct_ctx_id);
 }
 
 static void
 put_ct_ctx_id(uint32_t ct_ctx_id)
 {
-    put_context_data_by_id(&ct_miss_ctx_md, ct_ctx_id);
+    offload_metadata_id_unref(ct_ctx_md,
+                              netdev_offload_thread_id(),
+                              ct_ctx_id);
 }
 
 static int
 find_ct_miss_ctx(int ct_ctx_id, struct ct_miss_ctx *ctx)
 {
-    return get_context_data_by_id(&ct_miss_ctx_md, ct_ctx_id, ctx);
+    return offload_metadata_data_from_id(ct_ctx_md, ct_ctx_id, ctx);
 }
 
 #define MIN_TUNNEL_ID 1
 #define MAX_TUNNEL_ID (reg_fields[REG_FIELD_TUN_INFO].mask - 1)
 
 static struct id_fpool *tnl_id_pool = NULL;
+static struct offload_metadata *tnl_md;
+static void tnl_md_init(void);
 
 static uint32_t
 tnl_id_alloc(void)
 {
-    static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
     unsigned int tid = netdev_offload_thread_id();
     uint32_t id;
 
-    if (ovsthread_once_start(&init_once)) {
-        unsigned int nb_thread = netdev_offload_thread_nb();
-
-        /* Haven't initiated yet, do it here */
-        tnl_id_pool = id_fpool_create(nb_thread, MIN_TUNNEL_ID, MAX_TUNNEL_ID);
-
-        ovsthread_once_done(&init_once);
-    }
+    tnl_md_init();
     if (id_fpool_new_id(tnl_id_pool, tid, &id)) {
         return id;
     }
@@ -1495,7 +1074,8 @@ tnl_id_free(uint32_t id)
 }
 
 static struct ds *
-dump_tnl_id(struct ds *s, void *data)
+dump_tnl_id(struct ds *s, void *data,
+            void *priv OVS_UNUSED, void *priv_arg OVS_UNUSED)
 {
     struct flow_tnl *tnl = data;
 
@@ -1505,16 +1085,26 @@ dump_tnl_id(struct ds *s, void *data)
     return s;
 }
 
-static struct context_metadata tnl_md = {
-    .name = "tunnel",
-    .dump_context_data = dump_tnl_id,
-    .maps_lock = OVS_MUTEX_INITIALIZER,
-    .d2i_map = CMAP_INITIALIZER,
-    .i2d_map = CMAP_INITIALIZER,
-    .id_alloc = tnl_id_alloc,
-    .id_free = tnl_id_free,
-    .data_size = 2 * sizeof(struct flow_tnl),
-};
+static void
+tnl_md_init(void)
+{
+    static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
+
+    if (ovsthread_once_start(&init_once)) {
+        struct offload_metadata_parameters params = {
+            .id_alloc = tnl_id_alloc,
+            .id_free = tnl_id_free,
+        };
+        unsigned int nb_thread = netdev_offload_thread_nb();
+
+        tnl_id_pool = id_fpool_create(nb_thread, MIN_TUNNEL_ID, MAX_TUNNEL_ID);
+        tnl_md = offload_metadata_create(nb_thread, "tunnel",
+                                         2 * sizeof(struct flow_tnl),
+                                         dump_tnl_id, params);
+
+        ovsthread_once_done(&init_once);
+    }
+}
 
 static void
 get_tnl_masked(struct flow_tnl *dst_key, struct flow_tnl *dst_mask,
@@ -1544,22 +1134,21 @@ get_tnl_id(struct flow_tnl *tnl_key, struct flow_tnl *tnl_mask,
            uint32_t *tnl_id)
 {
     struct flow_tnl tnl_tmp[2];
-    struct context_data tnl_ctx = {
-        .data = tnl_tmp,
-    };
 
     get_tnl_masked(&tnl_tmp[0], &tnl_tmp[1], tnl_key, tnl_mask);
     if (is_all_zeros(&tnl_tmp, sizeof tnl_tmp)) {
         *tnl_id = 0;
         return 0;
     }
-    return get_context_data_id_by_data(&tnl_md, &tnl_ctx, NULL, tnl_id);
+
+    tnl_md_init();
+    return offload_metadata_id_ref(tnl_md, tnl_tmp, NULL, tnl_id);
 }
 
 static void
 put_tnl_id(uint32_t tnl_id)
 {
-    put_context_data_by_id(&tnl_md, tnl_id);
+    offload_metadata_id_unref(tnl_md, netdev_offload_thread_id(), tnl_id);
 }
 
 struct flow_miss_ctx {
@@ -1570,13 +1159,14 @@ struct flow_miss_ctx {
 };
 
 static struct ds *
-dump_flow_ctx_id(struct ds *s, void *data)
+dump_flow_ctx_id(struct ds *s, void *data,
+                 void *priv, void *priv_arg)
 {
     struct flow_miss_ctx *flow_ctx_data = data;
 
     ds_put_format(s, "vport=%"PRIu32", recirc_id=%"PRIu32", ",
                   flow_ctx_data->vport, flow_ctx_data->recirc_id);
-    dump_tnl_id(s, &flow_ctx_data->tnl);
+    dump_tnl_id(s, &flow_ctx_data->tnl, priv, priv_arg);
 
     return s;
 }
@@ -1592,7 +1182,7 @@ struct flow_miss_ctx_priv {
 };
 
 static int
-flow_miss_ctx_init(void *priv_, void *priv_arg_, uint32_t mark_id)
+flow_miss_ctx_priv_init(void *priv_, void *priv_arg_, uint32_t mark_id)
 {
     struct flow_miss_ctx_priv_arg *priv_arg = priv_arg_;
     struct flow_miss_ctx_priv *priv = priv_;
@@ -1615,7 +1205,7 @@ flow_miss_ctx_init(void *priv_, void *priv_arg_, uint32_t mark_id)
 }
 
 static void
-flow_miss_ctx_uninit(void *priv_)
+flow_miss_ctx_priv_uninit(void *priv_)
 {
     struct flow_miss_ctx_priv *priv = priv_;
 
@@ -1628,22 +1218,31 @@ flow_miss_ctx_uninit(void *priv_)
     priv->netdev = NULL;
 }
 
-static struct context_metadata flow_miss_ctx_md = {
-    .name = "flow_miss_ctx",
-    .dump_context_data = dump_flow_ctx_id,
-    .maps_lock = OVS_MUTEX_INITIALIZER,
-    .d2i_map = CMAP_INITIALIZER,
-    .i2d_map = CMAP_INITIALIZER,
-    .associated_i2d_map = CMAP_INITIALIZER,
-    .has_associated_map = true,
-    .id_alloc = netdev_offload_flow_mark_alloc,
-    .id_free = netdev_offload_flow_mark_free,
-    .data_size = sizeof(struct flow_miss_ctx),
-    .delayed_release = true,
-    .priv_size = sizeof(struct flow_miss_ctx_priv),
-    .priv_init = flow_miss_ctx_init,
-    .priv_uninit = flow_miss_ctx_uninit,
-};
+static struct offload_metadata *flow_miss_ctx_md;
+
+static void
+flow_miss_ctx_init(void)
+{
+    static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
+
+    if (ovsthread_once_start(&init_once)) {
+        struct offload_metadata_parameters params = {
+            .id_alloc = netdev_offload_flow_mark_alloc,
+            .id_free = netdev_offload_flow_mark_free,
+            .priv_size = sizeof(struct flow_miss_ctx_priv),
+            .priv_init = flow_miss_ctx_priv_init,
+            .priv_uninit = flow_miss_ctx_priv_uninit,
+            .release_delay_ms = DELAYED_RELEASE_TIMEOUT_MS,
+        };
+        unsigned int nb_thread = netdev_offload_thread_nb();
+
+        flow_miss_ctx_md = offload_metadata_create(nb_thread, "flow_miss_ctx",
+                                                sizeof(struct flow_miss_ctx),
+                                                dump_flow_ctx_id, params);
+
+        ovsthread_once_done(&init_once);
+    }
+}
 
 static int
 get_flow_miss_ctx_id(struct flow_miss_ctx *flow_ctx_data,
@@ -1655,219 +1254,126 @@ get_flow_miss_ctx_id(struct flow_miss_ctx *flow_ctx_data,
         .netdev = netdev,
         .table_id = table_id,
     };
-    struct context_data flow_ctx = {
-        .data = flow_ctx_data,
-    };
 
-    return get_context_data_id_by_data(&flow_miss_ctx_md, &flow_ctx, &priv_arg,
-                                       miss_ctx_id);
+    flow_miss_ctx_init();
+    return offload_metadata_id_ref(flow_miss_ctx_md, flow_ctx_data, &priv_arg,
+                       miss_ctx_id);
 }
 
 static void
 put_flow_miss_ctx_id(uint32_t flow_ctx_id)
 {
-    put_context_data_by_id(&flow_miss_ctx_md, flow_ctx_id);
+    offload_metadata_id_unref(flow_miss_ctx_md,
+                              netdev_offload_thread_id(),
+                              flow_ctx_id);
 }
 
 static int
 associate_flow_id(uint32_t flow_id, struct flow_miss_ctx *flow_ctx_data)
 {
-    struct context_data flow_ctx = {
-        .data = flow_ctx_data,
-        .id = flow_id,
-    };
-
-    flow_miss_ctx_md.data_size = sizeof *flow_ctx_data;
-
-    return associate_id_data(&flow_miss_ctx_md, &flow_ctx);
+    offload_metadata_id_set(flow_miss_ctx_md, flow_ctx_data, flow_id);
+    return 0;
 }
 
 static int
 disassociate_flow_id(uint32_t flow_id)
 {
-    return disassociate_id_data(&flow_miss_ctx_md, flow_id);
+    offload_metadata_id_unset(flow_miss_ctx_md,
+                              netdev_offload_thread_id(),
+                              flow_id);
+    return 0;
 }
 
-struct dump_indirect_data {
+struct indirect_ctx_init_arg {
     struct netdev *netdev;
-    void *key;
-    bool create;
-    struct indirect_ctx *ctx;
+    struct rte_flow_action *action;
 };
 
-static struct indirect_ctx **
-get_indirect_ctx(struct netdev *netdev,
-                 void *key,
-                 struct context_metadata *md,
-                 struct rte_flow_action *action,
-                 bool create)
+static int
+indirect_ctx_init(void *ctx_, void *arg_, uint32_t id OVS_UNUSED)
 {
-    struct dump_indirect_data did = {
-        .netdev = netdev,
-        .key = key,
-        .create = create,
-    };
-    struct context_data *data_cur;
+    struct indirect_ctx_init_arg *arg = arg_;
+    struct indirect_ctx *ctx = ctx_;
     struct rte_flow_error error;
-    struct indirect_ctx *ctx;
-    size_t data_size;
-    size_t dhash;
-    struct ds s;
 
-    ds_init(&s);
-
-    dhash = hash_bytes(key, md->data_size, 0);
-    CMAP_FOR_EACH_WITH_HASH (data_cur, d2i_node, dhash, &md->d2i_map) {
-        if (!memcmp(key, data_cur->data, md->data_size)) {
-            did.ctx = data_cur->priv;
-            if (create) {
-                if (!ovs_refcount_try_ref_rcu(&data_cur->refcount)) {
-                    /* If a reference could not be taken, it means that
-                     * while the data has been found within the map, it has
-                     * since been removed and related ID freed. At this point,
-                     * allocate a new data node altogether. */
-                    break;
-                }
-                VLOG_DBG_RL(&rl, "%s: %s: '%s', refcnt=%u", __func__, md->name,
-                            ds_cstr(md->dump_context_data(&s, &did)),
-                            ovs_refcount_read(&data_cur->refcount));
-            }
-            ds_destroy(&s);
-            return (struct indirect_ctx **) &data_cur->priv;
-        }
+    if (ctx->act_hdl != NULL) {
+        return 0;
     }
 
-    if (!create) {
-        return NULL;
-    }
-
-    data_cur = xzalloc(sizeof *data_cur);
-    if (!data_cur) {
-        return NULL;
-    }
-    data_size = ROUND_UP(md->data_size, 8);
-    data_cur->data = xmalloc(data_size + md->priv_size);
-    if (!data_cur->data) {
-        goto err_data_alloc;
-    }
-    data_cur->priv = (uint8_t *) data_cur->data + data_size;
-    ctx = data_cur->priv;
-    ctx->act_hdl = netdev_dpdk_indirect_action_create(netdev, action, &error);
+    ctx->act_hdl = netdev_dpdk_indirect_action_create(arg->netdev,
+                                                      arg->action,
+                                                      &error);
     if (ctx->act_hdl == NULL) {
         ctx->port_id = -1;
-        goto err_indir;
+        return -1;
     }
-    ctx->port_id = netdev_dpdk_get_esw_mgr_port_id(netdev);
+    ctx->port_id = netdev_dpdk_get_esw_mgr_port_id(arg->netdev);
 
-    memcpy(data_cur->data, key, md->data_size);
-    ovs_refcount_init(&data_cur->refcount);
-    ovs_mutex_lock(&md->maps_lock);
-    data_cur->d2i_hash = dhash;
-    cmap_insert(&md->d2i_map, &data_cur->d2i_node, dhash);
-    ovs_mutex_unlock(&md->maps_lock);
-
-    did.ctx = ctx;
-    VLOG_DBG_RL(&rl, "%s: %s: '%s', refcnt=%d", __func__, md->name,
-                ds_cstr(md->dump_context_data(&s, &did)),
-                ovs_refcount_read(&data_cur->refcount));
-    ds_destroy(&s);
-    return (struct indirect_ctx **) &data_cur->priv;
-
-err_indir:
-    free(data_cur->data);
-err_data_alloc:
-    free(data_cur);
-    VLOG_ERR_RL(&rl, "%s: %s: error. '%s'", __func__, md->name,
-                ds_cstr(md->dump_context_data(&s, &did)));
-    ds_destroy(&s);
-    return NULL;
+    return 0;
 }
 
 static void
-context_data_unref(struct context_data *data)
+indirect_ctx_uninit(void *ctx_)
 {
-    free(data->data);
-    free(data);
-}
-
-static void
-put_indirect_ctx(struct context_metadata *md, struct indirect_ctx **pctx)
-{
-    struct dump_indirect_data did;
+    struct indirect_ctx *ctx = ctx_;
     struct rte_flow_error error;
-    struct context_data *data;
-    struct indirect_ctx dctx;
-    struct indirect_ctx *ctx;
-    struct ds s;
 
-    if (pctx == NULL) {
+    if (!ctx || !ctx->act_hdl) {
         return;
     }
 
-    data = CONTAINER_OF(pctx, struct context_data, priv);
-    ctx = *pctx;
-    memset(&did, 0, sizeof did);
-    did.ctx = &dctx;
-    memcpy(did.ctx, ctx, sizeof *ctx);
-
-    ovs_mutex_lock(&md->maps_lock);
-
-    if (ovs_refcount_unref(&data->refcount) > 1) {
-        /* Data has been referenced again since delayed release request. */
-        goto out;
-    }
-
-    cmap_remove(&md->d2i_map, &data->d2i_node, data->d2i_hash);
-    if (ctx->port_id == -1 || ctx->act_hdl == NULL) {
-        VLOG_ERR_RL(&rl, "%s: %s: invalid ctx: port_id=%d, ctx_hdl=%p",
-                    __func__, md->name, ctx->port_id, ctx->act_hdl);
-        goto err;
-    }
-
     netdev_dpdk_indirect_action_destroy(ctx->port_id, ctx->act_hdl, &error);
-    ctx->port_id = -1;
     ctx->act_hdl = NULL;
-
-err:
-    ovsrcu_postpone(context_data_unref, data);
-out:
-    ovs_mutex_unlock(&md->maps_lock);
-    ds_init(&s);
-    VLOG_DBG_RL(&rl, "%s: %s: '%s', refcnt=%u", __func__, md->name,
-                ds_cstr(md->dump_context_data(&s, &did)),
-                ovs_refcount_read(&data->refcount));
-    ds_destroy(&s);
+    ctx->port_id = -1;
 }
 
 static struct ds *
-dump_shared_age(struct ds *s, void *data)
+dump_shared_age(struct ds *s, void *data,
+                void *priv, void *priv_arg)
 {
-    struct dump_indirect_data *did = data;
+    struct indirect_ctx_init_arg *arg = priv_arg;
+    struct indirect_ctx *ctx = priv;
+    uintptr_t *key = data;
 
-    if (did->key) {
-        ds_put_format(s, "netdev=%s, key=0x%"PRIxPTR", create=%d, ",
-                      netdev_get_name(did->netdev),
-                      *((uintptr_t *) did->key), did->create);
+    if (key) {
+        ds_put_format(s, "netdev=%s, key=0x%"PRIxPTR", ",
+                      arg ? netdev_get_name(arg->netdev) : "nil",
+                      *((uintptr_t *) key));
     }
-    if (did->ctx) {
+    if (ctx) {
         ds_put_format(s, "ctx->port_id=%d, ctx->act_hdl=%p",
-                      did->ctx->port_id, did->ctx->act_hdl);
+                      ctx->port_id, ctx->act_hdl);
     } else {
         ds_put_cstr(s, "ctx=NULL");
     }
     return s;
 }
 
-static struct context_metadata shared_age_md = {
-    .name = "shared-age",
-    .dump_context_data = dump_shared_age,
-    .maps_lock = OVS_MUTEX_INITIALIZER,
-    .d2i_map = CMAP_INITIALIZER,
-    .data_size = sizeof(uintptr_t),
-    .priv_size = sizeof(struct indirect_ctx),
-};
+static struct offload_metadata *shared_age_md;
 
-static struct indirect_ctx **
+static void
+shared_age_init(void)
+{
+    static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
+
+    if (ovsthread_once_start(&init_once)) {
+        struct offload_metadata_parameters params = {
+            .priv_size = sizeof(struct indirect_ctx),
+            .priv_init = indirect_ctx_init,
+            .priv_uninit = indirect_ctx_uninit,
+        };
+        unsigned int nb_thread = netdev_offload_thread_nb();
+
+        shared_age_md = offload_metadata_create(nb_thread, "shared-age",
+                                                sizeof(uintptr_t),
+                                                dump_shared_age,
+                                                params);
+
+        ovsthread_once_done(&init_once);
+    }
+}
+
+static struct indirect_ctx *
 get_indirect_age_ctx(struct netdev *netdev,
                      uintptr_t app_counter_key,
                      bool create)
@@ -1879,70 +1385,109 @@ get_indirect_age_ctx(struct netdev *netdev,
         .type = RTE_FLOW_ACTION_TYPE_AGE,
         .conf = &age_conf,
     };
+    struct indirect_ctx_init_arg arg = {
+        .netdev = netdev,
+        .action = &action,
+    };
 
-    return get_indirect_ctx(netdev, &app_counter_key, &shared_age_md, &action,
-                            create);
+    shared_age_init();
+    return offload_metadata_priv_get(shared_age_md, &app_counter_key, &arg,
+                                     NULL, create);
+}
+
+static void
+free_indirect_age_ctx(void *priv)
+{
+    offload_metadata_priv_unref(shared_age_md,
+                                netdev_offload_thread_id(),
+                                priv);
 }
 
 static struct ds *
-dump_shared_count(struct ds *s, void *data)
+dump_shared_count(struct ds *s, void *data, void *priv, void *priv_arg)
 {
-    struct dump_indirect_data *did = data;
-    struct flows_counter_key *fck = did->key;
+    struct indirect_ctx_init_arg *arg = priv_arg;
+    struct flows_counter_key *fck = data;
+    struct indirect_ctx *ctx = priv;
 
     if (fck) {
         ovs_u128 *last_ufid_key;
 
         last_ufid_key = &fck->ufid_key[OFFLOAD_FLOWS_COUNTER_KEY_SIZE - 1];
         if (ovs_u128_is_zero(*last_ufid_key)) {
-            ds_put_format(s, "netdev=%s, key=0x%"PRIxPTR", create=%d, ",
-                          netdev_get_name(did->netdev), fck->ptr_key,
-                          did->create);
+            ds_put_format(s, "netdev=%s, key=0x%"PRIxPTR", ",
+                          arg ? netdev_get_name(arg->netdev) : "nil",
+                          fck->ptr_key);
         } else {
             char key_str[OFFLOAD_FLOWS_COUNTER_KEY_STRING_SIZE];
 
             netdev_flow_counter_key_to_string(fck, key_str, sizeof key_str);
-            ds_put_format(s, "netdev=%s, key=%s, create=%d, ",
-                          netdev_get_name(did->netdev), key_str, did->create);
+            ds_put_format(s, "netdev=%s, key=%s, ",
+                          arg ? netdev_get_name(arg->netdev) : "nil",
+                          key_str);
         }
     }
-    if (did->ctx) {
+    if (ctx) {
         ds_put_format(s, "ctx->port_id=%d, ctx->act_hdl=%p",
-                      did->ctx->port_id, did->ctx->act_hdl);
+                      ctx->port_id, ctx->act_hdl);
     } else {
         ds_put_cstr(s, "ctx=NULL");
     }
     return s;
 }
 
-static struct context_metadata shared_count_md = {
-    .name = "shared-count",
-    .dump_context_data = dump_shared_count,
-    .maps_lock = OVS_MUTEX_INITIALIZER,
-    .d2i_map = CMAP_INITIALIZER,
-    .data_size = sizeof(struct flows_counter_key),
-    .priv_size = sizeof(struct indirect_ctx),
-};
+static struct offload_metadata *shared_count_md;
 
-static struct indirect_ctx **
+static void
+shared_count_init(void)
+{
+    static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
+
+    if (ovsthread_once_start(&init_once)) {
+        struct offload_metadata_parameters params = {
+            .priv_size = sizeof(struct indirect_ctx),
+            .priv_init = indirect_ctx_init,
+            .priv_uninit = indirect_ctx_uninit,
+            /* Disable shrinking on CT counter CMAPs.
+             * Otherwise they might re-expand afterward,
+             * adding latency jitter. */
+            .disable_map_shrink = true,
+        };
+        unsigned int nb_thread = netdev_offload_thread_nb();
+
+        shared_count_md = offload_metadata_create(nb_thread, "shared-count",
+                                            sizeof(struct flows_counter_key),
+                                            dump_shared_count, params);
+
+        ovsthread_once_done(&init_once);
+    }
+}
+
+
+static struct indirect_ctx *
 get_indirect_count_ctx(struct netdev *netdev,
                        struct flows_counter_key *key,
                        bool create)
 {
-    static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
     struct rte_flow_action action = {
         .type = RTE_FLOW_ACTION_TYPE_COUNT,
     };
+    struct indirect_ctx_init_arg arg = {
+        .netdev = netdev,
+        .action = &action,
+    };
 
-    if (ovsthread_once_start(&init_once)) {
-        /* Disable shrinking on CT counter CMAPs.
-         * Otherwise they might re-expand afterward, adding latency
-         * jitter. */
-        cmap_set_min_load(&shared_count_md.d2i_map, 0.0);
-        ovsthread_once_done(&init_once);
-    }
+    shared_count_init();
+    return offload_metadata_priv_get(shared_count_md, key, &arg,
+                                     NULL, create);
+}
 
-    return get_indirect_ctx(netdev, key, &shared_count_md, &action, create);
+static void
+free_indirect_count_ctx(void *priv)
+{
+    offload_metadata_priv_unref(shared_count_md,
+                                netdev_offload_thread_id(),
+                                priv);
 }
 
 static void
@@ -1960,8 +1505,8 @@ put_action_resources(struct act_resources *act_resources)
     put_zone_id(act_resources->ct_action_zone_id);
     put_label_id(act_resources->ct_match_label_id);
     put_label_id(act_resources->ct_action_label_id);
-    put_indirect_ctx(&shared_age_md, act_resources->pshared_age_ctx);
-    put_indirect_ctx(&shared_count_md, act_resources->pshared_count_ctx);
+    free_indirect_age_ctx(act_resources->shared_age_ctx);
+    free_indirect_count_ctx(act_resources->shared_count_ctx);
     put_sflow_id(act_resources->sflow_id);
     netdev_dpdk_meter_unref(act_resources->meter_id - 1);
 }
@@ -1969,7 +1514,23 @@ put_action_resources(struct act_resources *act_resources)
 static int
 find_flow_miss_ctx(int flow_ctx_id, struct flow_miss_ctx *ctx)
 {
-    return get_context_data_by_id(&flow_miss_ctx_md, flow_ctx_id, ctx);
+    return offload_metadata_data_from_id(flow_miss_ctx_md, flow_ctx_id, ctx);
+}
+
+static void
+netdev_offload_dpdk_upkeep(void)
+{
+    unsigned int tid = netdev_offload_thread_id();
+
+    offload_metadata_upkeep(label_id_md, tid);
+    offload_metadata_upkeep(zone_id_md, tid);
+    offload_metadata_upkeep(table_id_md, tid);
+    offload_metadata_upkeep(sflow_id_md, tid);
+    offload_metadata_upkeep(ct_ctx_md, tid);
+    offload_metadata_upkeep(tnl_md, tid);
+    offload_metadata_upkeep(flow_miss_ctx_md, tid);
+    offload_metadata_upkeep(shared_age_md, tid);
+    offload_metadata_upkeep(shared_count_md, tid);
 }
 
 /*
@@ -4257,19 +3818,19 @@ add_count_action(struct netdev *netdev,
                  struct act_vars *act_vars)
 {
     struct rte_flow_action_count *count = per_thread_xzalloc(sizeof *count);
-    struct indirect_ctx **pctx;
+    struct indirect_ctx *ctx;
 
     /* e2e flows don't use mark. ct2ct do. we can share only e2e, not ct2ct. */
     if (act_vars->is_e2e_cache &&
         act_resources->flow_id == INVALID_FLOW_MARK &&
         !netdev_is_flow_counter_key_zero(&act_vars->flows_counter_key)) {
-        pctx = get_indirect_count_ctx(netdev, &act_vars->flows_counter_key,
-                                      true);
-        if (!pctx) {
+        ctx = get_indirect_count_ctx(netdev, &act_vars->flows_counter_key,
+                                     true);
+        if (!ctx) {
             return -1;
         }
-        act_resources->pshared_count_ctx = pctx;
-        add_flow_action(actions, RTE_FLOW_ACTION_TYPE_INDIRECT, (*pctx)->act_hdl);
+        act_resources->shared_count_ctx = ctx;
+        add_flow_action(actions, RTE_FLOW_ACTION_TYPE_INDIRECT, ctx->act_hdl);
         actions->shared_count_action_pos = actions->cnt - 1;
     } else if (act_vars->is_ct_conn) {
         add_flow_action(actions, RTE_FLOW_ACTION_TYPE_INDIRECT, NULL);
@@ -4282,12 +3843,12 @@ add_count_action(struct netdev *netdev,
     /* e2e flows don't use mark. ct2ct do. we can share only e2e, not ct2ct. */
     if (act_vars->is_e2e_cache && act_vars->ct_counter_key &&
         act_resources->flow_id == INVALID_FLOW_MARK) {
-        pctx = get_indirect_age_ctx(netdev, act_vars->ct_counter_key, true);
-        if (!pctx) {
+        ctx = get_indirect_age_ctx(netdev, act_vars->ct_counter_key, true);
+        if (!ctx) {
             return -1;
         }
-        act_resources->pshared_age_ctx = pctx;
-        add_flow_action(actions, RTE_FLOW_ACTION_TYPE_INDIRECT, (*pctx)->act_hdl);
+        act_resources->shared_age_ctx = ctx;
+        add_flow_action(actions, RTE_FLOW_ACTION_TYPE_INDIRECT, ctx->act_hdl);
         actions->shared_age_action_pos = actions->cnt - 1;
     }
 
@@ -5052,19 +4613,19 @@ parse_ct_actions(struct netdev *netdev,
                 struct flows_counter_key counter_id_key = {
                     .ptr_key = ctid_key,
                 };
-                struct indirect_ctx **pctx;
+                struct indirect_ctx *ctx;
                 struct rte_flow_action *ia;
 
-                pctx = get_indirect_count_ctx(netdev, &counter_id_key, true);
-                if (!pctx) {
+                ctx = get_indirect_count_ctx(netdev, &counter_id_key, true);
+                if (!ctx) {
                     VLOG_ERR("Could not set CT shared count");
                     return -1;
                 }
-                act_resources->pshared_count_ctx = pctx;
+                act_resources->shared_count_ctx = ctx;
                 ia = &actions->actions[actions->shared_count_action_pos];
                 ovs_assert(ia->type == RTE_FLOW_ACTION_TYPE_INDIRECT &&
                            ia->conf == NULL);
-                ia->conf = (*pctx)->act_hdl;
+                ia->conf = ctx->act_hdl;
             }
 
             act_vars->ct_mode = CT_MODE_CT_CONN;
@@ -6057,7 +5618,7 @@ netdev_offload_dpdk_flow_put(struct netdev *netdev, struct match *match,
     bool modification = false;
     int ret;
 
-    do_context_delayed_release();
+    netdev_offload_dpdk_upkeep();
 
     /*
      * If an old rte_flow exists, it means it's a flow modification.
@@ -6108,7 +5669,7 @@ netdev_offload_dpdk_flow_del(struct netdev *netdev OVS_UNUSED,
 {
     struct ufid_to_rte_flow_data *rte_flow_data;
 
-    do_context_delayed_release();
+    netdev_offload_dpdk_upkeep();
 
     rte_flow_data = ufid_to_rte_flow_data_find(netdev, ufid, true);
     if (!rte_flow_data || !rte_flow_data->flow_item.rte_flow[0]) {
@@ -6191,7 +5752,7 @@ netdev_offload_dpdk_flow_get(struct netdev *netdev,
         ? rte_flow_data->flow_item.rte_flow[1]
         : rte_flow_data->flow_item.rte_flow[0];
 
-    if (!rte_flow_data->act_resources.pshared_count_ctx) {
+    if (!rte_flow_data->act_resources.shared_count_ctx) {
         ret = netdev_dpdk_rte_flow_query_count(rte_flow_data->physdev,
                                            rte_flow, &query, &error);
         if (ret) {
@@ -6202,7 +5763,7 @@ netdev_offload_dpdk_flow_get(struct netdev *netdev,
             goto out;
         }
     } else {
-        ctx = *rte_flow_data->act_resources.pshared_count_ctx;
+        ctx = rte_flow_data->act_resources.shared_count_ctx;
         ret = netdev_dpdk_indirect_action_query(ctx->port_id, ctx->act_hdl,
                                                 &query, &error);
         if (ret) {
@@ -6547,19 +6108,18 @@ netdev_offload_dpdk_ct_counter_query(struct netdev *netdev,
                                      struct dpif_flow_stats *stats)
 {
     struct rte_flow_query_age query_age;
-    struct indirect_ctx **pctx, *ctx;
+    struct indirect_ctx *ctx;
     struct rte_flow_error error;
     int ret;
 
     memset(stats, 0, sizeof *stats);
 
-    pctx = get_indirect_age_ctx(netdev, counter_key, false);
-    if (pctx == NULL) {
+    ctx = get_indirect_age_ctx(netdev, counter_key, false);
+    if (ctx == NULL) {
         VLOG_ERR_RL(&rl, "Could not get shared age ctx for "
                     "counter_key=0x%"PRIxPTR, counter_key);
         return -1;
     }
-    ctx = *pctx;
 
     ret = netdev_dpdk_indirect_action_query(ctx->port_id, ctx->act_hdl,
                                             &query_age, &error);
@@ -6973,7 +6533,7 @@ conn_build_actions(struct netdev *netdev,
 {
     struct flows_counter_key counter_id_key;
     struct ct_miss_ctx miss_ctx;
-    struct indirect_ctx **pctx;
+    struct indirect_ctx *ctx;
     struct rte_flow_action *ia;
     size_t size;
 
@@ -7064,16 +6624,16 @@ conn_build_actions(struct netdev *netdev,
     memset(&counter_id_key, 0, sizeof counter_id_key);
     counter_id_key.ptr_key = ct_offload->ctid_key;
 
-    pctx = get_indirect_count_ctx(netdev, &counter_id_key, true);
-    if (!pctx) {
+    ctx = get_indirect_count_ctx(netdev, &counter_id_key, true);
+    if (!ctx) {
         VLOG_ERR("Could not set CT shared count");
         return -1;
     }
-    act_resources->pshared_count_ctx = pctx;
+    act_resources->shared_count_ctx = ctx;
     ia = &actions->actions[actions->shared_count_action_pos];
     ovs_assert(ia->type == RTE_FLOW_ACTION_TYPE_INDIRECT &&
                ia->conf == NULL);
-    ia->conf = (*pctx)->act_hdl;
+    ia->conf = ctx->act_hdl;
 
     act_vars->pre_ct_tuple_rewrite = false;
     if (get_ct_ctx_id(&miss_ctx, &act_resources->ct_miss_ctx_id)) {
@@ -7151,7 +6711,7 @@ netdev_offload_dpdk_conn_add(struct netdev *netdev,
     const ovs_u128 *ufid = &ct_offload->ufid;
     struct flow_item flow_item;
 
-    do_context_delayed_release();
+    netdev_offload_dpdk_upkeep();
 
     rte_flow_data = ufid_to_rte_flow_data_find(netdev, ufid, false);
     if (rte_flow_data && rte_flow_data->flow_item.rte_flow[0]) {
@@ -7182,7 +6742,7 @@ netdev_offload_dpdk_conn_del(struct netdev *netdev,
     struct ufid_to_rte_flow_data *rte_flow_data;
     const ovs_u128 *ufid = &ct_offload->ufid;
 
-    do_context_delayed_release();
+    netdev_offload_dpdk_upkeep();
 
     rte_flow_data = ufid_to_rte_flow_data_find(netdev, ufid, true);
     if (!rte_flow_data || !rte_flow_data->flow_item.rte_flow[0]) {
@@ -7232,11 +6792,11 @@ netdev_offload_dpdk_conn_stats(struct netdev *netdev,
         ? rte_flow_data->flow_item.rte_flow[1]
         : rte_flow_data->flow_item.rte_flow[0];
 
-    if (!rte_flow_data->act_resources.pshared_count_ctx) {
+    if (!rte_flow_data->act_resources.shared_count_ctx) {
         ret = netdev_dpdk_rte_flow_query_count(rte_flow_data->physdev,
                                            rte_flow, &query, &error);
     } else {
-        ctx = *rte_flow_data->act_resources.pshared_count_ctx;
+        ctx = rte_flow_data->act_resources.shared_count_ctx;
         ret = netdev_dpdk_indirect_action_query(ctx->port_id, ctx->act_hdl,
                                                 &query, &error);
     }

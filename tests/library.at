@@ -298,6 +298,11 @@ AT_SETUP([metrics framework])
 AT_CHECK([ovstest test-metrics > /dev/null], [0], [])
 AT_CLEANUP
 
+AT_SETUP([offload-metadata])
+AT_KEYWORDS([offload ofmd])
+AT_CHECK([ovstest test-offload-metadata check], [0], [])
+AT_CLEANUP
+
 AT_SETUP([memory introspection])
 AT_SKIP_IF([test "$IS_WIN32" = "yes"])
 AT_SKIP_IF([test "$IS_BSD" = "yes"])

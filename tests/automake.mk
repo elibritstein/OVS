@@ -479,6 +479,7 @@ tests_ovstest_SOURCES = \
 	tests/test-mpsc-queue.c \
 	tests/test-netflow.c \
 	tests/test-odp.c \
+	tests/test-offload-metadata.c \
 	tests/test-ofpbuf.c \
 	tests/test-packets.c \
 	tests/test-random.c \

@@ -233,6 +233,8 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/odp-execute.h \
 	lib/odp-util.c \
 	lib/odp-util.h \
+	lib/offload-metadata.c \
+	lib/offload-metadata.h \
 	lib/ofp-actions.c \
 	lib/ofp-bundle.c \
 	lib/ofp-connection.c \
