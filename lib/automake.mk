@@ -516,7 +516,8 @@ lib_libopenvswitch_la_SOURCES += \
 	lib/dpdk.c \
 	lib/netdev-dpdk.c \
 	lib/netdev-dpdk-vdpa.c \
-	lib/netdev-offload-dpdk.c
+	lib/netdev-offload-dpdk.c \
+	lib/dpdk-offload-provider.h
 else
 lib_libopenvswitch_la_SOURCES += \
 	lib/dpdk-stub.c

@@ -23,28 +23,31 @@
 
 #include "cmap.h"
 #include "conntrack-offload.h"
-#include "offload-metadata.h"
+#include "dpdk-offload-provider.h"
 #include "dpif-netdev.h"
 #include "id-fpool.h"
 #include "netdev-offload.h"
 #include "netdev-offload-provider.h"
 #include "netdev-provider.h"
 #include "netdev-vport.h"
+#include "ovs-atomic.h"
+#include "ovs-doca.h"
 #include "odp-util.h"
+#include "offload-metadata.h"
 #include "openvswitch/match.h"
 #include "openvswitch/vlog.h"
 #include "ovs-rcu.h"
 #include "packets.h"
 #include "salloc.h"
 #include "uuid.h"
-#include "odp-util.h"
-#include "ovs-atomic.h"
 
 VLOG_DEFINE_THIS_MODULE(netdev_offload_dpdk);
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(600, 600);
 
 static bool netdev_offload_dpdk_ct_labels_mapping = false;
 static bool netdev_offload_dpdk_disable_zone_tables = false;
+
+static struct dpdk_offload_api *offload;
 
 /* Thread-safety
  * =============
@@ -442,31 +445,6 @@ ufid_to_rte_flow_disassociate(struct ufid_to_rte_flow_data *data)
     ovsrcu_gc(rte_flow_data_gc, data, gc_node);
 }
 
-enum {
-    REG_FIELD_CT_STATE,
-    REG_FIELD_CT_ZONE,
-    REG_FIELD_CT_MARK,
-    REG_FIELD_CT_LABEL_ID,
-    REG_FIELD_TUN_INFO,
-    REG_FIELD_CT_CTX,
-    REG_FIELD_SFLOW_CTX,
-    REG_FIELD_NUM,
-};
-
-enum reg_type {
-    REG_TYPE_TAG,
-    REG_TYPE_META,
-};
-
-struct reg_field {
-    enum reg_type type;
-    uint8_t index;
-    uint32_t offset;
-    uint32_t mask;
-};
-
-#define REG_TAG_INDEX_NUM 3
-
 static struct reg_field reg_fields[] = {
     [REG_FIELD_CT_STATE] = {
         .type = REG_TYPE_TAG,
@@ -515,6 +493,12 @@ static struct reg_field reg_fields[] = {
     },
 };
 
+static struct reg_field *
+rte_get_reg_fields(void)
+{
+    return reg_fields;
+}
+
 OVS_ASSERT_PACKED(struct table_id_data,
     struct netdev *netdev;
     odp_port_t vport;
@@ -546,9 +530,9 @@ dump_label_id(struct ds *s, void *data,
     return s;
 }
 
-#define MIN_LABEL_ID     1
-#define MAX_LABEL_ID     (reg_fields[REG_FIELD_CT_LABEL_ID].mask - 1)
-#define NUM_LABEL_ID     (MAX_LABEL_ID - MIN_LABEL_ID + 1)
+#define MIN_LABEL_ID 1
+#define MAX_LABEL_ID (offload->reg_fields()[REG_FIELD_CT_LABEL_ID].mask - 1)
+#define NUM_LABEL_ID (MAX_LABEL_ID - MIN_LABEL_ID + 1)
 
 static struct id_fpool *label_id_pool = NULL;
 static struct offload_metadata *label_id_md;
@@ -690,16 +674,6 @@ put_zone_id(uint32_t zone_id)
 {
     offload_metadata_id_unref(zone_id_md, netdev_offload_thread_id(), zone_id);
 }
-
-#define CT_TABLE_ID      0xfc000000
-#define CTNAT_TABLE_ID   0xfc100000
-#define POSTCT_TABLE_ID  0xfd000000
-#define E2E_BASE_TABLE_ID  0xfe000000
-
-#define MIN_TABLE_ID     1
-#define MAX_TABLE_ID     0xf0000000
-#define NUM_TABLE_ID     (MAX_TABLE_ID - MIN_TABLE_ID + 1)
-#define MISS_TABLE_ID    (UINT32_MAX - 1)
 
 static struct id_fpool *table_id_pool = NULL;
 static struct offload_metadata *table_id_md;
@@ -879,9 +853,9 @@ dump_sflow_id(struct ds *s, void *data,
     return s;
 }
 
-#define MIN_SFLOW_ID     1
-#define MAX_SFLOW_ID     (reg_fields[REG_FIELD_SFLOW_CTX].mask - 1)
-#define NUM_SFLOW_ID     (MAX_SFLOW_ID - MIN_SFLOW_ID + 1)
+#define MIN_SFLOW_ID 1
+#define MAX_SFLOW_ID (offload->reg_fields()[REG_FIELD_SFLOW_CTX].mask - 1)
+#define NUM_SFLOW_ID (MAX_SFLOW_ID - MIN_SFLOW_ID + 1)
 
 static struct id_fpool *sflow_id_pool = NULL;
 static struct offload_metadata *sflow_id_md;
@@ -951,7 +925,7 @@ find_sflow_ctx(int sflow_id, struct sflow_ctx *ctx)
 }
 
 #define MIN_CT_CTX_ID 1
-#define MAX_CT_CTX_ID (reg_fields[REG_FIELD_CT_CTX].mask - 1)
+#define MAX_CT_CTX_ID (offload->reg_fields()[REG_FIELD_CT_CTX].mask - 1)
 #define NUM_CT_CTX_ID (MAX_CT_CTX_ID - MIN_CT_CTX_ID + 1)
 
 static struct id_fpool *ct_ctx_pool = NULL;
@@ -1053,7 +1027,7 @@ find_ct_miss_ctx(int ct_ctx_id, struct ct_miss_ctx *ctx)
 }
 
 #define MIN_TUNNEL_ID 1
-#define MAX_TUNNEL_ID (reg_fields[REG_FIELD_TUN_INFO].mask - 1)
+#define MAX_TUNNEL_ID (offload->reg_fields()[REG_FIELD_TUN_INFO].mask - 1)
 #define NUM_TUNNEL_ID (MAX_TUNNEL_ID - MIN_TUNNEL_ID + 1)
 
 static struct id_fpool *tnl_id_pool = NULL;
@@ -1311,9 +1285,9 @@ indirect_ctx_init(void *ctx_, void *arg_, uint32_t id OVS_UNUSED)
         return 0;
     }
 
-    ctx->act_hdl = netdev_dpdk_indirect_action_create(arg->netdev,
-                                                      arg->action,
-                                                      &error);
+    ctx->act_hdl = offload->shared_create(arg->netdev,
+                                          arg->action,
+                                          &error);
     if (ctx->act_hdl == NULL) {
         ctx->port_id = -1;
         return -1;
@@ -1333,7 +1307,7 @@ indirect_ctx_uninit(void *ctx_)
         return;
     }
 
-    netdev_dpdk_indirect_action_destroy(ctx->port_id, ctx->act_hdl, &error);
+    offload->shared_destroy(ctx->port_id, ctx->act_hdl, &error);
     ctx->act_hdl = NULL;
     ctx->port_id = -1;
 }
@@ -1532,6 +1506,10 @@ static void
 netdev_offload_dpdk_upkeep(void)
 {
     unsigned int tid = netdev_offload_thread_id();
+
+    if (offload->per_thread_upkeep) {
+        offload->per_thread_upkeep(tid);
+    }
 
     offload_metadata_upkeep(label_id_md, tid);
     offload_metadata_upkeep(zone_id_md, tid);
@@ -2449,7 +2427,7 @@ create_rte_flow(struct netdev *netdev,
     struct rte_flow *flow;
     char *extra_str;
 
-    flow = netdev_dpdk_rte_flow_create(netdev, attr, items, actions, error);
+    flow = offload->create(netdev, attr, items, actions, error);
     if (flow) {
         struct netdev_offload_dpdk_data *data;
         unsigned int tid = netdev_offload_thread_id();
@@ -2736,7 +2714,7 @@ netdev_offload_dpdk_destroy_flow(struct netdev *netdev,
     struct rte_flow_error error;
     int ret;
 
-    ret = netdev_dpdk_rte_flow_destroy(netdev, rte_flow, &error, is_esw);
+    ret = offload->destroy(netdev, rte_flow, &error, is_esw);
     if (!ret) {
         VLOG_DBG_RL(&rl, "%s: flow destroy %d user_id rule 0x%"PRIxPTR" ufid "
                     UUID_FMT, netdev_get_name(netdev),
@@ -3116,7 +3094,7 @@ get_packet_reg_field(struct dp_packet *packet, uint8_t reg_field_id,
         VLOG_ERR("unkonwn reg id %d", reg_field_id);
         return -1;
     }
-    reg_field = &reg_fields[reg_field_id];
+    reg_field = &offload->reg_fields()[reg_field_id];
     if (reg_field->type != REG_TYPE_META) {
         VLOG_ERR("reg id %d is not meta", reg_field_id);
         return -1;
@@ -3153,7 +3131,7 @@ add_pattern_match_reg_field(struct flow_patterns *patterns,
         VLOG_ERR("unkonwn reg id %d", reg_field_id);
         return -1;
     }
-    reg_field = &reg_fields[reg_field_id];
+    reg_field = &offload->reg_fields()[reg_field_id];
     if (val != (val & reg_field->mask)) {
         VLOG_ERR("value 0x%"PRIx32" is out of range for reg id %d", val,
                  reg_field_id);
@@ -3216,7 +3194,7 @@ add_action_set_reg_field(struct flow_actions *actions,
         VLOG_ERR("unkonwn reg id %d", reg_field_id);
         return -1;
     }
-    reg_field = &reg_fields[reg_field_id];
+    reg_field = &offload->reg_fields()[reg_field_id];
     if (val != (val & reg_field->mask)) {
         VLOG_ERR_RL(&rl, "value 0x%"PRIx32" is out of range for reg id %d",
                           val, reg_field_id);
@@ -3652,7 +3630,7 @@ parse_flow_match(struct netdev *netdev,
          !add_pattern_match_reg_field(patterns,
                                       REG_FIELD_CT_ZONE,
                                       act_resources->ct_match_zone_id,
-                                      reg_fields[REG_FIELD_CT_ZONE].mask))) {
+                                      offload->reg_fields()[REG_FIELD_CT_ZONE].mask))) {
         consumed_masks->ct_zone = 0;
     }
     /* ct-mark */
@@ -3682,7 +3660,7 @@ parse_flow_match(struct netdev *netdev,
                 return -1;
             }
             value = act_resources->ct_match_label_id;
-            mask = reg_fields[REG_FIELD_CT_LABEL_ID].mask;
+            mask = offload->reg_fields()[REG_FIELD_CT_LABEL_ID].mask;
         } else {
             if (match->wc.masks.ct_label.u32[1] ||
                 match->wc.masks.ct_label.u32[2] ||
@@ -4539,7 +4517,7 @@ parse_ct_actions(struct netdev *netdev,
                     return -1;
                 }
             } else {
-                const uint32_t ct_zone_mask = reg_fields[REG_FIELD_CT_ZONE].mask;
+                const uint32_t ct_zone_mask = offload->reg_fields()[REG_FIELD_CT_ZONE].mask;
 
                 if (act_resources->flow_id != INVALID_FLOW_MARK &&
                     (get_zone_id(nl_attr_get_u16(cta),
@@ -4583,7 +4561,7 @@ parse_ct_actions(struct netdev *netdev,
                     return -1;
                 }
                 set_value = act_resources->ct_action_label_id;
-                set_mask = reg_fields[REG_FIELD_CT_LABEL_ID].mask;
+                set_mask = offload->reg_fields()[REG_FIELD_CT_LABEL_ID].mask;
             } else {
                 if (!act_vars->is_ct_conn) {
                     if (key->u32[1] & mask->u32[1] ||
@@ -4715,7 +4693,7 @@ set_ct_ctnat_conf(const struct rte_flow_action *actions,
                   const void **ct_conf, const void **ctnat_conf)
 {
     const struct rte_flow_action_set_tag *set_tag = actions->conf;
-    struct reg_field *rf = &reg_fields[REG_FIELD_CT_STATE];
+    struct reg_field *rf = &offload->reg_fields()[REG_FIELD_CT_STATE];
 
     *ct_conf = actions->conf;
     *ctnat_conf = actions->conf;
@@ -5406,14 +5384,14 @@ parse_flow_actions(struct netdev *flowdev,
                 return -1;
             }
             add_action_set_reg_field(actions, REG_FIELD_CT_STATE, 0,
-                                     reg_fields[REG_FIELD_CT_STATE].mask);
+                                     offload->reg_fields()[REG_FIELD_CT_STATE].mask);
             add_action_set_reg_field(actions, REG_FIELD_CT_ZONE,
                                      act_resources->ct_action_zone_id,
-                                     reg_fields[REG_FIELD_CT_ZONE].mask);
+                                     offload->reg_fields()[REG_FIELD_CT_ZONE].mask);
             add_action_set_reg_field(actions, REG_FIELD_CT_MARK, 0,
-                                     reg_fields[REG_FIELD_CT_MARK].mask);
+                                     offload->reg_fields()[REG_FIELD_CT_MARK].mask);
             add_action_set_reg_field(actions, REG_FIELD_CT_LABEL_ID, 0,
-                                     reg_fields[REG_FIELD_CT_LABEL_ID].mask);
+                                     offload->reg_fields()[REG_FIELD_CT_LABEL_ID].mask);
         } else {
             VLOG_DBG_RL(&rl, "Unsupported action type %d", nl_attr_type(nla));
             return -1;
@@ -5693,6 +5671,17 @@ netdev_offload_dpdk_flow_del(struct netdev *netdev OVS_UNUSED,
     return netdev_offload_dpdk_remove_flows(rte_flow_data);
 }
 
+static void
+offload_provider_api_init(void)
+{
+    static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
+
+    if (ovsthread_once_start(&init_once)) {
+        offload = &dpdk_offload_api_rte;
+        ovsthread_once_done(&init_once);
+    }
+}
+
 static int
 netdev_offload_dpdk_init_flow_api(struct netdev *netdev)
 {
@@ -5704,6 +5693,8 @@ netdev_offload_dpdk_init_flow_api(struct netdev *netdev)
                  netdev_get_name(netdev));
         return EOPNOTSUPP;
     }
+
+    offload_provider_api_init();
 
     if (netdev_dpdk_flow_api_supported(netdev)) {
         ret = offload_data_init(netdev);
@@ -5721,6 +5712,16 @@ netdev_offload_dpdk_uninit_flow_api(struct netdev *netdev)
     if (netdev_dpdk_flow_api_supported(netdev)) {
         offload_data_destroy(netdev);
     }
+}
+
+static void
+netdev_offload_dpdk_update_stats(struct dpif_flow_stats *stats,
+                                 struct dpif_flow_attrs *attrs,
+                                 struct rte_flow_query_count *query)
+{
+    attrs->dp_layer = "dpdk";
+    stats->n_packets += (query->hits_set) ? query->hits : 0;
+    stats->n_bytes += (query->bytes_set) ? query->bytes : 0;
 }
 
 static int
@@ -5758,14 +5759,13 @@ netdev_offload_dpdk_flow_get(struct netdev *netdev,
     }
 
     attrs->offloaded = true;
-    attrs->dp_layer = "dpdk";
     rte_flow = rte_flow_data->flow_item.rte_flow[1]
         ? rte_flow_data->flow_item.rte_flow[1]
         : rte_flow_data->flow_item.rte_flow[0];
 
     if (!rte_flow_data->act_resources.shared_count_ctx) {
-        ret = netdev_dpdk_rte_flow_query_count(rte_flow_data->physdev,
-                                           rte_flow, &query, &error);
+        ret = offload->query_count(rte_flow_data->physdev,
+                                   rte_flow, &query, &error);
         if (ret) {
             VLOG_DBG_RL(&rl, "%s: Failed to query ufid "UUID_FMT" flow: %p. "
                         "%d (%s)", netdev_get_name(netdev),
@@ -5775,8 +5775,8 @@ netdev_offload_dpdk_flow_get(struct netdev *netdev,
         }
     } else {
         ctx = rte_flow_data->act_resources.shared_count_ctx;
-        ret = netdev_dpdk_indirect_action_query(ctx->port_id, ctx->act_hdl,
-                                                &query, &error);
+        ret = offload->shared_query(ctx->port_id, ctx->act_hdl,
+                                    &query, &error);
         if (ret) {
             VLOG_DBG_RL(&rl, "port-id=%d: Failed to query ufid "UUID_FMT
                         " action %p. %d (%s)", ctx->port_id,
@@ -5785,8 +5785,8 @@ netdev_offload_dpdk_flow_get(struct netdev *netdev,
             goto out;
         }
     }
-    rte_flow_data->stats.n_packets += (query.hits_set) ? query.hits : 0;
-    rte_flow_data->stats.n_bytes += (query.bytes_set) ? query.bytes : 0;
+
+    offload->update_stats(&rte_flow_data->stats, attrs, &query);
     if (query.hits_set && query.hits) {
         rte_flow_data->stats.used = now;
     }
@@ -5986,29 +5986,38 @@ log_packet_err(struct netdev *netdev, struct dp_packet *pkt, char *str)
     ds_destroy(&s);
 }
 
+static void
+rte_get_packet_recovery_info(struct dp_packet *packet,
+                             struct dpdk_offload_recovery_info *info)
+{
+    memset(info, 0, sizeof *info);
+    if (dp_packet_has_flow_mark(packet, &info->flow_miss_id)) {
+        get_packet_reg_field(packet, REG_FIELD_CT_CTX, &info->ct_miss_id);
+    } else {
+        get_packet_reg_field(packet, REG_FIELD_SFLOW_CTX, &info->sflow_id);
+    }
+}
+
 static int
 netdev_offload_dpdk_hw_miss_packet_recover(struct netdev *netdev,
                                            struct dp_packet *packet,
                                            uint8_t *skip_actions,
                                            struct dpif_sflow_attr *sflow_attr)
 {
+    struct dpdk_offload_recovery_info info;
     struct flow_miss_ctx flow_miss_ctx;
     struct ct_miss_ctx ct_miss_ctx;
     struct sflow_ctx sflow_ctx;
     struct netdev *vport_netdev;
-    uint32_t flow_miss_ctx_id;
-    uint32_t ct_ctx_id;
-    uint32_t sflow_id;
 
-    if (!dp_packet_has_flow_mark(packet, &flow_miss_ctx_id)) {
+    offload->get_packet_recover_info(packet, &info);
+
+    if (info.sflow_id) {
         /* Since sFlow does not work with CT, offloaded sampled packets
          * cannot have mark. If a packet without a mark reaches SW it
          * is either a sampled packet if a cookie is found or a datapath one.
          */
-        if (get_packet_reg_field(packet, REG_FIELD_SFLOW_CTX, &sflow_id)) {
-            return 0;
-        }
-        if (find_sflow_ctx(sflow_id, &sflow_ctx)) {
+        if (find_sflow_ctx(info.sflow_id, &sflow_ctx)) {
             log_packet_err(netdev, packet, "sFlow id not found");
             return 0;
         }
@@ -6024,40 +6033,44 @@ netdev_offload_dpdk_hw_miss_packet_recover(struct netdev *netdev,
         sflow_attr->sflow_len = sflow_ctx.sflow_attr.sflow_len;
         sflow_attr->userdata_len = sflow_ctx.sflow_attr.userdata_len;
         return EIO;
-    } else if (find_flow_miss_ctx(flow_miss_ctx_id, &flow_miss_ctx)) {
-        log_packet_err(netdev, packet, "flow miss ctx id not found");
-        return 0;
     }
 
-    *skip_actions = flow_miss_ctx.skip_actions;
-    packet->md.recirc_id = flow_miss_ctx.recirc_id;
-    if (flow_miss_ctx.vport != ODPP_NONE) {
-        if (is_all_zeros(&flow_miss_ctx.tnl, sizeof flow_miss_ctx.tnl)) {
-            vport_netdev = netdev_ports_get(flow_miss_ctx.vport,
-                                            netdev->dpif_type);
-            if (vport_netdev) {
-                parse_tcp_flags(packet, NULL, NULL, NULL);
-                if (vport_netdev->netdev_class->pop_header) {
-                    if (!vport_netdev->netdev_class->pop_header(packet)) {
+    if (info.flow_miss_id) {
+        if (find_flow_miss_ctx(info.flow_miss_id, &flow_miss_ctx)) {
+            log_packet_err(netdev, packet, "flow miss ctx id not found");
+            return 0;
+        }
+        *skip_actions = flow_miss_ctx.skip_actions;
+        packet->md.recirc_id = flow_miss_ctx.recirc_id;
+        if (flow_miss_ctx.vport != ODPP_NONE) {
+            if (is_all_zeros(&flow_miss_ctx.tnl, sizeof flow_miss_ctx.tnl)) {
+                vport_netdev = netdev_ports_get(flow_miss_ctx.vport,
+                                                netdev->dpif_type);
+                if (vport_netdev) {
+                    parse_tcp_flags(packet, NULL, NULL, NULL);
+                    if (vport_netdev->netdev_class->pop_header) {
+                        if (!vport_netdev->netdev_class->pop_header(packet)) {
+                            netdev_close(vport_netdev);
+                            return -1;
+                        }
+                        packet->md.in_port.odp_port = flow_miss_ctx.vport;
+                    } else {
+                        VLOG_ERR("vport nedtdev=%s with no pop_header method",
+                                 netdev_get_name(vport_netdev));
                         netdev_close(vport_netdev);
-                        return -1;
+                        return EOPNOTSUPP;
                     }
-                    packet->md.in_port.odp_port = flow_miss_ctx.vport;
-                } else {
-                    VLOG_ERR("vport nedtdev=%s with no pop_header method",
-                             netdev_get_name(vport_netdev));
-                    netdev_close(vport_netdev);
-                    return EOPNOTSUPP;
                 }
+            } else {
+                memcpy(&packet->md.tunnel, &flow_miss_ctx.tnl,
+                       sizeof packet->md.tunnel);
+                packet->md.in_port.odp_port = flow_miss_ctx.vport;
             }
-        } else {
-            memcpy(&packet->md.tunnel, &flow_miss_ctx.tnl,
-                   sizeof packet->md.tunnel);
-            packet->md.in_port.odp_port = flow_miss_ctx.vport;
         }
     }
-    if (!get_packet_reg_field(packet, REG_FIELD_CT_CTX, &ct_ctx_id)) {
-        if (find_ct_miss_ctx(ct_ctx_id, &ct_miss_ctx)) {
+
+    if (info.ct_miss_id) {
+        if (find_ct_miss_ctx(info.ct_miss_id, &ct_miss_ctx)) {
             log_packet_err(netdev, packet, "ct miss ctx id not found");
             return 0;
         }
@@ -6066,6 +6079,7 @@ netdev_offload_dpdk_hw_miss_packet_recover(struct netdev *netdev,
         packet->md.ct_mark = ct_miss_ctx.mark;
         packet->md.ct_label = ct_miss_ctx.label;
     }
+
     dp_packet_reset_offload(packet);
 
     return 0;
@@ -6247,7 +6261,7 @@ ct_zones_init(struct netdev *netdev, unsigned int tid,
 
     /* Merge the tag match for zone and state only if they are
      * at the same index. */
-    ovs_assert(reg_fields[REG_FIELD_CT_ZONE].index == reg_fields[REG_FIELD_CT_STATE].index);
+    ovs_assert(offload->reg_fields()[REG_FIELD_CT_ZONE].index == offload->reg_fields()[REG_FIELD_CT_STATE].index);
 
     for (nat = 0; nat < 2; nat++) {
         base_group = nat ? CTNAT_TABLE_ID : CT_TABLE_ID;
@@ -6264,10 +6278,10 @@ ct_zones_init(struct netdev *netdev, unsigned int tid,
             /* If the zone is the same, and already visited ct/ct-nat, skip
              * ct/ct-nat and jump directly to post-ct.
              */
-            reg_field = &reg_fields[REG_FIELD_CT_ZONE];
+            reg_field = &offload->reg_fields()[REG_FIELD_CT_ZONE];
             ct_zone_spec = zone_id << reg_field->offset;
             ct_zone_mask = reg_field->mask << reg_field->offset;
-            reg_field = &reg_fields[REG_FIELD_CT_STATE];
+            reg_field = &offload->reg_fields()[REG_FIELD_CT_STATE];
             ct_state_spec = OVS_CS_F_TRACKED;
             if (nat) {
                 ct_state_spec |= OVS_CS_F_NAT_MASK;
@@ -6293,13 +6307,13 @@ ct_zones_init(struct netdev *netdev, unsigned int tid,
             fr = &data->zone_flows[nat][1][zone_id];
             attr.priority = 1;
             /* Otherwise, set the zone and go to CT/CT-NAT. */
-            reg_field = &reg_fields[REG_FIELD_CT_STATE];
+            reg_field = &offload->reg_fields()[REG_FIELD_CT_STATE];
             tag_spec.index = reg_field->index;
             tag_spec.data = 0;
             tag_mask.index = 0xFF;
             tag_mask.data = reg_field->mask << reg_field->offset;
             patterns.items[2].type = RTE_FLOW_ITEM_TYPE_VOID;
-            reg_field = &reg_fields[REG_FIELD_CT_ZONE];
+            reg_field = &offload->reg_fields()[REG_FIELD_CT_ZONE];
             set_tag.index = reg_field->index;
             set_tag.data = zone_id << reg_field->offset;
             set_tag.mask = reg_field->mask << reg_field->offset;
@@ -6525,7 +6539,7 @@ conn_build_patterns(struct netdev *netdev,
     if (add_pattern_match_reg_field(patterns,
                                     REG_FIELD_CT_ZONE,
                                     act_resources->ct_match_zone_id,
-                                    reg_fields[REG_FIELD_CT_ZONE].mask)) {
+                                    offload->reg_fields()[REG_FIELD_CT_ZONE].mask)) {
         VLOG_ERR_RL(&rl, "Failed to add the CT zone %"PRIu16" register match",
                     ct_match->key.zone);
         return -1;
@@ -6603,7 +6617,7 @@ conn_build_actions(struct netdev *netdev,
     /* CT MARK */
     add_action_set_reg_field(actions, REG_FIELD_CT_MARK,
                              ct_offload->mark_key,
-                             reg_fields[REG_FIELD_CT_MARK].mask);
+                             offload->reg_fields()[REG_FIELD_CT_MARK].mask);
     miss_ctx.mark = ct_offload->mark_key;
 
     /* CT LABEL */
@@ -6615,11 +6629,11 @@ conn_build_actions(struct netdev *netdev,
         }
         add_action_set_reg_field(actions, REG_FIELD_CT_LABEL_ID,
                                  act_resources->ct_action_label_id,
-                                 reg_fields[REG_FIELD_CT_LABEL_ID].mask);
+                                 offload->reg_fields()[REG_FIELD_CT_LABEL_ID].mask);
     } else {
         add_action_set_reg_field(actions, REG_FIELD_CT_LABEL_ID,
                                  ct_offload->label_key.u32[0],
-                                 reg_fields[REG_FIELD_CT_LABEL_ID].mask);
+                                 offload->reg_fields()[REG_FIELD_CT_LABEL_ID].mask);
     }
     memcpy(&miss_ctx.label, &ct_offload->label_key, sizeof miss_ctx.label);
 
@@ -6653,7 +6667,7 @@ conn_build_actions(struct netdev *netdev,
     }
     add_action_set_reg_field(actions, REG_FIELD_CT_CTX,
                              act_resources->ct_miss_ctx_id,
-                             reg_fields[REG_FIELD_CT_CTX].mask);
+                             offload->reg_fields()[REG_FIELD_CT_CTX].mask);
 
     /* Last CT action is to go to Post-CT. */
     add_jump_action(actions, POSTCT_TABLE_ID);
@@ -6804,12 +6818,12 @@ netdev_offload_dpdk_conn_stats(struct netdev *netdev,
         : rte_flow_data->flow_item.rte_flow[0];
 
     if (!rte_flow_data->act_resources.shared_count_ctx) {
-        ret = netdev_dpdk_rte_flow_query_count(rte_flow_data->physdev,
-                                           rte_flow, &query, &error);
+        ret = offload->query_count(rte_flow_data->physdev,
+                                   rte_flow, &query, &error);
     } else {
         ctx = rte_flow_data->act_resources.shared_count_ctx;
-        ret = netdev_dpdk_indirect_action_query(ctx->port_id, ctx->act_hdl,
-                                                &query, &error);
+        ret = offload->shared_query(ctx->port_id, ctx->act_hdl,
+                                    &query, &error);
     }
     if (ret) {
         VLOG_DBG_RL(&rl, "%s: Failed to query ufid "UUID_FMT" flow: %p",
@@ -6830,6 +6844,25 @@ out:
     ovs_mutex_unlock(&rte_flow_data->lock);
     return ret;
 }
+
+static int
+netdev_offload_dpdk_netdev_data_destroy(void *data OVS_UNUSED)
+{
+    return 0;
+}
+
+struct dpdk_offload_api dpdk_offload_api_rte = {
+    .create = netdev_dpdk_rte_flow_create,
+    .destroy = netdev_dpdk_rte_flow_destroy,
+    .query_count = netdev_dpdk_rte_flow_query_count,
+    .shared_create = netdev_dpdk_indirect_action_create,
+    .shared_destroy = netdev_dpdk_indirect_action_destroy,
+    .shared_query = netdev_dpdk_indirect_action_query,
+    .get_packet_recover_info = rte_get_packet_recovery_info,
+    .reg_fields = rte_get_reg_fields,
+    .netdev_data_destroy = netdev_offload_dpdk_netdev_data_destroy,
+    .update_stats = netdev_offload_dpdk_update_stats,
+};
 
 const struct netdev_flow_api netdev_offload_dpdk = {
     .type = "dpdk_flow_api",
