@@ -5527,7 +5527,7 @@ netdev_offload_dpdk_remove_flows(struct ufid_to_rte_flow_data *rte_flow_data)
     struct netdev *physdev;
     struct netdev *netdev;
     ovs_u128 *ufid;
-    int ret;
+    int ret = -1;
     int i;
 
     if (rte_flow_data->dead) {
