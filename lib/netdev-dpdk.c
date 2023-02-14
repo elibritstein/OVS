@@ -5707,8 +5707,9 @@ fill_meter_profile(struct rte_mtr_meter_profile *profile,
     } else {
         profile->packet_mode = 0;
         /* Convert from kilobits per second to bytes per second */
-        profile->srtcm_rfc2697.cir = config->bands[0].rate * 125;
-        profile->srtcm_rfc2697.cbs = config->bands[0].burst_size * 125;
+        profile->srtcm_rfc2697.cir = ((uint64_t) config->bands[0].rate) * 125;
+        profile->srtcm_rfc2697.cbs =
+            ((uint64_t) config->bands[0].burst_size) * 125;
     }
 }
 
