@@ -209,6 +209,7 @@ struct fixed_rule {
 
 #define MIN_ZONE_ID     1
 #define MAX_ZONE_ID     0x000000FF
+#define NUM_ZONE_ID     (MAX_ZONE_ID - MIN_ZONE_ID + 1)
 
 struct netdev_offload_dpdk_data {
     struct cmap ufid_to_rte_flow;
@@ -547,6 +548,7 @@ dump_label_id(struct ds *s, void *data,
 
 #define MIN_LABEL_ID     1
 #define MAX_LABEL_ID     (reg_fields[REG_FIELD_CT_LABEL_ID].mask - 1)
+#define NUM_LABEL_ID     (MAX_LABEL_ID - MIN_LABEL_ID + 1)
 
 static struct id_fpool *label_id_pool = NULL;
 static struct offload_metadata *label_id_md;
@@ -586,7 +588,7 @@ label_id_init(void)
         };
         unsigned int nb_thread = netdev_offload_thread_nb();
 
-        label_id_pool = id_fpool_create(nb_thread, MIN_LABEL_ID, MAX_LABEL_ID);
+        label_id_pool = id_fpool_create(nb_thread, MIN_LABEL_ID, NUM_LABEL_ID);
         label_id_md = offload_metadata_create(nb_thread, "label_id",
                                               sizeof(ovs_u128), dump_label_id,
                                               params);
@@ -667,7 +669,7 @@ zone_id_init(void)
         };
         unsigned int nb_thread = netdev_offload_thread_nb();
 
-        zone_id_pool = id_fpool_create(nb_thread, MIN_ZONE_ID, MAX_ZONE_ID);
+        zone_id_pool = id_fpool_create(nb_thread, MIN_ZONE_ID, NUM_ZONE_ID);
         zone_id_md = offload_metadata_create(nb_thread, "zone_id",
                                              sizeof(uint16_t), dump_zone_id,
                                              params);
@@ -696,6 +698,7 @@ put_zone_id(uint32_t zone_id)
 
 #define MIN_TABLE_ID     1
 #define MAX_TABLE_ID     0xf0000000
+#define NUM_TABLE_ID     (MAX_TABLE_ID - MIN_TABLE_ID + 1)
 #define MISS_TABLE_ID    (UINT32_MAX - 1)
 
 static struct id_fpool *table_id_pool = NULL;
@@ -806,7 +809,7 @@ table_id_init(void)
         };
         unsigned int nb_thread = netdev_offload_thread_nb();
 
-        table_id_pool = id_fpool_create(nb_thread, MIN_TABLE_ID, MAX_TABLE_ID);
+        table_id_pool = id_fpool_create(nb_thread, MIN_TABLE_ID, NUM_TABLE_ID);
         table_id_md = offload_metadata_create(nb_thread, "table_id",
                                               sizeof(struct table_id_data),
                                               dump_table_id, params);
@@ -878,6 +881,7 @@ dump_sflow_id(struct ds *s, void *data,
 
 #define MIN_SFLOW_ID     1
 #define MAX_SFLOW_ID     (reg_fields[REG_FIELD_SFLOW_CTX].mask - 1)
+#define NUM_SFLOW_ID     (MAX_SFLOW_ID - MIN_SFLOW_ID + 1)
 
 static struct id_fpool *sflow_id_pool = NULL;
 static struct offload_metadata *sflow_id_md;
@@ -916,7 +920,7 @@ sflow_id_init(void)
         };
         unsigned int nb_thread = netdev_offload_thread_nb();
 
-        sflow_id_pool = id_fpool_create(nb_thread, MIN_SFLOW_ID, MAX_SFLOW_ID);
+        sflow_id_pool = id_fpool_create(nb_thread, MIN_SFLOW_ID, NUM_SFLOW_ID);
         sflow_id_md = offload_metadata_create(nb_thread, "sflow_id",
                                               sizeof(struct sflow_ctx),
                                               dump_sflow_id, params);
@@ -948,6 +952,7 @@ find_sflow_ctx(int sflow_id, struct sflow_ctx *ctx)
 
 #define MIN_CT_CTX_ID 1
 #define MAX_CT_CTX_ID (reg_fields[REG_FIELD_CT_CTX].mask - 1)
+#define NUM_CT_CTX_ID (MAX_CT_CTX_ID - MIN_CT_CTX_ID + 1)
 
 static struct id_fpool *ct_ctx_pool = NULL;
 static struct offload_metadata *ct_ctx_md;
@@ -1016,7 +1021,7 @@ ct_ctx_init(void)
         };
         unsigned int nb_thread = netdev_offload_thread_nb();
 
-        ct_ctx_pool = id_fpool_create(nb_thread, MIN_CT_CTX_ID, MAX_CT_CTX_ID);
+        ct_ctx_pool = id_fpool_create(nb_thread, MIN_CT_CTX_ID, NUM_CT_CTX_ID);
         ct_ctx_md = offload_metadata_create(nb_thread, "ct_miss_ctx",
                                             sizeof(struct ct_miss_ctx),
                                             dump_ct_ctx_id, params);
@@ -1049,6 +1054,7 @@ find_ct_miss_ctx(int ct_ctx_id, struct ct_miss_ctx *ctx)
 
 #define MIN_TUNNEL_ID 1
 #define MAX_TUNNEL_ID (reg_fields[REG_FIELD_TUN_INFO].mask - 1)
+#define NUM_TUNNEL_ID (MAX_TUNNEL_ID - MIN_TUNNEL_ID + 1)
 
 static struct id_fpool *tnl_id_pool = NULL;
 static struct offload_metadata *tnl_md;
@@ -1099,7 +1105,7 @@ tnl_md_init(void)
         };
         unsigned int nb_thread = netdev_offload_thread_nb();
 
-        tnl_id_pool = id_fpool_create(nb_thread, MIN_TUNNEL_ID, MAX_TUNNEL_ID);
+        tnl_id_pool = id_fpool_create(nb_thread, MIN_TUNNEL_ID, NUM_TUNNEL_ID);
         tnl_md = offload_metadata_create(nb_thread, "tunnel",
                                          2 * sizeof(struct flow_tnl),
                                          dump_tnl_id, params);
