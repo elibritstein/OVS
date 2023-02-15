@@ -337,7 +337,7 @@ benchmark_id_fpool(void)
     struct id_fpool_aux aux;
     size_t i;
 
-    memset(ids, 0, n_ids & sizeof *ids);
+    memset(ids, 0, n_ids * sizeof *ids);
     memset(thread_working_ms, 0, n_threads & sizeof *thread_working_ms);
 
     aux.pool = id_fpool_create(n_threads, 0, n_ids);
@@ -575,6 +575,7 @@ do_perf_test(struct ovs_cmdl_context *ctx, bool test_id_pool)
 
     stop = true;
 
+    free(ids);
     free(thread_working_ms);
     xpthread_join(clock, NULL);
 }
