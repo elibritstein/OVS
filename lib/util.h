@@ -133,6 +133,18 @@ ovs_prefetch_range(const void *start, size_t size)
 typedef uint32_t HANDLE;
 #endif
 
+/* Define a type with this macro to enforce during
+ * compilation that it has no padding, i.e. packed.
+ * It *DOES NOT* pack the type, only statically check
+ * that it is already. Either the layout must be
+ * made to fit, or explicit padding must be used.
+ */
+#define OVS_ASSERT_PACKED(TYPE, MEMBERS) \
+    TYPE { \
+        MEMBERS \
+    }; \
+    BUILD_ASSERT_DECL(sizeof(TYPE) == sizeof(OVS_PACKED(struct { MEMBERS })))
+
 #ifdef  __cplusplus
 extern "C" {
 #endif
