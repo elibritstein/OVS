@@ -80,7 +80,13 @@ struct offload_metadata_parameters {
     bool disable_map_shrink;
 };
 
-/* Allocate and return a map handle. */
+/* Allocate and return a map handle.
+ * The user must ensure that the 'data' type inserted as key
+ * in the map (of which 'data_size' is the size) does not
+ * contain padding. The macros 'OVS_PACKED' or 'OVS_ASSERT_PACKED'
+ * (if one does not want a packed struct) can be used to enforce
+ * this property.
+ */
 struct offload_metadata *
 offload_metadata_create(unsigned int nb_user,
                         const char *name,

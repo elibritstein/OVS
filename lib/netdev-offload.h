@@ -85,12 +85,12 @@ struct netdev_flow_dump {
 #define OFFLOAD_FLOWS_COUNTER_KEY_STRING_SIZE \
     (OFFLOAD_FLOWS_COUNTER_KEY_SIZE * 35 + 3)
 
-struct flows_counter_key {
+OVS_ASSERT_PACKED(struct flows_counter_key,
     union {
         uintptr_t ptr_key;
         ovs_u128  ufid_key[OFFLOAD_FLOWS_COUNTER_KEY_SIZE];
     };
-};
+);
 
 /* Flow offloading. */
 struct offload_info {

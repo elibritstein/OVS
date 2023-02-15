@@ -514,11 +514,11 @@ static struct reg_field reg_fields[] = {
     },
 };
 
-struct table_id_data {
+OVS_ASSERT_PACKED(struct table_id_data,
     struct netdev *netdev;
     odp_port_t vport;
     uint32_t recirc_id;
-};
+);
 
 static struct ds *
 dump_table_id(struct ds *s, void *data,
@@ -857,11 +857,11 @@ put_table_id(uint32_t table_id)
                               table_id);
 }
 
-struct sflow_ctx {
+OVS_ASSERT_PACKED(struct sflow_ctx,
     struct dpif_sflow_attr sflow_attr;
     struct user_action_cookie cookie;
     struct flow_tnl sflow_tnl;
-};
+);
 
 static struct ds *
 dump_sflow_id(struct ds *s, void *data,
@@ -974,12 +974,14 @@ ct_ctx_id_free(uint32_t id)
     id_fpool_free_id(ct_ctx_pool, tid, id);
 }
 
-struct ct_miss_ctx {
-    uint8_t state;
-    uint16_t zone;
-    uint32_t mark;
+OVS_ASSERT_PACKED(struct ct_miss_ctx,
     ovs_u128 label;
-};
+    uint32_t mark;
+    uint16_t zone;
+    uint8_t state;
+    /* Manual padding must be used instead of PADDED_MEMBERS. */
+    uint8_t pad[1];
+);
 
 static struct ds *
 dump_ct_ctx_id(struct ds *s, void *data,
@@ -1151,12 +1153,14 @@ put_tnl_id(uint32_t tnl_id)
     offload_metadata_id_unref(tnl_md, netdev_offload_thread_id(), tnl_id);
 }
 
-struct flow_miss_ctx {
+OVS_ASSERT_PACKED(struct flow_miss_ctx,
+    /* Manual padding must be used instead of PADDED_MEMBERS. */
     odp_port_t vport;
     uint32_t recirc_id;
-    struct flow_tnl tnl;
     uint8_t skip_actions;
-};
+    uint8_t pad0[7];
+    struct flow_tnl tnl;
+);
 
 static struct ds *
 dump_flow_ctx_id(struct ds *s, void *data,

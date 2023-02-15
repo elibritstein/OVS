@@ -83,9 +83,11 @@ id_free(uint32_t id)
     id_fpool_free_id(pool, tid, id);
 }
 
-struct data {
+OVS_ASSERT_PACKED(struct data,
     size_t idx;
-};
+    bool b;
+    uint8_t pad[7];
+);
 
 struct priv {
     void *hdl;
@@ -152,15 +154,25 @@ test_offload_metadata_id(long long int delay)
                                  sizeof(struct data), data_format,
                                  params);
 
+    memset(datas, 0, sizeof datas);
     for (int i = 0; i < N; i++) {
         datas[i].idx = i;
+        datas[i].b = false;
         ovs_assert(0 == offload_metadata_id_ref(md, &datas[i], NULL, &ids[i]));
     }
 
     for (int i = 0; i < N; i++) {
+        /* Declare the data struct on the stack to evaluate the common
+         * use-case of using automatic variables with partial
+         * initialization. Padding bytes, if they are properly defined,
+         * would be set to 0. */
+        struct data d = {
+            .idx = datas[i].idx,
+            .b = datas[i].b,
+        };
         uint32_t id;
 
-        ovs_assert(0 == offload_metadata_id_ref(md, &datas[i], NULL, &id));
+        ovs_assert(0 == offload_metadata_id_ref(md, &d, NULL, &id));
         ovs_assert(ids[i] == id);
     }
 
@@ -168,7 +180,7 @@ test_offload_metadata_id(long long int delay)
         struct data cur;
 
         ovs_assert(0 == offload_metadata_data_from_id(md, ids[i], &cur));
-        ovs_assert(cur.idx == i);
+        ovs_assert(0 == memcmp(&cur, &datas[i], sizeof cur));
     }
 
     release_start = time_msec();
