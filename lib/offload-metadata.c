@@ -327,12 +327,20 @@ offload_metadata_priv_get(struct offload_metadata *md, void *data,
     dhash = hash_bytes(data, md->data_size, 0);
     CMAP_FOR_EACH_WITH_HASH (data_cur, d2i_node, dhash, &md->d2i_map) {
         if (!memcmp(data, data_cur->data, md->data_size)) {
-            if (take_ref && !ovs_refcount_try_ref_rcu(&data_cur->refcount)) {
-                /* If a reference could not be taken, it means that
-                 * while the data has been found within the map, it has
-                 * since been removed and related ID freed. At this point,
-                 * allocate a new data node altogether. */
-                break;
+            if (take_ref) {
+                if (!ovs_refcount_try_ref_rcu(&data_cur->refcount)) {
+                    /* If a reference could not be taken, it means that
+                     * while the data has been found within the map, it has
+                     * since been removed and related ID freed. At this point,
+                     * allocate a new data node altogether. */
+                    break;
+                }
+            } else {
+                if (ovs_refcount_read(&data_cur->refcount) == 0) {
+                    /* If no reference is to be taken, ignore nodes that
+                     * have reached the end of their refcount. */
+                    break;
+                }
             }
             VLOG_DBG_RL(&rl, "%s: %s: '%s', take_ref=%d, refcnt=%u, id=%d",
                         __func__, md->name,
