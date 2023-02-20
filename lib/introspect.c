@@ -30,6 +30,8 @@
 #include "openvswitch/util.h"
 #include "ovs-atomic.h"
 
+#ifdef HAVE_DL
+
 static atomic_size_t used_memory;
 static bool override_enabled;
 
@@ -44,8 +46,6 @@ introspect_used_memory(size_t *n_bytes)
     }
     return true;
 }
-
-#ifdef HAVE_DL
 
 typedef void * (*malloc_fn)(size_t n);
 typedef void * (*calloc_fn)(size_t m, size_t n);
