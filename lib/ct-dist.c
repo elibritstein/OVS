@@ -1273,10 +1273,10 @@ ctd_process_one(struct dp_packet *pkt)
     bool create_new_conn = false;
     struct nat_lookup_info *nli;
     struct conn_lookup_ctx *ctx;
+    struct conn *conn = NULL;
     const uint32_t *setmark;
     struct conntrack *ct;
     const char *helper;
-    struct conn *conn;
     ovs_be16 tp_src;
     ovs_be16 tp_dst;
     uint32_t tp_id;
