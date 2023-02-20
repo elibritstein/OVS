@@ -1275,6 +1275,7 @@ put_flow_miss_ctx_id(uint32_t flow_ctx_id)
 static int
 associate_flow_id(uint32_t flow_id, struct flow_miss_ctx *flow_ctx_data)
 {
+    flow_miss_ctx_init();
     offload_metadata_id_set(flow_miss_ctx_md, flow_ctx_data, flow_id);
     return 0;
 }
