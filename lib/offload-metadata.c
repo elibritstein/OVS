@@ -55,6 +55,7 @@ struct data_entry {
     struct cmap_node associated_i2d_node;
     uint32_t associated_i2d_hash;
     uint32_t id;
+    struct ovsrcu_gc_node gc_node;
     struct ovs_refcount refcount;
     bool priv_init_done;
     void *data;
@@ -63,7 +64,6 @@ struct data_entry {
 
 struct release_item {
     struct ovs_list node;
-    struct ovsrcu_gc_node gc_node;
     long long int timestamp;
     struct offload_metadata *md;
     uint32_t id;
@@ -72,96 +72,107 @@ struct release_item {
 };
 
 static void
-context_item_gc(struct release_item *item)
+data_entry_gc(struct data_entry *entry)
 {
-    free(item->data);
-    free(item);
+    free(entry);
 }
 
 static void
-context_release(struct release_item *item)
+data_entry_destroy(struct offload_metadata *md, struct data_entry *entry,
+                   bool associated)
 {
-    struct offload_metadata *md = item->md;
-    struct data_entry *data = item->data;
     struct data_entry *data_cur;
-    size_t ihash;
+    uint32_t id = entry->id;
 
-    VLOG_DBG_RL(&rl, "%s: md=%s, id=%d. associated=%d", __func__, md->name,
-                item->id, item->associated);
+    if (entry == NULL) {
+        return;
+    }
+
+    VLOG_DBG_RL(&rl, "%s: md=%s, id=%"PRIu32". associated=%d",
+                __func__, md->name, id, associated);
 
     ovs_mutex_lock(&md->maps_lock);
 
-    if (!item->associated
-        && ovs_refcount_unref(&item->data->refcount) > 1) {
-        /* Data has been referenced again since delayed release request. */
-        goto maps_unlock;
+    if (!associated && ovs_refcount_unref(&entry->refcount) > 1) {
+        /* Data has been referenced again since delayed release. */
+        ovs_mutex_unlock(&md->maps_lock);
+        return;
     }
 
     if (md->priv_uninit) {
-        md->priv_uninit(item->data->priv);
-        item->data->priv_init_done = false;
+        md->priv_uninit(entry->priv);
+        entry->priv_init_done = false;
     }
 
-    if (item->id != 0) {
-        ihash = hash_add(0, item->id);
+    if (id != 0) {
+        size_t ihash = hash_add(0, id);
 
-        if (item->associated) {
+        if (associated) {
             CMAP_FOR_EACH_WITH_HASH_PROTECTED (data_cur, associated_i2d_node,
                                                ihash,
-                                               &item->md->associated_i2d_map) {
-                if (data_cur->id == item->id) {
+                                               &md->associated_i2d_map) {
+                if (data_cur->id == id) {
                     break;
                 }
             }
         } else {
             CMAP_FOR_EACH_WITH_HASH_PROTECTED (data_cur, i2d_node, ihash,
-                                               &item->md->i2d_map) {
-                if (data_cur->id == item->id) {
+                                               &md->i2d_map) {
+                if (data_cur->id == id) {
                     break;
                 }
             }
         }
 
-        if (data_cur && data_cur->id == item->id) {
-            if (!item->associated) {
-                cmap_remove(&md->i2d_map, &data->i2d_node, data->i2d_hash);
-                cmap_remove(&md->d2i_map, &data->d2i_node, data->d2i_hash);
-                item->md->id_free(item->id);
+        if (data_cur && data_cur->id == id) {
+            if (!associated) {
+                cmap_remove(&md->i2d_map, &entry->i2d_node, entry->i2d_hash);
+                cmap_remove(&md->d2i_map, &entry->d2i_node, entry->d2i_hash);
+                md->id_free(id);
             } else {
                 cmap_remove(&md->associated_i2d_map,
-                            &data->associated_i2d_node,
-                            data->associated_i2d_hash);
+                            &entry->associated_i2d_node,
+                            entry->associated_i2d_hash);
             }
         }
     } else {
-        cmap_remove(&md->d2i_map, &data->d2i_node, data->d2i_hash);
+        CMAP_FOR_EACH_WITH_HASH_PROTECTED (data_cur, d2i_node, entry->d2i_hash,
+                                           &md->d2i_map) {
+            if (memcmp(entry->data, data_cur->data, md->data_size) == 0) {
+                cmap_remove(&md->d2i_map, &entry->d2i_node, entry->d2i_hash);
+                break;
+            }
+        }
     }
 
-    ovsrcu_gc(context_item_gc, item, gc_node);
+    ovsrcu_gc(data_entry_gc, entry, gc_node);
     ovs_mutex_unlock(&md->maps_lock);
-    return;
+}
 
-maps_unlock:
-    ovs_mutex_unlock(&md->maps_lock);
+static void
+context_release(struct release_item *item)
+{
+    data_entry_destroy(item->md, item->data, item->associated);
     free(item);
 }
 
 static void
-context_delayed_release(struct offload_metadata *md, unsigned int uid,
-                        uint32_t id, struct data_entry *data, bool associated)
+offload_metadata_remove_entry(struct offload_metadata *md, unsigned int uid,
+                              struct data_entry *entry, bool associated)
 {
     struct release_item *item;
     struct ovs_list *list;
 
-    item = xzalloc(sizeof *item);
-    item->md = md;
-    item->id = id;
-    item->data = data;
-    item->associated = associated;
     if (md->delay == 0) {
-        context_release(item);
+        data_entry_destroy(md, entry, associated);
         return;
     }
+
+    item = xzalloc(sizeof *item);
+    item->md = md;
+    item->id = entry->id;
+    item->data = entry;
+    item->associated = associated;
 
     list = &md->free_lists[uid];
 
@@ -429,7 +440,7 @@ offload_metadata_priv_unref(struct offload_metadata *md, unsigned int uid,
     }
 
     data = data_entry_from_priv(md, priv);
-    context_delayed_release(md, uid, data->id, data, false);
+    offload_metadata_remove_entry(md, uid, data, false);
 }
 
 int
@@ -525,7 +536,7 @@ offload_metadata_id_unset(struct offload_metadata *md, unsigned int uid,
                     ovs_refcount_read(&data_cur->refcount),
                     data_cur->id);
         ds_destroy(&s);
-        context_delayed_release(md, uid, id, data_cur, true);
+        offload_metadata_remove_entry(md, uid, data_cur, true);
     }
 }
 
@@ -565,6 +576,6 @@ offload_metadata_id_unref(struct offload_metadata *md, unsigned int uid,
                     ovs_refcount_read(&data_cur->refcount),
                     data_cur->id);
         ds_destroy(&s);
-        context_delayed_release(md, uid, id, data_cur, false);
+        offload_metadata_remove_entry(md, uid, data_cur, false);
     }
 }
