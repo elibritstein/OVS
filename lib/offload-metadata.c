@@ -416,7 +416,6 @@ offload_metadata_priv_get(struct offload_metadata *md, void *data,
     return data_cur->priv;
 
 err_priv_init:
-    free(data_cur->data);
     free(data_cur);
     VLOG_ERR_RL(&rl, "%s: %s: error. '%s'", __func__, md->name,
                 ds_cstr(md->data_format(&s, data,
