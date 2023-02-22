@@ -389,7 +389,9 @@ ufid_to_rte_flow_associate(const ovs_u128 *ufid, struct netdev *netdev,
 
     offload_data_lock(netdev);
 
-    ct_tables_init(physdev, tid);
+    if (!ovs_doca_enabled()) {
+        ct_tables_init(physdev, tid);
+    }
 
     /*
      * We should not simply overwrite an existing rte flow.
