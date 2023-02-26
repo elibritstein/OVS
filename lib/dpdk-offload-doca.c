@@ -503,6 +503,36 @@ doca_translate_actions(struct netdev *netdev OVS_UNUSED,
 
         if (act_type == RTE_FLOW_ACTION_TYPE_DROP) {
             fwd->type = DOCA_FLOW_FWD_DROP;
+        } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_MAC_SRC) {
+            memcpy(&dacts->mod_src_mac, actions->conf, DOCA_ETHER_ADDR_LEN);
+        } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_MAC_DST) {
+            memcpy(&dacts->mod_dst_mac, actions->conf, DOCA_ETHER_ADDR_LEN);
+        } else if (act_type == RTE_FLOW_ACTION_TYPE_OF_SET_VLAN_VID) {
+            const struct rte_flow_action_of_set_vlan_vid *rte_vlan_vid;
+
+            rte_vlan_vid = actions->conf;
+            dacts->mod_vlan_id = rte_vlan_vid->vlan_vid;
+        } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_IPV4_SRC) {
+            dacts->mod_src_ip.ipv4_addr = *(__be32 *) actions->conf;
+            dacts->mod_src_ip.type = DOCA_FLOW_L3_TYPE_IP4;
+        } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_IPV4_DST) {
+            dacts->mod_dst_ip.ipv4_addr = *(__be32 *) actions->conf;
+            dacts->mod_dst_ip.type = DOCA_FLOW_L3_TYPE_IP4;
+        } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_IPV4_TTL ||
+                   act_type == RTE_FLOW_ACTION_TYPE_SET_IPV6_HOP) {
+            dacts->ttl = *(__u8 *) actions->conf;
+        } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_IPV6_SRC) {
+            memcpy(&dacts->mod_src_ip.ipv6_addr, actions->conf,
+                   sizeof dacts->mod_src_ip.ipv6_addr);
+            dacts->mod_src_ip.type = DOCA_FLOW_L3_TYPE_IP6;
+        } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_IPV6_DST) {
+            memcpy(&dacts->mod_dst_ip.ipv6_addr, actions->conf,
+                   sizeof dacts->mod_dst_ip.ipv6_addr);
+            dacts->mod_dst_ip.type = DOCA_FLOW_L3_TYPE_IP6;
+        } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_TP_SRC) {
+            dacts->mod_src_port = *(__be16 *) actions->conf;
+        } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_TP_DST) {
+            dacts->mod_dst_port = *(__be16 *) actions->conf;
         } else if (act_type == RTE_FLOW_ACTION_TYPE_PORT_ID) {
             const struct rte_flow_action_port_id *port_id = actions->conf;
 
