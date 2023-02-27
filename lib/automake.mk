@@ -525,6 +525,7 @@ endif
 
 if DOCA_OFFLOAD
 lib_libopenvswitch_la_SOURCES += \
+	lib/dpdk-offload-doca.c \
 	lib/ovs-doca.c
 else
 lib_libopenvswitch_la_SOURCES += \
