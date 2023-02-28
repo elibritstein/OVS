@@ -1178,9 +1178,10 @@ netdev_dpdk_find_esw_mgr_port_id(uint16_t dev_port_id)
 }
 
 static int
-dpdk_eth_dev_init(struct netdev_dpdk *dev)
+dpdk_eth_dev_init(struct netdev *netdev)
     OVS_REQUIRES(dev->mutex)
 {
+    struct netdev_dpdk *dev = netdev_dpdk_cast(netdev);
     struct rte_pktmbuf_pool_private *mbp_priv;
     struct rte_eth_dev_info info;
     struct rte_ether_addr eth_addr;
@@ -5200,7 +5201,7 @@ netdev_dpdk_reconfigure(struct netdev *netdev)
         }
     }
 
-    err = dpdk_eth_dev_init(dev);
+    err = dpdk_eth_dev_init(netdev);
     if (dev->hw_ol_features & NETDEV_TX_TSO_OFFLOAD) {
         netdev->ol_flags |= NETDEV_TX_OFFLOAD_TCP_TSO;
         netdev->ol_flags |= NETDEV_TX_OFFLOAD_TCP_CKSUM;
