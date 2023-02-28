@@ -280,6 +280,7 @@ offload_data_destroy(struct netdev *netdev)
     cmap_destroy(&data->ufid_to_rte_flow);
     ovsrcu_postpone(offload_data_destroy__, data);
 
+    offload->netdev_data_destroy(netdev);
     ovsrcu_set(&netdev->hw_info.offload_data, NULL);
 }
 
@@ -5679,7 +5680,12 @@ offload_provider_api_init(void)
     static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
 
     if (ovsthread_once_start(&init_once)) {
-        offload = &dpdk_offload_api_rte;
+        if (ovs_doca_enabled()) {
+            offload = &dpdk_offload_api_doca;
+        } else {
+            offload = &dpdk_offload_api_rte;
+        }
+
         ovsthread_once_done(&init_once);
     }
 }

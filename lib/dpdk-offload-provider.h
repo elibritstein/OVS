@@ -108,5 +108,6 @@ struct dpdk_offload_api {
 };
 
 extern struct dpdk_offload_api dpdk_offload_api_rte;
+extern struct dpdk_offload_api dpdk_offload_api_doca;
 
 #endif /* DPDK_OFFLOAD_PROVIDER_H */

@@ -1298,11 +1298,18 @@ dpdk_eth_dev_init(struct netdev *netdev)
         return -diag;
     }
 
-    diag = rte_eth_dev_start(dev->port_id);
-    if (diag) {
-        VLOG_ERR("Interface %s start error: %s", dev->up.name,
-                 rte_strerror(-diag));
-        return -diag;
+    if (ovs_doca_enabled()) {
+        diag = netdev_dpdk_doca_port_create(netdev);
+        if (diag) {
+            return -1;
+        }
+    } else {
+        diag = rte_eth_dev_start(dev->port_id);
+        if (diag) {
+            VLOG_ERR("Interface %s start error: %s", dev->up.name,
+                     rte_strerror(-diag));
+            return -diag;
+        }
     }
     dev->started = true;
 

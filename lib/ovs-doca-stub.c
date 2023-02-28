@@ -19,6 +19,11 @@
 #include "smap.h"
 #include "vswitch-idl.h"
 
+#ifdef DPDK_NETDEV
+#include "dpdk-offload-provider.h"
+struct dpdk_offload_api dpdk_offload_api_doca = {0};
+#endif /* DPDK_NETDEV */
+
 VLOG_DEFINE_THIS_MODULE(doca);
 
 int
