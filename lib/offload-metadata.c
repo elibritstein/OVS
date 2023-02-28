@@ -326,8 +326,6 @@ offload_metadata_priv_get(struct offload_metadata *md, void *data,
     size_t dhash, ihash;
     struct ds s;
 
-    ds_init(&s);
-
     dhash = hash_bytes(data, md->data_size, 0);
     CMAP_FOR_EACH_WITH_HASH (data_cur, d2i_node, dhash, &md->d2i_map) {
         if (!memcmp(data, data_cur->data, md->data_size)) {
@@ -346,16 +344,19 @@ offload_metadata_priv_get(struct offload_metadata *md, void *data,
                     break;
                 }
             }
-            VLOG_DBG_RL(&rl, "%s: %s: '%s', take_ref=%d, refcnt=%u, id=%d",
-                        __func__, md->name,
-                        ds_cstr(md->data_format(&s,
-                                                data_cur->data,
-                                                data_cur->priv,
-                                                priv_arg)),
-                        take_ref,
-                        ovs_refcount_read(&data_cur->refcount),
-                        data_cur->id);
-            ds_destroy(&s);
+            if (OVS_UNLIKELY(!VLOG_DROP_DBG((&rl)))) {
+                ds_init(&s);
+                VLOG_DBG("%s: %s: '%s', take_ref=%d, refcnt=%u, id=%d",
+                         __func__, md->name,
+                         ds_cstr(md->data_format(&s,
+                                                 data_cur->data,
+                                                 data_cur->priv,
+                                                 priv_arg)),
+                         take_ref,
+                         ovs_refcount_read(&data_cur->refcount),
+                         data_cur->id);
+                ds_destroy(&s);
+            }
             if (id) {
                 *id = data_cur->id;
             }
@@ -382,7 +383,7 @@ offload_metadata_priv_get(struct offload_metadata *md, void *data,
     if (md->id_alloc) {
         alloc_id = md->id_alloc();
         if (alloc_id == 0) {
-            goto err_id_alloc;
+            return NULL;
         }
     }
     data_cur = xzalloc(data_entry_total_size(md));
@@ -404,27 +405,30 @@ offload_metadata_priv_get(struct offload_metadata *md, void *data,
         data_cur->i2d_hash = ihash;
         cmap_insert(&md->i2d_map, &data_cur->i2d_node, ihash);
     }
-    VLOG_DBG_RL(&rl, "%s: %s: '%s', refcnt=%d, id=%d", __func__, md->name,
-                ds_cstr(md->data_format(&s,
-                                        data_cur->data,
-                                        data_cur->priv,
-                                        priv_arg)),
-                ovs_refcount_read(&data_cur->refcount),
-                data_cur->id);
+    if (OVS_UNLIKELY(!VLOG_DROP_DBG((&rl)))) {
+        ds_init(&s);
+        VLOG_DBG("%s: %s: '%s', refcnt=%d, id=%d", __func__, md->name,
+                 ds_cstr(md->data_format(&s,
+                                         data_cur->data,
+                                         data_cur->priv,
+                                         priv_arg)),
+                 ovs_refcount_read(&data_cur->refcount),
+                 data_cur->id);
+        ds_destroy(&s);
+    }
     if (id) {
         *id = data_cur->id;
     }
 
     ovs_mutex_unlock(&md->maps_lock);
-    ds_destroy(&s);
     return data_cur->priv;
 
 err_priv_init:
     free(data_cur);
+    ds_init(&s);
     VLOG_ERR_RL(&rl, "%s: %s: error. '%s'", __func__, md->name,
                 ds_cstr(md->data_format(&s, data,
                                         NULL, NULL)));
-err_id_alloc:
     ds_destroy(&s);
     return NULL;
 }
@@ -485,7 +489,6 @@ offload_metadata_id_set(struct offload_metadata *md, void *data, uint32_t id)
         md->has_associated_map = true;
     }
 
-    ds_init(&s);
     data_cur = xzalloc(data_entry_total_size(md));
     data_cur->data = data_cur + 1;
     data_cur->priv = (char *) data_cur->data + offload_metadata_data_size(md);
@@ -498,12 +501,15 @@ offload_metadata_id_set(struct offload_metadata *md, void *data, uint32_t id)
     cmap_insert(&md->associated_i2d_map, &data_cur->associated_i2d_node,
                 ihash);
     ovs_mutex_unlock(&md->maps_lock);
-    VLOG_DBG_RL(&rl, "%s: %s: '%s', refcnt=%d, id=%d", __func__, md->name,
-                ds_cstr(md->data_format(&s, data_cur->data,
-                                        NULL, NULL)),
-                ovs_refcount_read(&data_cur->refcount),
-                data_cur->id);
-    ds_destroy(&s);
+    if (OVS_UNLIKELY(!VLOG_DROP_DBG((&rl)))) {
+        ds_init(&s);
+        VLOG_DBG("%s: %s: '%s', refcnt=%d, id=%d", __func__, md->name,
+                 ds_cstr(md->data_format(&s, data_cur->data,
+                                         NULL, NULL)),
+                 ovs_refcount_read(&data_cur->refcount),
+                 data_cur->id);
+        ds_destroy(&s);
+    }
 }
 
 void
@@ -528,14 +534,15 @@ offload_metadata_id_unset(struct offload_metadata *md, unsigned int uid,
     }
 
     if (data_cur) {
-        ds_init(&s);
-        VLOG_DBG_RL(&rl,
-                    "%s: %s: '%s', refcnt=%u, id=%d", __func__, md->name,
-                    ds_cstr(md->data_format(&s, data_cur->data,
-                                            NULL, NULL)),
-                    ovs_refcount_read(&data_cur->refcount),
-                    data_cur->id);
-        ds_destroy(&s);
+        if (OVS_UNLIKELY(!VLOG_DROP_DBG((&rl)))) {
+            ds_init(&s);
+            VLOG_DBG("%s: %s: '%s', refcnt=%u, id=%d", __func__, md->name,
+                     ds_cstr(md->data_format(&s, data_cur->data,
+                                             NULL, NULL)),
+                     ovs_refcount_read(&data_cur->refcount),
+                     data_cur->id);
+            ds_destroy(&s);
+        }
         offload_metadata_remove_entry(md, uid, data_cur, true);
     }
 }
@@ -569,13 +576,16 @@ offload_metadata_id_unref(struct offload_metadata *md, unsigned int uid,
 
     if (data_cur) {
         ds_init(&s);
-        VLOG_DBG_RL(&rl,
-                    "%s: %s: '%s', refcnt=%u, id=%d", __func__, md->name,
-                    ds_cstr(md->data_format(&s, data_cur->data,
-                                            NULL, NULL)),
-                    ovs_refcount_read(&data_cur->refcount),
-                    data_cur->id);
         ds_destroy(&s);
+        if (OVS_UNLIKELY(!VLOG_DROP_DBG((&rl)))) {
+            ds_init(&s);
+            VLOG_DBG("%s: %s: '%s', refcnt=%u, id=%d", __func__, md->name,
+                     ds_cstr(md->data_format(&s, data_cur->data,
+                                             NULL, NULL)),
+                     ovs_refcount_read(&data_cur->refcount),
+                     data_cur->id);
+            ds_destroy(&s);
+        }
         offload_metadata_remove_entry(md, uid, data_cur, false);
     }
 }
