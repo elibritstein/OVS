@@ -209,6 +209,72 @@ dpdk_offload_doca_get_reg_fields(void)
     return reg_fields;
 }
 
+static void
+doca_translate_gre_key_item(const struct rte_flow_item *item,
+                            struct doca_flow_match *doca_spec,
+                            struct doca_flow_match *doca_mask)
+{
+    const rte_be32_t *key_spec, *key_mask;
+
+    doca_spec->tun.type = DOCA_FLOW_TUN_GRE;
+    doca_mask->tun.type = DOCA_FLOW_TUN_GRE;
+
+    key_spec = item->spec;
+    key_mask = item->mask;
+
+    if (item->spec) {
+        doca_spec->tun.gre_key = *key_spec;
+    }
+    if (item->mask) {
+        doca_mask->tun.gre_key = *key_mask;
+    }
+}
+
+static void
+doca_translate_gre_item(const struct rte_flow_item *item,
+                        struct doca_flow_match *doca_spec,
+                        struct doca_flow_match *doca_mask)
+{
+    const struct rte_gre_hdr *greh_spec, *greh_mask;
+
+    doca_spec->tun.type = DOCA_FLOW_TUN_GRE;
+    doca_mask->tun.type = DOCA_FLOW_TUN_GRE;
+
+    greh_spec = (struct rte_gre_hdr *) item->spec;
+    greh_mask = (struct rte_gre_hdr *) item->mask;
+
+    if (item->spec) {
+        doca_spec->tun.key_present = greh_spec->k;
+    }
+    if (item->mask) {
+        doca_mask->tun.key_present = greh_mask->k;
+    }
+}
+
+static void
+doca_translate_vxlan_item(const struct rte_flow_item *item,
+                          struct doca_flow_match *doca_spec,
+                          struct doca_flow_match *doca_mask)
+{
+    const struct rte_flow_item_vxlan *vxlan_spec = item->spec;
+    const struct rte_flow_item_vxlan *vxlan_mask = item->mask;
+    ovs_be32 spec_vni, mask_vni;
+
+    doca_spec->tun.type = DOCA_FLOW_TUN_VXLAN;
+    if (item->spec) {
+        spec_vni = get_unaligned_be32(ALIGNED_CAST(ovs_be32 *,
+                    vxlan_spec->vni));
+        doca_spec->tun.vxlan_tun_id = htonl(ntohll(spec_vni) << 8);
+    }
+
+    doca_mask->tun.type = DOCA_FLOW_TUN_VXLAN;
+    if (item->mask) {
+        mask_vni = get_unaligned_be32(ALIGNED_CAST(ovs_be32 *,
+                    vxlan_mask->vni));
+        doca_mask->tun.vxlan_tun_id = htonl(ntohll(mask_vni) << 8);
+    }
+}
+
 static int
 doca_translate_items(struct netdev *netdev OVS_UNUSED,
                      const struct rte_flow_item *items,
@@ -217,6 +283,9 @@ doca_translate_items(struct netdev *netdev OVS_UNUSED,
 {
     struct doca_flow_header_format *doca_hdr_spec, *doca_hdr_mask;
 
+    /* Start by filling out outer header match and
+     * switch to inner in case we encounter a tnl proto.
+     */
     doca_hdr_spec = &doca_spec->outer;
     doca_hdr_mask = &doca_mask->outer;
 
@@ -327,6 +396,21 @@ doca_translate_items(struct netdev *netdev OVS_UNUSED,
                 doca_hdr_mask->tcp.l4_port.dst_port = mask->hdr.dst_port;
                 doca_hdr_mask->tcp.flags = mask->hdr.tcp_flags;
             }
+        } else if (item_type == RTE_FLOW_ITEM_TYPE_VXLAN) {
+            doca_translate_vxlan_item(items, doca_spec, doca_mask);
+
+            doca_hdr_spec = &doca_spec->inner;
+            doca_hdr_mask = &doca_mask->inner;
+        } else if (item_type == RTE_FLOW_ITEM_TYPE_GRE) {
+            doca_translate_gre_item(items, doca_spec, doca_mask);
+
+            doca_hdr_spec = &doca_spec->inner;
+            doca_hdr_mask = &doca_mask->inner;
+        } else if (item_type == RTE_FLOW_ITEM_TYPE_GRE_KEY) {
+            doca_translate_gre_key_item(items, doca_spec, doca_mask);
+
+            doca_hdr_spec = &doca_spec->inner;
+            doca_hdr_mask = &doca_mask->inner;
         } else if (item_type == RTE_FLOW_ITEM_TYPE_ICMP) {
             const struct rte_flow_item_icmp *spec = items->spec;
             const struct rte_flow_item_icmp *mask = items->mask;
@@ -351,9 +435,64 @@ doca_translate_items(struct netdev *netdev OVS_UNUSED,
 }
 
 static int
+doca_translate_vxlan_encap(const struct rte_flow_action *action,
+                           struct doca_flow_actions *dacts)
+{
+    const struct rte_flow_action_vxlan_encap *conf = action->conf;
+    struct doca_flow_encap_action *encap = &dacts->encap;
+    struct rte_flow_item *items = conf->definition;
+
+    for (; items->type != RTE_FLOW_ITEM_TYPE_END; items++) {
+        int item_type = items->type;
+
+        if (item_type == RTE_FLOW_ITEM_TYPE_ETH) {
+            const struct eth_header *eth = items->spec;
+
+            memcpy(&encap->src_mac, &eth->eth_src, DOCA_ETHER_ADDR_LEN);
+            memcpy(&encap->dst_mac, &eth->eth_dst, DOCA_ETHER_ADDR_LEN);
+        } else if (item_type == RTE_FLOW_ITEM_TYPE_VLAN) {
+            const struct vlan_header *vx_vlan = items->spec;
+
+            encap->vlan.tci = vx_vlan->vlan_tci;
+        } else if (item_type == RTE_FLOW_ITEM_TYPE_IPV4) {
+            const struct ip_header *ip = items->spec;
+
+            memcpy(&encap->src_ip.ipv4_addr, &ip->ip_src, sizeof ip->ip_src);
+            encap->src_ip.type = DOCA_FLOW_L3_TYPE_IP4;
+            memcpy(&encap->dst_ip.ipv4_addr, &ip->ip_dst, sizeof ip->ip_dst);
+            encap->dst_ip.type = DOCA_FLOW_L3_TYPE_IP4;
+        } else if (item_type == RTE_FLOW_ITEM_TYPE_IPV6) {
+            const struct ovs_16aligned_ip6_hdr *ip6 = items->spec;
+
+            memcpy(&encap->src_ip.ipv6_addr, &ip6->ip6_src,
+                   sizeof ip6->ip6_src);
+            encap->src_ip.type = DOCA_FLOW_L3_TYPE_IP6;
+            memcpy(&encap->dst_ip.ipv6_addr, &ip6->ip6_dst,
+                   sizeof ip6->ip6_dst);
+            encap->dst_ip.type = DOCA_FLOW_L3_TYPE_IP6;
+        } else if (item_type == RTE_FLOW_ITEM_TYPE_UDP) {
+            /* doca adds UDP encap automatically */
+            continue;
+        } else if (item_type == RTE_FLOW_ITEM_TYPE_VXLAN) {
+            const struct vxlanhdr *vxlan = items->spec;
+
+            encap->tun.type = DOCA_FLOW_TUN_VXLAN;
+            memcpy(&encap->tun.vxlan_tun_id, &vxlan->vx_vni,
+                   sizeof vxlan->vx_vni);
+        } else {
+            return -1;
+        }
+    }
+
+    dacts->has_encap = true;
+
+    return 0;
+}
+
+static int
 doca_translate_actions(struct netdev *netdev OVS_UNUSED,
                        const struct rte_flow_action *actions,
-                       struct doca_flow_actions *dacts OVS_UNUSED,
+                       struct doca_flow_actions *dacts,
                        struct doca_flow_action_descs *acts_descs OVS_UNUSED,
                        struct doca_flow_fwd *fwd,
                        struct doca_flow_monitor *monitor,
@@ -369,6 +508,10 @@ doca_translate_actions(struct netdev *netdev OVS_UNUSED,
 
             fwd->type = DOCA_FLOW_FWD_PORT;
             fwd->port_id = port_id->id;
+        } else if ((act_type == RTE_FLOW_ACTION_TYPE_NVGRE_DECAP) ||
+                   (act_type == RTE_FLOW_ACTION_TYPE_VXLAN_DECAP)) {
+            /* VXLAN and GRE supported natively */
+            dacts->decap = true;
         } else if (act_type == RTE_FLOW_ACTION_TYPE_COUNT) {
             monitor->flags |= DOCA_FLOW_MONITOR_COUNT;
         } else if (act_type == RTE_FLOW_ACTION_TYPE_JUMP) {
@@ -384,6 +527,14 @@ doca_translate_actions(struct netdev *netdev OVS_UNUSED,
             fwd->next_pipe = next_pipe->pipe;
             hndl->next_pipe = next_pipe;
             hndl->next_group = jump->group;
+        } else if (act_type == RTE_FLOW_ACTION_TYPE_VXLAN_ENCAP) {
+            if (doca_translate_vxlan_encap(actions, dacts)) {
+                return -1;
+            }
+        } else if (act_type == RTE_FLOW_ACTION_TYPE_MARK) {
+            const struct rte_flow_action_mark *mark = actions->conf;
+
+            dacts->meta.pkt_meta = mark->id;
         } else {
             return -1;
         }
