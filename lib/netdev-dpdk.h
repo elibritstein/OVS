@@ -54,6 +54,15 @@ netdev_dpdk_rte_flow_query_count(struct netdev *netdev,
 int
 netdev_dpdk_get_port_id(struct netdev *netdev);
 
+int
+netdev_dpdk_doca_port_create(struct netdev *netdev);
+
+int
+netdev_dpdk_doca_port_destroy(struct netdev *netdev);
+
+void *
+netdev_dpdk_doca_port_get(struct netdev *netdev);
+
 #ifdef ALLOW_EXPERIMENTAL_API
 
 int netdev_dpdk_rte_flow_tunnel_decap_set(struct netdev *,

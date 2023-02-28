@@ -540,6 +540,7 @@ struct netdev_dpdk {
 
     struct netdev_dpdk_vdpa_relay *relay;
     bool netdev_rep;
+    void *doca_port;
 };
 
 struct netdev_rxq_dpdk {
@@ -1177,6 +1178,55 @@ netdev_dpdk_find_esw_mgr_port_id(uint16_t dev_port_id)
     return dev_port_id;
 }
 
+static struct netdev_dpdk *
+netdev_dpdk_cast(const struct netdev *netdev)
+{
+    return CONTAINER_OF(netdev, struct netdev_dpdk, up);
+}
+
+int
+netdev_dpdk_doca_port_create(struct netdev *netdev)
+{
+    struct netdev_dpdk *dev = netdev_dpdk_cast(netdev);
+
+    dev->doca_port = ovs_doca_port_create(dev->port_id);
+    if (!dev->doca_port) {
+        VLOG_ERR("Failed to init DOCA port %s %"PRIu16,
+                 netdev_get_name(netdev), dev->port_id);
+        return -1;
+    }
+    return 0;
+}
+
+int
+netdev_dpdk_doca_port_destroy(struct netdev *netdev)
+{
+    void *doca_port;
+
+    doca_port = netdev_dpdk_doca_port_get(netdev);
+    if (!doca_port) {
+        VLOG_ERR("Failed to stop DOCA port %s, doca_port is NULL",
+                 netdev_get_name(netdev));
+        return -1;
+
+    }
+
+    if (ovs_doca_port_destroy(doca_port)) {
+        VLOG_ERR("Failed to stop DOCA port %s id", netdev_get_name(netdev));
+        return -1;
+    }
+    doca_port = NULL;
+    return 0;
+}
+
+void *
+netdev_dpdk_doca_port_get(struct netdev *netdev)
+{
+    struct netdev_dpdk *dev = netdev_dpdk_cast(netdev);
+
+    return dev->doca_port;
+}
+
 static int
 dpdk_eth_dev_init(struct netdev *netdev)
     OVS_REQUIRES(dev->mutex)
@@ -1272,12 +1322,6 @@ dpdk_eth_dev_init(struct netdev *netdev)
     mbp_priv = rte_mempool_get_priv(dev->dpdk_mp->mp);
     dev->buf_size = mbp_priv->mbuf_data_room_size - RTE_PKTMBUF_HEADROOM;
     return 0;
-}
-
-static struct netdev_dpdk *
-netdev_dpdk_cast(const struct netdev *netdev)
-{
-    return CONTAINER_OF(netdev, struct netdev_dpdk, up);
 }
 
 static struct netdev *
