@@ -3210,7 +3210,7 @@ tun_key_to_attr(struct ofpbuf *a, const struct flow_tnl *tun_key,
 
         vxlan_opts_ofs = nl_msg_start_nested(a, OVS_TUNNEL_KEY_ATTR_VXLAN_OPTS);
         nl_msg_put_u32(a, OVS_VXLAN_EXT_GBP,
-                       (tun_key->gbp_flags << 16) | ntohs(tun_key->gbp_id));
+                       odp_encode_gbp_raw(tun_key->gbp_flags, tun_key->gbp_id));
         nl_msg_end_nested(a, vxlan_opts_ofs);
     }
 
