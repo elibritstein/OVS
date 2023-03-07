@@ -43,14 +43,14 @@ signal.signal(signal.SIGINT, sigint_handler)
 
 def human_convert(value: float, power: int = 1000) -> (float, str):
     n = 0
-    labels = ['', 'K', 'M', 'G', 'T']
+    labels = ['', 'K', 'M', 'G', 'T', 'P', 'E', 'Z', 'Y', 'R', 'Q']
     if power == 1024:
         # Change mega to mebi etc
         labels = [x + 'i' for x in labels]
-    labels[0] = '' # Except when no label
+        labels[0] = '' # Except when no label
     if power != 1000 and power != 1024:
         raise Exception("Unsupported power value for human conversion.")
-    while abs(value) > power:
+    while abs(value) > power and n in range(len(labels) - 1):
         value /= power
         n += 1
     return value, labels[n]
