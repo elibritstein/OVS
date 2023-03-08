@@ -33,6 +33,17 @@ BUILD_TYPE := --disable-shared --enable-static
 EXCLUDE := --exclude .so.* --exclude .so
 endif
 
+ifneq (,$(filter with-dpdk,$(DEB_BUILD_OPTIONS)))
+DPDK_INSTALL ?= /opt/mellanox/dpdk
+ifneq (,$(shell readlink -e $(DPDK_INSTALL)))
+WITH_DPDK := --with-dpdk=$(DPDK_INSTALL)
+DPDK_PKGCONFIG := $(shell find $(DPDK_INSTALL) -type f -name libdpdk.pc -exec dirname {} \;)
+DPDK_LIB_DIR := $(shell PKG_CONFIG_PATH=$(DPDK_PKGCONFIG) pkg-config --libs-only-L libdpdk)
+endif
+else
+WITH_DPDK =
+endif
+
 ifneq (,$(filter with-doca,$(DEB_BUILD_OPTIONS)))
 # WITH_DOCA is set if the user provided 'with-doca' and DOCA_INSTALL exists,
 # either it's default or the user provided value
@@ -53,14 +64,6 @@ endif
 DH_AS_NEEDED=$(shell dpkg --compare-versions $$(dpkg --status dh-autoreconf | grep Version | cut -d' ' -f2) ge 6 && echo --as-needed)
 override_dh_autoreconf:
 	dh_autoreconf $(DH_AS_NEEDED)
-
-# WITH_DPDK is set only if /opt/mellanox/dpdk exists.
-DPDK_INSTALL ?= /opt/mellanox/dpdk
-ifneq (,$(shell readlink -e $(DPDK_INSTALL)))
-WITH_DPDK := --with-dpdk=$(DPDK_INSTALL)
-DPDK_PKGCONFIG := $(shell find $(DPDK_INSTALL) -type f -name libdpdk.pc -exec dirname {} \;)
-DPDK_LIB_DIR := $(shell PKG_CONFIG_PATH=$(DPDK_PKGCONFIG) pkg-config --libs-only-L libdpdk)
-endif
 
 BACKUP_PATH=debian/backup
 override_dh_auto_configure:
