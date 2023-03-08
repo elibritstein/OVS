@@ -203,8 +203,8 @@ static struct reg_field reg_fields[] = {
     [REG_FIELD_FLOW_INFO] = {
         .type = REG_TYPE_META,
         .index = 0,
-        .offset = 0,
-        .mask = 0x00FFFFFF,
+        .offset = 16,
+        .mask = 0x0000FFFF,
     },
 };
 
@@ -431,11 +431,32 @@ doca_translate_items(struct netdev *netdev OVS_UNUSED,
                 doca_hdr_mask->icmp.type  = mask->hdr.icmp_type;
                 doca_hdr_mask->icmp.code  = mask->hdr.icmp_code;
             }
+        } else if (item_type == RTE_FLOW_ITEM_TYPE_TAG) {
+            const struct rte_flow_item_tag *spec = items->spec;
+            const struct rte_flow_item_tag *mask = items->mask;
+
+            if (items->spec) {
+                doca_spec->meta.u32[spec->index] |= spec->data & mask->data;
+            }
+
+            if (items->mask) {
+                doca_mask->meta.u32[spec->index] |= mask->data;
+            }
+        } else if (item_type == RTE_FLOW_ITEM_TYPE_MARK) {
+            uint32_t reg_offset = reg_fields[REG_FIELD_FLOW_INFO].offset;
+            uint32_t reg_mask = reg_fields[REG_FIELD_FLOW_INFO].mask;
+            const struct rte_flow_item_mark *spec = items->spec;
+
+            if (spec) {
+                doca_spec->meta.pkt_meta |= (spec->id & reg_mask) << reg_offset;
+                doca_mask->meta.pkt_meta |= reg_mask << reg_offset;
+            }
         } else {
             VLOG_DBG_RL(&rl, "item %d is not supported", item_type);
             return -1;
         }
     }
+
     return 0;
 }
 
@@ -570,9 +591,28 @@ doca_translate_actions(struct netdev *netdev OVS_UNUSED,
                 return -1;
             }
         } else if (act_type == OVS_RTE_FLOW_ACTION_TYPE_FLOW_INFO) {
+            uint32_t reg_offset = reg_fields[REG_FIELD_FLOW_INFO].offset;
             const struct rte_flow_action_mark *mark = actions->conf;
+            uint32_t reg_mask = reg_fields[REG_FIELD_FLOW_INFO].mask;
 
-            dacts->meta.pkt_meta = mark->id;
+            dacts->meta.pkt_meta |= (mark->id & reg_mask) << reg_offset;
+            acts_descs->meta.pkt_meta.mask.u32 |= reg_mask << reg_offset;
+            acts_descs->meta.pkt_meta.type = DOCA_FLOW_ACTION_SET;
+        } else if (act_type == OVS_RTE_FLOW_ACTION_TYPE_CT_INFO) {
+            const struct rte_flow_action_set_meta *set_meta = actions->conf;
+            uint32_t reg_offset = reg_fields[REG_FIELD_CT_CTX].offset;
+            uint32_t reg_mask = reg_fields[REG_FIELD_CT_CTX].mask;
+
+            dacts->meta.pkt_meta |= (set_meta->data & reg_mask) << reg_offset;
+            acts_descs->meta.pkt_meta.mask.u32 |= (set_meta->mask & reg_mask) << reg_offset;
+            acts_descs->meta.pkt_meta.type = DOCA_FLOW_ACTION_SET;
+        } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_TAG) {
+            const struct rte_flow_action_set_tag *set_tag = actions->conf;
+            uint8_t index = set_tag->index;
+
+            dacts->meta.u32[index] |= set_tag->data;
+            acts_descs->meta.u32[index].mask.u32 |= set_tag->mask;
+            acts_descs->meta.u32[index].type = DOCA_FLOW_ACTION_SET;
         } else {
             return -1;
         }
@@ -783,8 +823,11 @@ dpdk_offload_doca_get_pkt_recover_info(struct dp_packet *p,
                                        struct dpdk_offload_recovery_info *info)
 {
     memset(info, 0, sizeof *info);
-    get_packet_reg_field(p, &reg_fields[REG_FIELD_FLOW_INFO],
-                         &info->flow_miss_id);
+    if (!get_packet_reg_field(p, &reg_fields[REG_FIELD_FLOW_INFO],
+                              &info->flow_miss_id)) {
+            get_packet_reg_field(p, &reg_fields[REG_FIELD_CT_CTX],
+                                 &info->ct_miss_id);
+    }
 }
 
 static int
