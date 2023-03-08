@@ -3873,7 +3873,7 @@ add_count_action(struct netdev *netdev,
         act_resources->shared_count_ctx = ctx;
         add_flow_action(actions, RTE_FLOW_ACTION_TYPE_INDIRECT, ctx->act_hdl);
         actions->shared_count_action_pos = actions->cnt - 1;
-    } else if (act_vars->is_ct_conn) {
+    } else if (act_vars->is_ct_conn && offload->shared_create) {
         add_flow_action(actions, RTE_FLOW_ACTION_TYPE_INDIRECT, NULL);
         actions->shared_count_action_pos = actions->cnt - 1;
     } else {
@@ -6743,19 +6743,21 @@ conn_build_actions(struct netdev *netdev,
                              miss_ctx.state, 0xFF);
 
     /* Shared counter. */
-    memset(&counter_id_key, 0, sizeof counter_id_key);
-    counter_id_key.ptr_key = ct_offload->ctid_key;
+    if (offload->shared_create) {
+        memset(&counter_id_key, 0, sizeof counter_id_key);
+        counter_id_key.ptr_key = ct_offload->ctid_key;
 
-    ctx = get_indirect_count_ctx(netdev, &counter_id_key, true);
-    if (!ctx) {
-        VLOG_ERR("Could not set CT shared count");
-        return -1;
+        ctx = get_indirect_count_ctx(netdev, &counter_id_key, true);
+        if (!ctx) {
+            VLOG_ERR("Could not set CT shared count");
+            return -1;
+        }
+        act_resources->shared_count_ctx = ctx;
+        ia = &actions->actions[actions->shared_count_action_pos];
+        ovs_assert(ia->type == RTE_FLOW_ACTION_TYPE_INDIRECT &&
+                ia->conf == NULL);
+        ia->conf = ctx->act_hdl;
     }
-    act_resources->shared_count_ctx = ctx;
-    ia = &actions->actions[actions->shared_count_action_pos];
-    ovs_assert(ia->type == RTE_FLOW_ACTION_TYPE_INDIRECT &&
-               ia->conf == NULL);
-    ia->conf = ctx->act_hdl;
 
     act_vars->pre_ct_tuple_rewrite = false;
     if (get_ct_ctx_id(&miss_ctx, &act_resources->ct_miss_ctx_id)) {

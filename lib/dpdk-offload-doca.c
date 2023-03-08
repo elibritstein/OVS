@@ -753,7 +753,7 @@ dpdk_offload_doca_query_count(struct netdev *netdev,
     return 0;
 }
 
-static struct rte_flow_action_handle *
+OVS_UNUSED static struct rte_flow_action_handle *
 dpdk_offload_doca_shared_create(struct netdev *netdev OVS_UNUSED,
                                 const struct rte_flow_action *action OVS_UNUSED,
                                 struct rte_flow_error *error OVS_UNUSED)
@@ -761,7 +761,7 @@ dpdk_offload_doca_shared_create(struct netdev *netdev OVS_UNUSED,
     return NULL;
 }
 
-static int
+OVS_UNUSED static int
 dpdk_offload_doca_shared_destroy(int port_id OVS_UNUSED,
                                  struct rte_flow_action_handle *act_hdl OVS_UNUSED,
                                  struct rte_flow_error *error OVS_UNUSED)
@@ -769,7 +769,7 @@ dpdk_offload_doca_shared_destroy(int port_id OVS_UNUSED,
     return -1;
 }
 
-static int
+OVS_UNUSED static int
 dpdk_offload_doca_shared_query(int port_id OVS_UNUSED,
                                struct rte_flow_action_handle *act_hdl OVS_UNUSED,
                                void *data OVS_UNUSED,
@@ -813,9 +813,6 @@ struct dpdk_offload_api dpdk_offload_api_doca = {
     .create = dpdk_offload_doca_create,
     .destroy = dpdk_offload_doca_destroy,
     .query_count = dpdk_offload_doca_query_count,
-    .shared_create = dpdk_offload_doca_shared_create,
-    .shared_destroy = dpdk_offload_doca_shared_destroy,
-    .shared_query = dpdk_offload_doca_shared_query,
     .get_packet_recover_info = dpdk_offload_doca_get_pkt_recover_info,
     .reg_fields = dpdk_offload_doca_get_reg_fields,
     .netdev_data_destroy = dpdk_offload_doca_netdev_data_destroy,
