@@ -45,7 +45,6 @@ OVS_ASSERT_PACKED(struct doca_ctl_pipe_key,
 );
 
 struct doca_ctl_pipe_ctx {
-    struct netdev *netdev;
     struct doca_flow_pipe *pipe;
 };
 
@@ -574,7 +573,8 @@ doca_translate_actions(struct netdev *netdev OVS_UNUSED,
 }
 
 static struct doca_flow_pipe_entry *
-create_doca_flow_entry(struct doca_ctl_pipe_ctx *self_pipe,
+create_doca_flow_entry(struct netdev *netdev,
+                       struct doca_ctl_pipe_ctx *self_pipe,
                        uint32_t prio,
                        struct doca_flow_match *spec,
                        struct doca_flow_match *mask,
@@ -586,7 +586,6 @@ create_doca_flow_entry(struct doca_ctl_pipe_ctx *self_pipe,
 {
     unsigned int tid = netdev_offload_thread_id();
     struct doca_flow_pipe *pipe = self_pipe->pipe;
-    struct netdev *netdev = self_pipe->netdev;
     struct doca_flow_pipe_entry *entry;
     doca_error_t err;
 
@@ -651,7 +650,7 @@ dpdk_offload_doca_create(struct netdev *netdev,
 
     /* insert rule */
     prio = (hndl->next_group == MISS_TABLE_ID);
-    hndl->flow = create_doca_flow_entry(pipe_ctx, prio, &spec, &mask,
+    hndl->flow = create_doca_flow_entry(netdev, pipe_ctx, prio, &spec, &mask,
                                         &dacts, &dacts_descs, &monitor, &fwd, error);
     if (!hndl->flow) {
         error->type = RTE_FLOW_ERROR_TYPE_HANDLE;
