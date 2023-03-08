@@ -2237,10 +2237,12 @@ ukey_delete(struct umap *umap, struct udpif_key *ukey)
 }
 
 static bool
-should_revalidate(const struct udpif *udpif, uint64_t packets,
-                  long long int used)
+should_revalidate(const struct udpif *udpif, const struct udpif_key *ukey,
+                  uint64_t packets)
+    OVS_REQUIRES(ukey->mutex)
 {
     long long int metric, now, duration;
+    long long int used = ukey->stats.used;
 
     if (!used) {
         /* Always revalidate the first time a flow is dumped. */
@@ -2267,8 +2269,12 @@ should_revalidate(const struct udpif *udpif, uint64_t packets,
     duration = now - used;
     metric = duration / packets;
 
-    if (metric < 1000 / ofproto_min_revalidate_pps) {
-        /* The flow is receiving more than min-revalidate-pps, so keep it. */
+    if (metric < 1000 / ofproto_min_revalidate_pps ||
+        (ukey->offloaded && duration < ofproto_offloaded_stats_delay)) {
+        /* The flow is receiving more than min-revalidate-pps, so keep it.
+         * Or it's a hardware offloaded flow that might take up to X seconds
+         * to update its statistics. Until we are sure the statistics had a
+         * chance to be updated, also keep it. */
         return true;
     }
     return false;
@@ -2466,7 +2472,7 @@ static enum reval_result
 revalidate_ukey(struct udpif *udpif, struct udpif_key *ukey,
                 const struct dpif_flow_stats *stats,
                 struct ofpbuf *odp_actions, uint64_t reval_seq,
-                struct recirc_refs *recircs, bool offloaded)
+                struct recirc_refs *recircs)
     OVS_REQUIRES(ukey->mutex)
 {
     bool need_revalidate = ukey->reval_seq != reval_seq;
@@ -2492,7 +2498,7 @@ revalidate_ukey(struct udpif *udpif, struct udpif_key *ukey,
     }
 
     if (need_revalidate) {
-        if (should_revalidate(udpif, push.n_packets, ukey->stats.used)) {
+        if (should_revalidate(udpif, ukey, push.n_packets)) {
             if (!ukey->xcache) {
                 ukey->xcache = xlate_cache_new();
             } else {
@@ -2508,7 +2514,7 @@ revalidate_ukey(struct udpif *udpif, struct udpif_key *ukey,
 
     /* Stats for deleted flows will be attributed upon flow deletion. Skip. */
     if (result != UKEY_DELETE) {
-        xlate_push_stats(ukey->xcache, &push, offloaded);
+        xlate_push_stats(ukey->xcache, &push, ukey->offloaded);
         ukey->stats = *stats;
         ukey->reval_seq = reval_seq;
     }
@@ -2968,8 +2974,7 @@ revalidate(struct revalidator *revalidator)
                 }
             } else {
                 result = revalidate_ukey(udpif, ukey, &stats, &odp_actions,
-                                         reval_seq, &recircs,
-                                         f->attrs.offloaded);
+                                         reval_seq, &recircs);
             }
             ukey->dump_seq = dump_seq;
 
@@ -3054,7 +3059,7 @@ revalidator_sweep__(struct revalidator *revalidator, bool purge)
                     COVERAGE_INC(revalidate_missed_dp_flow);
                     memcpy(&stats, &ukey->stats, sizeof stats);
                     result = revalidate_ukey(udpif, ukey, &stats, &odp_actions,
-                                             reval_seq, &recircs, false);
+                                             reval_seq, &recircs);
                 }
                 if (result != UKEY_KEEP) {
                     /* Clears 'recircs' if filled by revalidate_ukey(). */
