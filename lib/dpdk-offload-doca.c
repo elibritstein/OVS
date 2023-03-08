@@ -282,6 +282,7 @@ doca_translate_vxlan_item(const struct rte_flow_item *item,
 
 static int
 doca_translate_items(struct netdev *netdev OVS_UNUSED,
+                     const struct rte_flow_attr *attr,
                      const struct rte_flow_item *items,
                      struct doca_flow_match *doca_spec,
                      struct doca_flow_match *doca_mask)
@@ -299,6 +300,16 @@ doca_translate_items(struct netdev *netdev OVS_UNUSED,
 
         if (item_type == RTE_FLOW_ITEM_TYPE_PORT_ID) {
             const struct rte_flow_item_port_id *spec = items->spec;
+
+            /* Only recirc_id 0 (group_id == 0) may hold flows
+             * from different source ports since it's the root table.
+             * For every other recirc_id we have a table per port and
+             * therefore we can skip matching on port id for those
+             * tables.
+             */
+            if (attr->group > 0) {
+                continue;
+            }
 
             doca_spec->meta.port_meta = spec->id;
             doca_mask->meta.port_meta = 0xFFFFFFFF;
@@ -675,7 +686,7 @@ dpdk_offload_doca_create(struct netdev *netdev,
     memset(&spec, 0x0, sizeof spec);
     memset(&fwd, 0x0, sizeof fwd);
 
-    if (doca_translate_items(netdev, items, &spec, &mask)) {
+    if (doca_translate_items(netdev, attr, items, &spec, &mask)) {
         return NULL;
     }
 
