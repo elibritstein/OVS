@@ -33,6 +33,19 @@ BUILD_TYPE := --disable-shared --enable-static
 EXCLUDE := --exclude .so.* --exclude .so
 endif
 
+ifneq (,$(filter with-doca,$(DEB_BUILD_OPTIONS)))
+# WITH_DOCA is set if the user provided 'with-doca' and DOCA_INSTALL exists,
+# either it's default or the user provided value
+DOCA_INSTALL ?= /opt/mellanox/doca
+ifneq (,$(shell readlink -e $(DOCA_INSTALL)))
+WITH_DOCA := --with-doca=$(DOCA_INSTALL)
+DOCA_PKGCONFIG := $(shell find $(DOCA_INSTALL) -type f -name doca.pc -exec dirname {} \;)
+DOCA_LIB_DIR := $(shell PKG_CONFIG_PATH=$(DOCA_PKGCONFIG) pkg-config --libs-only-L doca)
+endif
+else
+WITH_DOCA =
+endif
+
 %:
 	dh $@ --builddirectory=$(BUILD_DIR) --with autoreconf,python3 --parallel
 
@@ -47,14 +60,6 @@ ifneq (,$(shell readlink -e $(DPDK_INSTALL)))
 WITH_DPDK := --with-dpdk=$(DPDK_INSTALL)
 DPDK_PKGCONFIG := $(shell find $(DPDK_INSTALL) -type f -name libdpdk.pc -exec dirname {} \;)
 DPDK_LIB_DIR := $(shell PKG_CONFIG_PATH=$(DPDK_PKGCONFIG) pkg-config --libs-only-L libdpdk)
-endif
-
-# WITH_DOCA is set only if /opt/mellanox/doca exists.
-DOCA_INSTALL ?= /opt/mellanox/doca
-ifneq (,$(shell readlink -e $(DOCA_INSTALL)))
-WITH_DOCA := --with-doca=$(DOCA_INSTALL)
-DOCA_PKGCONFIG := $(shell find $(DOCA_INSTALL) -type f -name doca-flow.pc -exec dirname {} \;)
-DOCA_LIB_DIR := $(shell PKG_CONFIG_PATH=$(DOCA_PKGCONFIG) pkg-config --libs-only-L doca-flow)
 endif
 
 BACKUP_PATH=debian/backup
