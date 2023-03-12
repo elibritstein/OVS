@@ -5767,7 +5767,9 @@ netdev_offload_dpdk_update_stats(struct dpif_flow_stats *stats,
                                  struct dpif_flow_attrs *attrs,
                                  struct rte_flow_query_count *query)
 {
-    attrs->dp_layer = "dpdk";
+    if (attrs) {
+        attrs->dp_layer = "dpdk";
+    }
     stats->n_packets += (query->hits_set) ? query->hits : 0;
     stats->n_bytes += (query->bytes_set) ? query->bytes : 0;
 }
@@ -6909,8 +6911,7 @@ netdev_offload_dpdk_conn_stats(struct netdev *netdev,
                     rte_flow);
         goto out;
     }
-    rte_flow_data->stats.n_packets += (query.hits_set) ? query.hits : 0;
-    rte_flow_data->stats.n_bytes += (query.bytes_set) ? query.bytes : 0;
+    offload->update_stats(&rte_flow_data->stats, attrs, &query);
     if (query.hits_set && query.hits) {
         rte_flow_data->stats.used = now;
     }

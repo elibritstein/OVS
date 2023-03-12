@@ -915,7 +915,9 @@ dpdk_offload_doca_update_stats(struct dpif_flow_stats *stats,
                                struct dpif_flow_attrs *attrs,
                                struct rte_flow_query_count *query)
 {
-    attrs->dp_layer = "doca";
+    if (attrs) {
+        attrs->dp_layer = "doca";
+    }
 
     if (stats->n_packets != query->hits) {
         query->hits_set = 1;
