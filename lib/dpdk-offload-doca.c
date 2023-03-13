@@ -438,7 +438,7 @@ doca_translate_vxlan_encap(const struct rte_flow_action *action,
                            struct doca_flow_actions *dacts)
 {
     const struct rte_flow_action_vxlan_encap *conf = action->conf;
-    struct doca_flow_encap_action *encap = &dacts->encap;
+    struct doca_flow_header_format *outer = &dacts->encap.outer;
     struct rte_flow_item *items = conf->definition;
 
     for (; items->type != RTE_FLOW_ITEM_TYPE_END; items++) {
@@ -447,36 +447,34 @@ doca_translate_vxlan_encap(const struct rte_flow_action *action,
         if (item_type == RTE_FLOW_ITEM_TYPE_ETH) {
             const struct eth_header *eth = items->spec;
 
-            memcpy(&encap->src_mac, &eth->eth_src, DOCA_ETHER_ADDR_LEN);
-            memcpy(&encap->dst_mac, &eth->eth_dst, DOCA_ETHER_ADDR_LEN);
+            memcpy(&outer->eth.src_mac, &eth->eth_src, DOCA_ETHER_ADDR_LEN);
+            memcpy(&outer->eth.dst_mac, &eth->eth_dst, DOCA_ETHER_ADDR_LEN);
         } else if (item_type == RTE_FLOW_ITEM_TYPE_VLAN) {
             const struct vlan_header *vx_vlan = items->spec;
 
-            encap->vlan.tci = vx_vlan->vlan_tci;
+            outer->eth_vlan[0].tci = vx_vlan->vlan_tci;
         } else if (item_type == RTE_FLOW_ITEM_TYPE_IPV4) {
             const struct ip_header *ip = items->spec;
 
-            memcpy(&encap->src_ip.ipv4_addr, &ip->ip_src, sizeof ip->ip_src);
-            encap->src_ip.type = DOCA_FLOW_L3_TYPE_IP4;
-            memcpy(&encap->dst_ip.ipv4_addr, &ip->ip_dst, sizeof ip->ip_dst);
-            encap->dst_ip.type = DOCA_FLOW_L3_TYPE_IP4;
+            outer->l3_type = DOCA_FLOW_L3_TYPE_IP4;
+            memcpy(&outer->ip4.src_ip, &ip->ip_src, sizeof ip->ip_src);
+            outer->l3_type = DOCA_FLOW_L3_TYPE_IP4;
+            memcpy(&outer->ip4.dst_ip, &ip->ip_dst, sizeof ip->ip_dst);
         } else if (item_type == RTE_FLOW_ITEM_TYPE_IPV6) {
             const struct ovs_16aligned_ip6_hdr *ip6 = items->spec;
 
-            memcpy(&encap->src_ip.ipv6_addr, &ip6->ip6_src,
-                   sizeof ip6->ip6_src);
-            encap->src_ip.type = DOCA_FLOW_L3_TYPE_IP6;
-            memcpy(&encap->dst_ip.ipv6_addr, &ip6->ip6_dst,
-                   sizeof ip6->ip6_dst);
-            encap->dst_ip.type = DOCA_FLOW_L3_TYPE_IP6;
+            outer->l3_type = DOCA_FLOW_L3_TYPE_IP6;
+            memcpy(&outer->ip4.src_ip, &ip6->ip6_src, sizeof ip6->ip6_src);
+            outer->l3_type = DOCA_FLOW_L3_TYPE_IP6;
+            memcpy(&outer->ip4.dst_ip, &ip6->ip6_dst, sizeof ip6->ip6_dst);
         } else if (item_type == RTE_FLOW_ITEM_TYPE_UDP) {
             /* doca adds UDP encap automatically */
             continue;
         } else if (item_type == RTE_FLOW_ITEM_TYPE_VXLAN) {
             const struct vxlanhdr *vxlan = items->spec;
 
-            encap->tun.type = DOCA_FLOW_TUN_VXLAN;
-            memcpy(&encap->tun.vxlan_tun_id, &vxlan->vx_vni,
+            dacts->encap.tun.type = DOCA_FLOW_TUN_VXLAN;
+            memcpy(&dacts->encap.tun.vxlan_tun_id, &vxlan->vx_vni,
                    sizeof vxlan->vx_vni);
         } else {
             return -1;
@@ -497,41 +495,46 @@ doca_translate_actions(struct netdev *netdev OVS_UNUSED,
                        struct doca_flow_monitor *monitor,
                        struct doca_flow_handle *hndl)
 {
+    struct doca_flow_header_format *outer = &dacts->outer;
+
     for (; actions->type != RTE_FLOW_ACTION_TYPE_END; actions++) {
         int act_type = actions->type;
 
         if (act_type == RTE_FLOW_ACTION_TYPE_DROP) {
             fwd->type = DOCA_FLOW_FWD_DROP;
         } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_MAC_SRC) {
-            memcpy(&dacts->mod_src_mac, actions->conf, DOCA_ETHER_ADDR_LEN);
+            memcpy(&outer->eth.src_mac, actions->conf, DOCA_ETHER_ADDR_LEN);
         } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_MAC_DST) {
-            memcpy(&dacts->mod_dst_mac, actions->conf, DOCA_ETHER_ADDR_LEN);
+            memcpy(&outer->eth.dst_mac, actions->conf, DOCA_ETHER_ADDR_LEN);
         } else if (act_type == RTE_FLOW_ACTION_TYPE_OF_SET_VLAN_VID) {
             const struct rte_flow_action_of_set_vlan_vid *rte_vlan_vid;
 
             rte_vlan_vid = actions->conf;
-            dacts->mod_vlan_id = rte_vlan_vid->vlan_vid;
+            outer->eth_vlan[0].tci = rte_vlan_vid->vlan_vid;
         } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_IPV4_SRC) {
-            dacts->mod_src_ip.ipv4_addr = *(__be32 *) actions->conf;
-            dacts->mod_src_ip.type = DOCA_FLOW_L3_TYPE_IP4;
+            outer->l3_type = DOCA_FLOW_L3_TYPE_IP4;
+            outer->ip4.src_ip = *(__be32 *) actions->conf;
         } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_IPV4_DST) {
-            dacts->mod_dst_ip.ipv4_addr = *(__be32 *) actions->conf;
-            dacts->mod_dst_ip.type = DOCA_FLOW_L3_TYPE_IP4;
-        } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_IPV4_TTL ||
-                   act_type == RTE_FLOW_ACTION_TYPE_SET_IPV6_HOP) {
-            dacts->ttl = *(__u8 *) actions->conf;
+            outer->l3_type = DOCA_FLOW_L3_TYPE_IP4;
+            outer->ip4.dst_ip = *(__be32 *) actions->conf;
+        } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_IPV4_TTL) {
+            outer->l3_type = DOCA_FLOW_L3_TYPE_IP4;
+            outer->ip4.ttl = *(__u8 *) actions->conf;
+        } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_IPV6_HOP) {
+            outer->l3_type = DOCA_FLOW_L3_TYPE_IP6;
+            outer->ip6.hop_limit = *(__u8 *) actions->conf;
         } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_IPV6_SRC) {
-            memcpy(&dacts->mod_src_ip.ipv6_addr, actions->conf,
-                   sizeof dacts->mod_src_ip.ipv6_addr);
-            dacts->mod_src_ip.type = DOCA_FLOW_L3_TYPE_IP6;
+            outer->l3_type = DOCA_FLOW_L3_TYPE_IP6;
+            memcpy(&outer->ip6.src_ip, actions->conf, sizeof outer->ip6.src_ip);
         } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_IPV6_DST) {
-            memcpy(&dacts->mod_dst_ip.ipv6_addr, actions->conf,
-                   sizeof dacts->mod_dst_ip.ipv6_addr);
-            dacts->mod_dst_ip.type = DOCA_FLOW_L3_TYPE_IP6;
+            outer->l3_type = DOCA_FLOW_L3_TYPE_IP6;
+            memcpy(&outer->ip6.dst_ip, actions->conf, sizeof outer->ip6.dst_ip);
         } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_TP_SRC) {
-            dacts->mod_src_port = *(__be16 *) actions->conf;
+            outer->l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_TCP;
+            outer->tcp.l4_port.src_port = *(__u16 *) actions->conf;
         } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_TP_DST) {
-            dacts->mod_dst_port = *(__be16 *) actions->conf;
+            outer->l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_TCP;
+            outer->tcp.l4_port.dst_port = *(__u16 *) actions->conf;
         } else if (act_type == RTE_FLOW_ACTION_TYPE_PORT_ID) {
             const struct rte_flow_action_port_id *port_id = actions->conf;
 
