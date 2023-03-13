@@ -523,7 +523,7 @@ size_t
 nl_msg_start_nested(struct ofpbuf *msg, uint16_t type)
 {
     size_t offset = msg->size;
-    nl_msg_put_unspec_uninit(msg, type, 0);
+    nl_msg_put_unspec_uninit(msg, type | NLA_F_NESTED, 0);
     return offset;
 }
 
