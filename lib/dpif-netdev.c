@@ -3998,12 +3998,6 @@ dp_offload_ct(struct dp_offload_thread_item *item)
             return;
         }
     }
-
-    if (item->data->ct_offload_item[0].op == DP_NETDEV_FLOW_OFFLOAD_OP_ADD) {
-        atomic_count_inc64(&ofl_thread->ct_bi_dir_connections);
-    } else {
-        atomic_count_dec64(&ofl_thread->ct_bi_dir_connections);
-    }
 }
 
 #define DP_NETDEV_OFFLOAD_BACKOFF_MIN 1
@@ -6237,12 +6231,12 @@ dpif_netdev_offload_stats_get(struct dpif *dpif,
             { "                       CT2CT Dels", 0 },
     }, *cur_stats;
 
+    struct netdev_offload_stats per_port_nos[MAX_OFFLOAD_THREAD_NB];
+    struct netdev_offload_stats total_nos[MAX_OFFLOAD_THREAD_NB];
     struct dp_netdev *dp = get_dp_netdev(dpif);
     struct dp_netdev_port *port;
-    uint64_t *port_nb_offloads;
     unsigned int nb_thread;
     unsigned int nb_counts;
-    uint64_t *nb_offloads;
     unsigned int tid;
     size_t i;
 #define DP_NETDEV_STATS_TOTAL_COUNTS \
@@ -6261,22 +6255,19 @@ dpif_netdev_offload_stats_get(struct dpif *dpif,
     stats->size = (nb_thread + 1) * nb_counts;
     stats->counters = xcalloc(stats->size, sizeof *stats->counters);
 
-    nb_offloads = xcalloc(nb_thread, sizeof *nb_offloads);
-    port_nb_offloads = xcalloc(nb_thread, sizeof *port_nb_offloads);
+    memset(total_nos, 0, sizeof total_nos);
 
     ovs_rwlock_rdlock(&dp->port_rwlock);
     HMAP_FOR_EACH (port, node, &dp->ports) {
-        memset(port_nb_offloads, 0, nb_thread * sizeof *port_nb_offloads);
+        memset(per_port_nos, 0, sizeof per_port_nos);
         /* Do not abort on read error from a port, just report 0. */
-        if (!netdev_flow_get_n_offloads(port->netdev, port_nb_offloads)) {
+        if (!netdev_offload_get_stats(port->netdev, per_port_nos)) {
             for (i = 0; i < nb_thread; i++) {
-                nb_offloads[i] += port_nb_offloads[i];
+                netdev_offload_stats_add(&total_nos[i], per_port_nos[i]);
             }
         }
     }
     ovs_rwlock_unlock(&dp->port_rwlock);
-
-    free(port_nb_offloads);
 
     for (tid = 0; tid < nb_thread; tid++) {
         uint64_t counts[DP_NETDEV_STATS_TOTAL_COUNTS];
@@ -6285,7 +6276,9 @@ dpif_netdev_offload_stats_get(struct dpif *dpif,
         struct e2e_cache_stats *cur_e2e_stats;
 
         memset(counts, 0, sizeof counts);
-        counts[DP_NETDEV_HW_OFFLOADS_STATS_INSERTED] = nb_offloads[tid];
+        counts[DP_NETDEV_HW_OFFLOADS_STATS_INSERTED] =
+            total_nos[tid].n_inserted;
+
         if (dp_offload_threads != NULL) {
             atomic_read_relaxed(&dp_offload_threads[tid].enqueued_offload,
                                 &counts[DP_NETDEV_HW_OFFLOADS_STATS_ENQUEUED_OFFLOADS]);
@@ -6293,6 +6286,8 @@ dpif_netdev_offload_stats_get(struct dpif *dpif,
                                 &counts[DP_NETDEV_HW_OFFLOADS_STATS_CT_UNI_DIR_CONNS]);
             atomic_read_relaxed(&dp_offload_threads[tid].ct_bi_dir_connections,
                                 &counts[DP_NETDEV_HW_OFFLOADS_STATS_CT_BI_DIR_CONNS]);
+            counts[DP_NETDEV_HW_OFFLOADS_STATS_CT_BI_DIR_CONNS] +=
+                total_nos[tid].n_conns;
 
             counts[DP_NETDEV_HW_OFFLOADS_STATS_LAT_CMA_MEAN] =
                 mov_avg_cma(&dp_offload_threads[tid].cma);
@@ -6370,8 +6365,6 @@ dpif_netdev_offload_stats_get(struct dpif *dpif,
         e2e_stats[DP_NETDEV_E2E_STATS_DB_FLOWS].total =
             atomic_count_get(&flows_map_count);
     }
-
-    free(nb_offloads);
 
     /* Do an average of the average for the aggregate. */
     hwol_stats[DP_NETDEV_HW_OFFLOADS_STATS_LAT_CMA_MEAN].total /= nb_thread;
@@ -6452,34 +6445,35 @@ enum {
 static void
 hw_offload_read_value(double *values, void *_it)
 {
+    struct netdev_offload_stats per_port_nos[MAX_OFFLOAD_THREAD_NB];
+    struct netdev_offload_stats total_nos[MAX_OFFLOAD_THREAD_NB];
     struct hw_offload_it *it = _it;
     unsigned int tid = it->tid;
     struct dp_netdev *dp = it->dp;
     struct dp_offload_thread *t = &dp_offload_threads[tid];
-    uint64_t nb_offloads[MAX_OFFLOAD_THREAD_NB];
     struct dp_netdev_port *port;
     uint64_t count;
 
     atomic_read_relaxed(&t->enqueued_offload, &count);
     values[HWOL_METRICS_ENQUEUED] = count;
 
-    count = 0;
-    memset(nb_offloads, 0, sizeof nb_offloads);
+    memset(total_nos, 0, sizeof total_nos);
     ovs_rwlock_rdlock(&dp->port_rwlock);
     HMAP_FOR_EACH (port, node, &dp->ports) {
-        if (!netdev_flow_get_n_offloads(port->netdev, nb_offloads)) {
-            count += nb_offloads[tid];
+        memset(per_port_nos, 0, sizeof per_port_nos);
+        if (!netdev_offload_get_stats(port->netdev, per_port_nos)) {
+            netdev_offload_stats_add(&total_nos[tid], per_port_nos[tid]);
         }
     }
     ovs_rwlock_unlock(&dp->port_rwlock);
 
-    values[HWOL_METRICS_INSERTED] = count;
+    values[HWOL_METRICS_INSERTED] = total_nos[tid].n_inserted;
 
     atomic_read_relaxed(&t->ct_uni_dir_connections, &count);
     values[HWOL_METRICS_CT_UNIDIR] = count;
 
     atomic_read_relaxed(&t->ct_bi_dir_connections, &count);
-    values[HWOL_METRICS_CT_BIDIR] = count;
+    values[HWOL_METRICS_CT_BIDIR] = total_nos[tid].n_conns + count;
 }
 
 METRICS_ENTRIES(foreach_hw_offload_threads_dbg, hw_offload_threads_dbg_entries,
