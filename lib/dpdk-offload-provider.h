@@ -38,7 +38,7 @@
 #define NUM_ZONE_ID     (MAX_ZONE_ID - MIN_ZONE_ID + 1)
 
 struct fixed_rule {
-    struct rte_flow *flow;
+    void *flow;
     unsigned int creation_tid;
 };
 
@@ -48,7 +48,7 @@ struct netdev_offload_dpdk_data {
     uint64_t *flow_counters;
     uint64_t *conn_counters;
     struct ovs_mutex map_lock;
-    struct ovsthread_once ct_tables_once;
+    struct ovsthread_once aux_tables_once;
     struct fixed_rule ct_nat_miss;
     struct fixed_rule zone_flows[2][2][MAX_ZONE_ID + 1];
     struct fixed_rule hairpin;
@@ -134,6 +134,8 @@ struct dpdk_offload_api {
     void (*update_stats)(struct dpif_flow_stats *stats,
                          struct dpif_flow_attrs *attrs,
                          struct rte_flow_query_count *query);
+    int (*aux_tables_init)(struct netdev *netdev);
+    void (*aux_tables_uninit)(struct netdev *netdev);
 };
 
 extern struct dpdk_offload_api dpdk_offload_api_rte;

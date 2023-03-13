@@ -19,6 +19,8 @@
 #include "smap.h"
 #include "vswitch-idl.h"
 
+#define DOCA_OFFLOAD_MAX_CT_CONNS 3000000
+
 bool
 ovs_doca_enabled(void);
 

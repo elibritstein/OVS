@@ -26,6 +26,7 @@
 #include "openvswitch/vlog.h"
 #include "offload-metadata.h"
 #include "netdev-dpdk.h"
+#include "netdev-vport.h"
 #include "util.h"
 
 VLOG_DEFINE_THIS_MODULE(dpdk_offload_doca);
@@ -33,14 +34,20 @@ static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(600, 600);
 
 OVS_ASSERT_PACKED(struct doca_eswitch_ctx,
     struct doca_flow_port *esw_port;
+    struct fixed_rule ct_nat_miss;
+    struct fixed_rule zone_flows[2][2][MAX_ZONE_ID + 1];
 );
 
-struct doca_flow_handle {
-     struct doca_flow_pipe_entry *flow;
+struct doca_flow_handle_resources {
      uint32_t group;
      struct doca_ctl_pipe_ctx *self_pipe;
      uint32_t next_group;
      struct doca_ctl_pipe_ctx *next_pipe;
+};
+
+struct doca_flow_handle {
+     struct doca_flow_pipe_entry *flow;
+     struct doca_flow_handle_resources flow_res;
 };
 
 OVS_ASSERT_PACKED(struct doca_ctl_pipe_key,
@@ -119,6 +126,15 @@ doca_ctl_pipe_md_init(void)
     }
 }
 
+static bool
+is_ct_zone_group_id(uint32_t group)
+{
+    return ((group >= CT_TABLE_ID + MIN_ZONE_ID &&
+             group <= CT_TABLE_ID + MAX_ZONE_ID) ||
+            (group >= CTNAT_TABLE_ID + MIN_ZONE_ID &&
+             group <= CTNAT_TABLE_ID + MAX_ZONE_ID));
+}
+
 static struct doca_ctl_pipe_ctx *
 doca_ctl_pipe_ctx_ref(struct netdev *netdev,
                       uint32_t group_id)
@@ -144,6 +160,14 @@ doca_ctl_pipe_ctx_ref(struct netdev *netdev,
     arg.cfg.attr.type = DOCA_FLOW_PIPE_CONTROL;
     arg.cfg.attr.is_root = is_root;
     arg.cfg.port = doca_flow_port_switch_get();
+
+    if (is_ct_zone_group_id(group_id)) {
+        arg.cfg.attr.nb_flows = 2;
+    } else if (group_id == MISS_TABLE_ID) {
+        arg.cfg.attr.nb_flows = 1;
+    } else if (group_id == CT_TABLE_ID || group_id == CTNAT_TABLE_ID) {
+        arg.cfg.attr.nb_flows = DOCA_OFFLOAD_MAX_CT_CONNS;
+    }
 
     doca_ctl_pipe_md_init();
     return offload_metadata_priv_get(doca_ctl_pipe_md, &key, &arg, NULL, true);
@@ -535,7 +559,7 @@ doca_translate_actions(struct netdev *netdev OVS_UNUSED,
                        struct doca_flow_action_descs *acts_descs OVS_UNUSED,
                        struct doca_flow_fwd *fwd,
                        struct doca_flow_monitor *monitor,
-                       struct doca_flow_handle *hndl)
+                       struct doca_flow_handle_resources *flow_res)
 {
     struct doca_flow_header_format *outer = &dacts->outer;
 
@@ -599,8 +623,8 @@ doca_translate_actions(struct netdev *netdev OVS_UNUSED,
 
             fwd->type = DOCA_FLOW_FWD_PIPE;
             fwd->next_pipe = next_pipe->pipe;
-            hndl->next_pipe = next_pipe;
-            hndl->next_group = jump->group;
+            flow_res->next_pipe = next_pipe;
+            flow_res->next_group = jump->group;
         } else if (act_type == RTE_FLOW_ACTION_TYPE_VXLAN_ENCAP) {
             if (doca_translate_vxlan_encap(actions, dacts)) {
                 return -1;
@@ -665,6 +689,61 @@ create_doca_flow_entry(struct netdev *netdev,
 
     return entry;
 }
+static struct doca_flow_handle *
+create_doca_flow_handle(struct netdev *netdev,
+                        uint32_t prio,
+                        uint32_t group,
+                        struct doca_flow_match *spec,
+                        struct doca_flow_match *mask,
+                        struct doca_flow_actions *actions,
+                        struct doca_flow_action_descs *action_descs,
+                        struct doca_flow_monitor *monitor,
+                        struct doca_flow_fwd *fwd,
+                        struct doca_flow_handle_resources *flow_res,
+                        struct rte_flow_error *error)
+{
+    struct doca_ctl_pipe_ctx *pipe_ctx;
+    struct doca_flow_handle *hndl;
+
+    hndl = xzalloc(sizeof *hndl);
+    if (!hndl) {
+        error->type = RTE_FLOW_ERROR_TYPE_UNSPECIFIED;
+        error->message = "Could not allocate doca flow handle";
+
+        return NULL;
+    }
+
+    /* get self table pointer */
+    pipe_ctx = doca_ctl_pipe_ctx_ref(netdev, group);
+    if (!pipe_ctx) {
+        error->type = RTE_FLOW_ERROR_TYPE_UNSPECIFIED;
+        error->message = "Could not create table";
+        goto err_pipe;
+    }
+
+    /* insert rule */
+    hndl->flow = create_doca_flow_entry(netdev, pipe_ctx, prio, spec, mask,
+                                        actions, action_descs, monitor,
+                                        fwd, error);
+    if (!hndl->flow) {
+        error->type = RTE_FLOW_ERROR_TYPE_HANDLE;
+        error->message = "Could not insert rule";
+        goto err_insert;
+    }
+
+    memcpy(&hndl->flow_res, flow_res, sizeof *flow_res);
+    hndl->flow_res.self_pipe = pipe_ctx;
+    hndl->flow_res.group = group;
+
+    return hndl;
+
+err_insert:
+    doca_ctl_pipe_ctx_unref(pipe_ctx);
+err_pipe:
+    free(hndl);
+
+    return NULL;
+}
 
 static void *
 dpdk_offload_doca_create(struct netdev *netdev,
@@ -673,8 +752,8 @@ dpdk_offload_doca_create(struct netdev *netdev,
                          struct rte_flow_action *actions,
                          struct rte_flow_error *error)
 {
+    struct doca_flow_handle_resources flow_res;
     struct doca_flow_action_descs dacts_descs;
-    struct doca_ctl_pipe_ctx *pipe_ctx;
     struct doca_flow_monitor monitor;
     struct doca_flow_actions dacts;
     struct doca_flow_handle *hndl;
@@ -684,6 +763,7 @@ dpdk_offload_doca_create(struct netdev *netdev,
     uint32_t prio;
 
     memset(&dacts_descs, 0x0, sizeof dacts_descs);
+    memset(&flow_res, 0x0, sizeof flow_res);
     memset(&monitor, 0x0, sizeof monitor);
     memset(&dacts, 0x0, sizeof dacts);
     memset(&mask, 0x0, sizeof mask);
@@ -691,52 +771,31 @@ dpdk_offload_doca_create(struct netdev *netdev,
     memset(&fwd, 0x0, sizeof fwd);
 
     if (doca_translate_items(netdev, attr, items, &spec, &mask)) {
+        error->type = RTE_FLOW_ERROR_TYPE_ITEM;
+        error->message = "Could not create items";
         return NULL;
-    }
-
-    hndl = xzalloc(sizeof *hndl);
-
-    /* get self table pointer */
-    pipe_ctx = doca_ctl_pipe_ctx_ref(netdev, attr->group);
-    if (!pipe_ctx) {
-        error->type = RTE_FLOW_ERROR_TYPE_UNSPECIFIED;
-        error->message = "Could not create table";
-        goto err_pipe;
     }
 
     /* parse actions */
     if (doca_translate_actions(netdev, actions, &dacts, &dacts_descs,
-                               &fwd, &monitor, hndl)) {
+                               &fwd, &monitor, &flow_res)) {
         error->type = RTE_FLOW_ERROR_TYPE_ACTION;
         error->message = "Could not create actions";
-        goto err_actions;
+        return NULL;
     }
 
-    /* insert rule */
-    prio = (hndl->next_group == MISS_TABLE_ID);
-    hndl->flow = create_doca_flow_entry(netdev, pipe_ctx, prio, &spec, &mask,
-                                        &dacts, &dacts_descs, &monitor, &fwd, error);
-    if (!hndl->flow) {
-        error->type = RTE_FLOW_ERROR_TYPE_HANDLE;
-        error->message = "Could not insert rule";
-        goto err_insert;
+    prio = (flow_res.next_group == MISS_TABLE_ID);
+    hndl = create_doca_flow_handle(netdev, prio, attr->group, &spec, &mask,
+                                   &dacts, &dacts_descs, &monitor, &fwd,
+                                   &flow_res, error);
+    if (!hndl) {
+        /* change to free doca flow resources function */
+        if (flow_res.next_pipe) {
+            doca_ctl_pipe_ctx_unref(flow_res.next_pipe);
+        }
     }
-
-    hndl->self_pipe = pipe_ctx;
 
     return hndl;
-
-err_insert:
-    /* change to free doca flow resources function */
-    if (hndl->next_pipe) {
-        doca_ctl_pipe_ctx_unref(hndl->next_pipe);
-    }
-err_actions:
-    doca_ctl_pipe_ctx_unref(pipe_ctx);
-err_pipe:
-    free(hndl);
-
-    return NULL;
 }
 
 static doca_error_t
@@ -765,11 +824,11 @@ dpdk_offload_doca_destroy(struct netdev *netdev OVS_UNUSED,
         return -1;
     }
 
-    if (hndl->next_pipe) {
-        doca_ctl_pipe_ctx_unref(hndl->next_pipe);
+    if (hndl->flow_res.next_pipe) {
+        doca_ctl_pipe_ctx_unref(hndl->flow_res.next_pipe);
     }
 
-    doca_ctl_pipe_ctx_unref(hndl->self_pipe);
+    doca_ctl_pipe_ctx_unref(hndl->flow_res.self_pipe);
     free(hndl);
 
     return 0;
@@ -867,13 +926,229 @@ dpdk_offload_doca_update_stats(struct dpif_flow_stats *stats,
     stats->n_bytes = query->bytes;
 }
 
+static void
+doca_fixed_rule_uninit(unsigned int tid,
+                       struct fixed_rule *fr)
+{
+    if (fr->creation_tid != tid || !fr->flow) {
+        return;
+    }
+
+    dpdk_offload_doca_destroy(NULL, fr->flow, NULL, true);
+    fr->flow = NULL;
+}
+
+static void
+doca_ct_nat_miss_uninit(unsigned int tid,
+                        struct fixed_rule *fr)
+{
+    doca_fixed_rule_uninit(tid, fr);
+}
+
+static int
+doca_ct_nat_miss_init(struct netdev *netdev, unsigned int tid,
+                      struct fixed_rule *fr)
+{
+    struct doca_flow_handle_resources flow_res;
+    struct doca_ctl_pipe_ctx *next_pipe_ctx;
+    struct rte_flow_error error;
+    struct doca_flow_fwd fwd;
+
+    memset(&flow_res, 0x0, sizeof flow_res);
+    memset(&fwd, 0x0, sizeof fwd);
+
+    next_pipe_ctx = doca_ctl_pipe_ctx_ref(netdev, CT_TABLE_ID);
+    if (!next_pipe_ctx) {
+        return -1;
+    }
+
+    fwd.type = DOCA_FLOW_FWD_PIPE;
+    fwd.next_pipe = next_pipe_ctx->pipe;
+    flow_res.next_pipe = next_pipe_ctx;
+    flow_res.next_group = CT_TABLE_ID;
+
+    fr->flow = create_doca_flow_handle(netdev, 1, CTNAT_TABLE_ID,
+                                       NULL, NULL, NULL, NULL, NULL,
+                                       &fwd, &flow_res, &error);
+    fr->creation_tid = tid;
+
+    if (fr->flow == NULL) {
+        return -1;
+    }
+    return 0;
+}
+
+static void
+doca_ct_zones_uninit(unsigned int tid,
+                     struct doca_eswitch_ctx *ctx)
+{
+    struct fixed_rule *fr;
+    uint32_t zone_id;
+    int nat, i;
+
+    if (netdev_is_zone_tables_disabled()) {
+        return;
+    }
+
+    for (nat = 0; nat < 2; nat++) {
+        for (i = 0; i < 2; i++) {
+            for (zone_id = MIN_ZONE_ID; zone_id <= MAX_ZONE_ID; zone_id++) {
+                fr = &ctx->zone_flows[nat][i][zone_id];
+
+                doca_fixed_rule_uninit(tid, fr);
+            }
+        }
+    }
+}
+
+static void *
+doca_create_ct_zone_revisit_rule(struct netdev *netdev, uint32_t group,
+                                 uint32_t zone, int nat)
+{
+    struct doca_flow_handle_resources flow_res;
+    struct doca_ctl_pipe_ctx *next_pipe_ctx;
+    uint32_t ct_state_spec, ct_state_mask;
+    uint32_t ct_zone_spec, ct_zone_mask;
+    struct rte_flow_error error;
+    struct doca_flow_match mask;
+    struct doca_flow_match spec;
+    struct reg_field *reg_field;
+    struct doca_flow_fwd fwd;
+
+    memset(&flow_res, 0x0, sizeof flow_res);
+    memset(&mask, 0x0, sizeof mask);
+    memset(&spec, 0x0, sizeof spec);
+    memset(&fwd, 0x0, sizeof fwd);
+
+    /* If the zone is the same, and already visited ct/ct-nat, skip
+     * ct/ct-nat and jump directly to post-ct.
+     */
+    reg_field = &reg_fields[REG_FIELD_CT_ZONE];
+    ct_zone_spec = zone << reg_field->offset;
+    ct_zone_mask = reg_field->mask << reg_field->offset;
+    reg_field = &reg_fields[REG_FIELD_CT_STATE];
+    ct_state_spec = OVS_CS_F_TRACKED;
+    if (nat) {
+        ct_state_spec |= OVS_CS_F_NAT_MASK;
+    }
+    ct_state_spec <<= reg_field->offset;
+    ct_state_mask = ct_state_spec;
+
+    /* Merge ct_zone and ct_state matches in a single item. */
+    spec.meta.u32[reg_field->index] |= ct_zone_spec | ct_state_spec;
+    mask.meta.u32[reg_field->index] |= ct_zone_mask | ct_state_mask;
+
+    next_pipe_ctx = doca_ctl_pipe_ctx_ref(netdev, POSTCT_TABLE_ID);
+    if (!next_pipe_ctx) {
+        return NULL;
+    }
+
+    fwd.type = DOCA_FLOW_FWD_PIPE;
+    fwd.next_pipe = next_pipe_ctx->pipe;
+    flow_res.next_pipe = next_pipe_ctx;
+    flow_res.next_group = POSTCT_TABLE_ID;
+
+    return create_doca_flow_handle(netdev, 0, group, &spec, &mask,
+                                   NULL, NULL, NULL,
+                                   &fwd, &flow_res, &error);
+}
+
+static void *
+doca_create_ct_zone_uphold_rule(struct netdev *netdev, uint32_t group,
+                                uint32_t zone, int nat)
+{
+    struct doca_flow_handle_resources flow_res;
+    struct doca_flow_action_descs dacts_descs;
+    struct doca_ctl_pipe_ctx *next_pipe_ctx;
+    struct doca_flow_actions dacts;
+    struct rte_flow_error error;
+    struct reg_field *reg_field;
+    struct doca_flow_fwd fwd;
+    uint32_t next_group;
+
+    memset(&dacts_descs, 0x0, sizeof dacts_descs);
+    memset(&flow_res, 0x0, sizeof flow_res);
+    memset(&dacts, 0x0, sizeof dacts);
+    memset(&fwd, 0x0, sizeof fwd);
+
+    reg_field = &reg_fields[REG_FIELD_CT_ZONE];
+    dacts.meta.u32[reg_field->index] |= zone << reg_field->offset;
+    dacts_descs.meta.u32[reg_field->index].mask.u32 |= reg_field->mask << reg_field->offset;
+    dacts_descs.meta.u32[reg_field->index].type = DOCA_FLOW_ACTION_SET;
+
+    next_group = nat ? CTNAT_TABLE_ID : CT_TABLE_ID;
+    next_pipe_ctx = doca_ctl_pipe_ctx_ref(netdev, next_group);
+    if (!next_pipe_ctx) {
+        return NULL;
+    }
+
+    fwd.type = DOCA_FLOW_FWD_PIPE;
+    fwd.next_pipe = next_pipe_ctx->pipe;
+    flow_res.next_pipe = next_pipe_ctx;
+    flow_res.next_group = next_group;
+
+    return create_doca_flow_handle(netdev, 1, group, NULL, NULL,
+                                   &dacts, &dacts_descs, NULL,
+                                   &fwd, &flow_res, &error);
+}
+
+static int
+doca_ct_zones_init(struct netdev *netdev, unsigned int tid,
+                   struct doca_eswitch_ctx *ctx)
+{
+    struct fixed_rule *fr;
+    uint32_t base_group;
+    uint32_t zone_id;
+    int nat;
+
+    if (netdev_is_zone_tables_disabled()) {
+        return 0;
+    }
+
+    /* Merge the tag match for zone and state only if they are
+     * at the same index. */
+    ovs_assert(reg_fields[REG_FIELD_CT_ZONE].index == reg_fields[REG_FIELD_CT_STATE].index);
+
+    for (nat = 0; nat < 2; nat++) {
+        base_group = nat ? CTNAT_TABLE_ID : CT_TABLE_ID;
+
+        for (zone_id = MIN_ZONE_ID; zone_id <= MAX_ZONE_ID; zone_id++) {
+            fr = &ctx->zone_flows[nat][0][zone_id];
+            fr->flow = doca_create_ct_zone_revisit_rule(netdev, base_group + zone_id,
+                                                        zone_id, nat);
+            fr->creation_tid = tid;
+            if (fr->flow == NULL) {
+                goto err;
+            }
+
+            fr = &ctx->zone_flows[nat][1][zone_id];
+            /* Otherwise, set the zone and go to CT/CT-NAT. */
+            fr->flow = doca_create_ct_zone_uphold_rule(netdev, base_group + zone_id,
+                                                       zone_id, nat);
+            fr->creation_tid = tid;
+            if (fr->flow == NULL) {
+                goto err;
+            }
+        }
+    }
+
+    return 0;
+
+err:
+    doca_ct_zones_uninit(tid, ctx);
+    return -1;
+}
+
 static struct offload_metadata *doca_eswitch_md;
 
 static void
 doca_eswitch_ctx_uninit(void *ctx_)
 {
+    unsigned int tid = netdev_offload_thread_id();
     struct doca_eswitch_ctx *ctx = ctx_;
 
+    doca_ct_nat_miss_uninit(tid, &ctx->ct_nat_miss);
+    doca_ct_zones_uninit(tid, ctx);
     ctx->esw_port = NULL;
 }
 
@@ -881,7 +1156,23 @@ static int
 doca_eswitch_ctx_init(void *ctx_, void *arg_, uint32_t id OVS_UNUSED)
 {
     struct netdev *netdev = (struct netdev *) arg_;
+    unsigned int tid = netdev_offload_thread_id();
     struct doca_eswitch_ctx *ctx = ctx_;
+    int ret;
+
+    ret = doca_ct_nat_miss_init(netdev, tid, &ctx->ct_nat_miss);
+    if (!ret) {
+        ret = doca_ct_zones_init(netdev, tid, ctx);
+    }
+
+    if (ret) {
+        VLOG_WARN("Cannot apply init flows for netdev %s esw mgr id: %d",
+                  netdev_get_name(netdev),
+                  netdev_dpdk_get_esw_mgr_port_id(netdev));
+        doca_eswitch_ctx_uninit(ctx);
+
+        return ret;
+    }
 
     ctx->esw_port = doca_flow_port_switch_get();
 
@@ -892,7 +1183,12 @@ static struct ds *
 dump_doca_eswitch(struct ds *s, void *key_, void *ctx_, void *arg_ OVS_UNUSED)
 {
     struct doca_flow_port *esw_port = key_;
+    struct doca_eswitch_ctx *ctx = ctx_;
 
+    if (ctx) {
+        ds_put_format(s, "ct_nat_miss_rule=%p, ct_zone_rules_array=%p",
+                      &ctx->ct_nat_miss, ctx->zone_flows);
+    }
     ds_put_format(s, "esw_port=%p, ", esw_port);
 
     return s;
@@ -938,6 +1234,44 @@ doca_eswitch_ctx_unref(struct doca_eswitch_ctx *ctx)
                                 ctx);
 }
 
+static void
+dpdk_offload_doca_aux_tables_uninit(struct netdev *netdev)
+{
+    struct netdev_offload_dpdk_data *data;
+
+    if (netdev_vport_is_vport_class(netdev->netdev_class)) {
+        return;
+    }
+
+    data = (struct netdev_offload_dpdk_data *)
+        ovsrcu_get(void *, &netdev->hw_info.offload_data);
+
+    doca_eswitch_ctx_unref(data->eswitch_ctx);
+}
+
+static int
+dpdk_offload_doca_aux_tables_init(struct netdev *netdev)
+{
+    struct netdev_offload_dpdk_data *data;
+    struct doca_eswitch_ctx *ctx;
+
+    if (netdev_vport_is_vport_class(netdev->netdev_class)) {
+        return 0;
+    }
+
+    ctx = doca_eswitch_ctx_ref(netdev);
+    if (!ctx) {
+        VLOG_ERR("%s: Failed to get doca eswitch ctx", netdev_get_name(netdev));
+        return -1;
+    }
+
+    data = (struct netdev_offload_dpdk_data *)
+        ovsrcu_get(void *, &netdev->hw_info.offload_data);
+    data->eswitch_ctx = ctx;
+
+    return 0;
+}
+
 struct dpdk_offload_api dpdk_offload_api_doca = {
     .create = dpdk_offload_doca_create,
     .destroy = dpdk_offload_doca_destroy,
@@ -946,4 +1280,6 @@ struct dpdk_offload_api dpdk_offload_api_doca = {
     .reg_fields = dpdk_offload_doca_get_reg_fields,
     .netdev_data_destroy = dpdk_offload_doca_netdev_data_destroy,
     .update_stats = dpdk_offload_doca_update_stats,
+    .aux_tables_init = dpdk_offload_doca_aux_tables_init,
+    .aux_tables_uninit = dpdk_offload_doca_aux_tables_uninit,
 };

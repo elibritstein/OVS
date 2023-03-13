@@ -221,7 +221,7 @@ offload_data_init(struct netdev *netdev)
                                   sizeof *data->flow_counters);
     data->conn_counters = xcalloc(netdev_offload_thread_nb(),
                                   sizeof *data->conn_counters);
-    data->ct_tables_once = (struct ovsthread_once) OVSTHREAD_ONCE_INITIALIZER;
+    data->aux_tables_once = (struct ovsthread_once) OVSTHREAD_ONCE_INITIALIZER;
 
     ovsrcu_set(&netdev->hw_info.offload_data, (void *) data);
 
@@ -231,7 +231,7 @@ offload_data_init(struct netdev *netdev)
 static void
 offload_data_destroy__(struct netdev_offload_dpdk_data *data)
 {
-    ovs_mutex_destroy(&data->ct_tables_once.mutex);
+    ovs_mutex_destroy(&data->aux_tables_once.mutex);
     ovs_mutex_destroy(&data->map_lock);
     free(data->offload_counters);
     free(data->flow_counters);
@@ -352,7 +352,7 @@ ufid_to_rte_flow_data_find_protected(struct netdev *netdev,
 }
 
 static int
-ct_tables_init(struct netdev *netdev, unsigned int tid);
+rte_aux_tables_init(struct netdev *netdev);
 
 static inline struct ufid_to_rte_flow_data *
 ufid_to_rte_flow_associate(const ovs_u128 *ufid, struct netdev *netdev,
@@ -373,9 +373,7 @@ ufid_to_rte_flow_associate(const ovs_u128 *ufid, struct netdev *netdev,
 
     offload_data_lock(netdev);
 
-    if (!ovs_doca_enabled()) {
-        ct_tables_init(physdev, tid);
-    }
+    offload->aux_tables_init(physdev);
 
     /*
      * We should not simply overwrite an existing rte flow.
@@ -5847,7 +5845,7 @@ out:
 }
 
 static void
-ct_tables_uninit(struct netdev *netdev, unsigned int tid);
+rte_aux_tables_uninit(struct netdev *netdev);
 
 static int
 flush_netdev_flows_in_related(struct netdev *netdev, struct netdev *related)
@@ -5860,7 +5858,7 @@ flush_netdev_flows_in_related(struct netdev *netdev, struct netdev *related)
         return -1;
     }
 
-    ct_tables_uninit(netdev, tid);
+    offload->aux_tables_uninit(netdev);
 
     CMAP_FOR_EACH (data, node, map) {
         if (data->netdev != netdev && data->physdev != netdev) {
@@ -6453,8 +6451,9 @@ hairpin_init(struct netdev *netdev, unsigned int tid,
 }
 
 static void
-ct_tables_uninit(struct netdev *netdev, unsigned int tid)
+rte_aux_tables_uninit(struct netdev *netdev)
 {
+    unsigned int tid = netdev_offload_thread_id();
     struct netdev_offload_dpdk_data *data;
 
     if (netdev_vport_is_vport_class(netdev->netdev_class)) {
@@ -6470,8 +6469,9 @@ ct_tables_uninit(struct netdev *netdev, unsigned int tid)
 }
 
 static int
-ct_tables_init(struct netdev *netdev, unsigned int tid)
+rte_aux_tables_init(struct netdev *netdev)
 {
+    unsigned int tid = netdev_offload_thread_id();
     struct netdev_offload_dpdk_data *data;
 
     if (netdev_vport_is_vport_class(netdev->netdev_class)) {
@@ -6481,7 +6481,7 @@ ct_tables_init(struct netdev *netdev, unsigned int tid)
     data = (struct netdev_offload_dpdk_data *)
         ovsrcu_get(void *, &netdev->hw_info.offload_data);
 
-    if (ovsthread_once_start(&data->ct_tables_once)) {
+    if (ovsthread_once_start(&data->aux_tables_once)) {
         int ret;
 
         ret = ct_nat_miss_init(netdev, tid, &data->ct_nat_miss);
@@ -6491,12 +6491,12 @@ ct_tables_init(struct netdev *netdev, unsigned int tid)
         if (!ret) {
             ret = hairpin_init(netdev, tid, &data->hairpin);
         }
-        ovsthread_once_done(&data->ct_tables_once);
+        ovsthread_once_done(&data->aux_tables_once);
         if (ret) {
             VLOG_WARN("Cannot apply init flows for netdev %s",
                       netdev_get_name(netdev));
-            ct_tables_uninit(netdev, tid);
-            data->ct_tables_once = (struct ovsthread_once) OVSTHREAD_ONCE_INITIALIZER;
+            rte_aux_tables_uninit(netdev);
+            data->aux_tables_once = (struct ovsthread_once) OVSTHREAD_ONCE_INITIALIZER;
         }
         return ret;
     }
@@ -6940,6 +6940,8 @@ struct dpdk_offload_api dpdk_offload_api_rte = {
     .reg_fields = rte_get_reg_fields,
     .netdev_data_destroy = netdev_offload_dpdk_netdev_data_destroy,
     .update_stats = netdev_offload_dpdk_update_stats,
+    .aux_tables_init = rte_aux_tables_init,
+    .aux_tables_uninit = rte_aux_tables_uninit,
 };
 
 const struct netdev_flow_api netdev_offload_dpdk = {
