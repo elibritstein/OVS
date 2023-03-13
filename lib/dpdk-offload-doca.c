@@ -203,6 +203,7 @@ struct doca_hash_pipe_ctx {
 
 struct doca_ctl_pipe_ctx {
     struct doca_flow_pipe *pipe;
+    struct doca_hash_pipe_ctx *hash_pipe_ctx;
 };
 
 struct doca_async_entry {
@@ -458,6 +459,7 @@ doca_ctl_pipe_ctx_uninit(void *ctx_)
 {
     struct doca_ctl_pipe_ctx *ctx = ctx_;
 
+    doca_hash_pipe_ctx_uninit(ctx->hash_pipe_ctx);
     doca_flow_pipe_destroy(ctx->pipe);
     ctx->pipe = NULL;
 }
@@ -469,7 +471,8 @@ dump_doca_ctl_pipe_ctx(struct ds *s, void *key_, void *ctx_, void *arg_ OVS_UNUS
     struct doca_ctl_pipe_ctx *ctx = ctx_;
 
     if (ctx) {
-        ds_put_format(s, "pipe=%p, ", ctx->pipe);
+        ds_put_format(s, "hash_pipe_ctx=%p, ctl_pipe=%p, ", ctx->hash_pipe_ctx,
+                      ctx->pipe);
     }
     ds_put_format(s, "group_id=%"PRIu32", ", key->group_id);
 
@@ -1283,6 +1286,28 @@ doca_hash_pipe_ctx_init(struct doca_flow_pipe *next_pipe,
 err:
     doca_hash_pipe_ctx_uninit(hash_pipe_ctx);
     return NULL;
+}
+
+OVS_UNUSED
+static struct doca_flow_pipe *
+get_ctl_pipe_root(struct doca_ctl_pipe_ctx *next_pipe_ctx,
+                  struct doca_flow_match *spec,
+                  bool has_dp_hash)
+{
+    if (!has_dp_hash) {
+        return next_pipe_ctx->pipe;
+    }
+
+    if (spec->outer.l3_type != DOCA_FLOW_L3_TYPE_IP4) {
+        return NULL;
+    }
+
+    if (spec->outer.l4_type_ext == DOCA_FLOW_L4_TYPE_EXT_TCP) {
+        return next_pipe_ctx->hash_pipe_ctx->hashes[HASH_TYPE_IPV4_TCP].pipe;
+    } else if (spec->outer.l4_type_ext == DOCA_FLOW_L4_TYPE_EXT_UDP) {
+        return next_pipe_ctx->hash_pipe_ctx->hashes[HASH_TYPE_IPV4_UDP].pipe;
+    }
+    return next_pipe_ctx->hash_pipe_ctx->classifier;
 }
 
 static int
