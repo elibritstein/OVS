@@ -109,6 +109,12 @@ struct netdev_flow_api {
     /* Uninitializes the netdev flow api. */
     void (*uninit_flow_api)(struct netdev *);
 
+    /* Read the provider stats.
+     * 'stats' is a pointer of at least 'MAX_OFFLOAD_THREAD_NB' elements.
+     * Returns 0 on success, positive errno otherwise. */
+    int (*get_stats)(struct netdev *netdev,
+                     struct netdev_offload_stats stats[MAX_OFFLOAD_THREAD_NB]);
+
     /* Queries a CT counter object. */
     int (*ct_counter_query)(struct netdev *, uintptr_t, long long, long long,
                             struct dpif_flow_stats *);

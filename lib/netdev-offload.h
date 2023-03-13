@@ -78,6 +78,25 @@ struct netdev_flow_dump {
     struct nl_dump *nl_dump;
 };
 
+/* Generic statistics of the offload provider of a netdev.
+ * It is not related to the 'offload_count' or 'pending_count'
+ * stored within the 'netdev_hw_info' and managed entirely
+ * by the upcall handler. */
+struct netdev_offload_stats {
+    uint64_t n_inserted;
+    uint64_t n_flows;
+    uint64_t n_conns;
+};
+
+static inline void
+netdev_offload_stats_add(struct netdev_offload_stats *dst,
+                         struct netdev_offload_stats src)
+{
+    dst->n_inserted = ovs_u64_safeadd(dst->n_inserted, src.n_inserted);
+    dst->n_flows = ovs_u64_safeadd(dst->n_flows, src.n_flows);
+    dst->n_conns = ovs_u64_safeadd(dst->n_conns, src.n_conns);
+}
+
 #define OFFLOAD_FLOWS_COUNTER_KEY_SIZE  E2E_CACHE_MAX_TRACE
 
 /* This is a maximal required buffer size for output argument
@@ -175,6 +194,8 @@ bool netdev_is_offload_rebalance_policy_enabled(void);
 int netdev_flow_get_n_flows(struct netdev *netdev, uint64_t *n_flows);
 int netdev_flow_get_n_offloads(struct netdev *netdev,
                                uint64_t *n_offloads);
+int netdev_offload_get_stats(struct netdev *netdev,
+                             struct netdev_offload_stats *stats);
 bool netdev_is_e2e_cache_enabled(void);
 uint32_t netdev_get_e2e_cache_size(void);
 bool netdev_is_flow_counter_key_zero(const struct flows_counter_key *);

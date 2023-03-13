@@ -472,6 +472,18 @@ netdev_flow_get_n_offloads(struct netdev *netdev, uint64_t *n_flows)
 }
 
 int
+netdev_offload_get_stats(struct netdev *netdev,
+                         struct netdev_offload_stats *stats)
+{
+    const struct netdev_flow_api *flow_api =
+        ovsrcu_get(const struct netdev_flow_api *, &netdev->flow_api);
+
+    return (flow_api && flow_api->get_stats)
+           ? flow_api->get_stats(netdev, stats)
+           : EOPNOTSUPP;
+}
+
+int
 netdev_init_flow_api(struct netdev *netdev)
 {
     if (!netdev_is_flow_api_enabled()) {
