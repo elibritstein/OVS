@@ -2420,6 +2420,16 @@ struct act_vars {
     uint8_t vlan_pcp;
 };
 
+static void *
+dpdk_offload_rte_create(struct netdev *netdev,
+                        const struct rte_flow_attr *attr,
+                        struct rte_flow_item *items,
+                        struct rte_flow_action *actions,
+                        struct rte_flow_error *error)
+{
+    return netdev_dpdk_rte_flow_create(netdev, attr, items, actions, error);
+}
+
 static struct rte_flow *
 create_rte_flow(struct netdev *netdev,
                 const struct rte_flow_attr *attr,
@@ -2427,8 +2437,8 @@ create_rte_flow(struct netdev *netdev,
                 struct flow_actions *flow_actions,
                 struct rte_flow_error *error)
 {
-    const struct rte_flow_action *actions = flow_actions->actions;
-    const struct rte_flow_item *items = flow_patterns->items;
+    struct rte_flow_action *actions = flow_actions->actions;
+    struct rte_flow_item *items = flow_patterns->items;
     struct ds s_extra = DS_EMPTY_INITIALIZER;
     struct ds s = DS_EMPTY_INITIALIZER;
     struct rte_flow *flow;
@@ -6896,7 +6906,7 @@ netdev_offload_dpdk_netdev_data_destroy(void *data OVS_UNUSED)
 }
 
 struct dpdk_offload_api dpdk_offload_api_rte = {
-    .create = netdev_dpdk_rte_flow_create,
+    .create = dpdk_offload_rte_create,
     .destroy = netdev_dpdk_rte_flow_destroy,
     .query_count = netdev_dpdk_rte_flow_query_count,
     .shared_create = netdev_dpdk_indirect_action_create,

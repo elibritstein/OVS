@@ -605,11 +605,11 @@ create_doca_flow_entry(struct netdev *netdev,
     return entry;
 }
 
-static struct rte_flow *
+static void *
 dpdk_offload_doca_create(struct netdev *netdev,
                          const struct rte_flow_attr *attr,
-                         const struct rte_flow_item *items,
-                         const struct rte_flow_action *actions,
+                         struct rte_flow_item *items,
+                         struct rte_flow_action *actions,
                          struct rte_flow_error *error)
 {
     struct doca_flow_action_descs dacts_descs;
@@ -663,7 +663,7 @@ dpdk_offload_doca_create(struct netdev *netdev,
 
     hndl->self_pipe = pipe_ctx;
 
-    return (struct rte_flow *) (void *) hndl;
+    return hndl;
 
 err_insert:
     /* change to free doca flow resources function */

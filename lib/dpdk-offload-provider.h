@@ -70,11 +70,11 @@ struct dpdk_offload_api {
     void (*per_thread_upkeep)(unsigned int tid);
 
     /* Offload insertion / deletion */
-    struct rte_flow *(*create)(struct netdev *netdev,
-                               const struct rte_flow_attr *attr,
-                               const struct rte_flow_item *items,
-                               const struct rte_flow_action *actions,
-                               struct rte_flow_error *error);
+    void *(*create)(struct netdev *netdev,
+                    const struct rte_flow_attr *attr,
+                    struct rte_flow_item *items,
+                    struct rte_flow_action *actions,
+                    struct rte_flow_error *error);
     int (*destroy)(struct netdev *netdev,
                    struct rte_flow *rte_flow,
                    struct rte_flow_error *error,
