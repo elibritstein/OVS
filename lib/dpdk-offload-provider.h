@@ -34,7 +34,7 @@
 #define MAX_TABLE_ID     0xf0000000
 #define NUM_TABLE_ID     (MAX_TABLE_ID - MIN_TABLE_ID + 1)
 #define MIN_ZONE_ID     1
-#define MAX_ZONE_ID     0x000000FF
+#define MAX_ZONE_ID     0x0000003F
 #define NUM_ZONE_ID     (MAX_ZONE_ID - MIN_ZONE_ID + 1)
 
 struct fixed_rule {
