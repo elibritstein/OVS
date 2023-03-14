@@ -100,6 +100,7 @@ enum {
     OVS_RTE_FLOW_ACTION_TYPE_FLOW_INFO = INT_MIN,
     OVS_RTE_FLOW_ACTION_TYPE_CT_INFO,
     OVS_RTE_FLOW_ACTION_TYPE_PRE_CT_END,
+    OVS_RTE_FLOW_ACTION_TYPE_HASH,
 };
 
 #define OVS_RTE_FLOW_ACTION_TYPE(TYPE) \
@@ -117,6 +118,7 @@ struct dpdk_offload_recovery_info {
     uint32_t flow_miss_id;
     uint32_t ct_miss_id;
     uint32_t sflow_id;
+    uint32_t dp_hash;
 };
 
 enum dpdk_reg_id {

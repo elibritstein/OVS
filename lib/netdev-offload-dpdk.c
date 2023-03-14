@@ -1117,7 +1117,8 @@ OVS_ASSERT_PACKED(struct flow_miss_ctx,
     odp_port_t vport;
     uint32_t recirc_id;
     uint8_t skip_actions;
-    uint8_t pad0[7];
+    uint8_t has_dp_hash;
+    uint8_t pad0[6];
     struct flow_tnl tnl;
 );
 
@@ -2364,6 +2365,8 @@ dump_flow_action(struct ds *s, struct ds *s_extra,
          * should never be actually used.
          */
         OVS_NOT_REACHED();
+    } else if (actions->type == OVS_RTE_FLOW_ACTION_TYPE(HASH)) {
+        ds_put_cstr(s, "hash / ");
     } else {
         ds_put_format(s, "unknown rte flow action (%d)\n", actions->type);
     }
@@ -2422,6 +2425,7 @@ struct act_vars {
     rte_be16_t vlan_tpid;
     uint8_t vlan_pcp;
     uint8_t proto;
+    bool has_dp_hash;
 };
 
 static int
@@ -2460,6 +2464,8 @@ dpdk_offload_rte_create(struct netdev *netdev,
              * should never be actually used.
              */
             OVS_NOT_REACHED();
+        } else if (act_type == OVS_RTE_FLOW_ACTION_TYPE(HASH)) {
+            return -1;
         }
     }
 
@@ -4433,6 +4439,7 @@ add_recirc_action(struct netdev *netdev,
     miss_ctx.vport = act_vars->vport;
     miss_ctx.recirc_id = nl_attr_get_u32(nla);
     miss_ctx.skip_actions = act_vars->pre_ct_cnt;
+    miss_ctx.has_dp_hash = act_vars->has_dp_hash;
     if (act_vars->vport != ODPP_NONE) {
         get_tnl_masked(&miss_ctx.tnl, NULL, act_vars->tnl_key,
                        &act_vars->tnl_mask);
@@ -5252,6 +5259,11 @@ parse_flow_actions(struct netdev *flowdev,
     }
 
     NL_ATTR_FOR_EACH_UNSAFE (nla, left, nl_actions, nl_actions_len) {
+        if (act_vars->has_dp_hash &&
+            nl_attr_type(nla) != OVS_ACTION_ATTR_RECIRC) {
+            return -1;
+        }
+
         if (nl_attr_type(nla) == OVS_ACTION_ATTR_OUTPUT) {
             /* The last output should use port-id action, while previous
              * outputs should embed the port-id action inside a sample action.
@@ -5432,6 +5444,10 @@ parse_flow_actions(struct netdev *flowdev,
                                      offload->reg_fields()[REG_FIELD_CT_MARK].mask);
             add_action_set_reg_field(actions, REG_FIELD_CT_LABEL_ID, 0,
                                      offload->reg_fields()[REG_FIELD_CT_LABEL_ID].mask);
+        } else if (nl_attr_type(nla) == OVS_ACTION_ATTR_HASH) {
+            act_vars->has_dp_hash = true;
+            add_flow_action(actions, OVS_RTE_FLOW_ACTION_TYPE_HASH, NULL);
+            continue;
         } else {
             VLOG_DBG_RL(&rl, "Unsupported action type %d", nl_attr_type(nla));
             return -1;
@@ -6155,6 +6171,15 @@ netdev_offload_dpdk_hw_miss_packet_recover(struct netdev *netdev,
         }
         *skip_actions = flow_miss_ctx.skip_actions;
         packet->md.recirc_id = flow_miss_ctx.recirc_id;
+        if (flow_miss_ctx.has_dp_hash) {
+            /* OVS will not match on dp-hash unless it has a non-zero value.
+             * The 4 LSBs are matched, but zero value is valid. In order to
+             * have a non-zero value in the dp-hash of the packet, set the 5th
+             * bit.
+             */
+            packet->md.dp_hash = info.dp_hash | 0x10;
+        }
+
         if (flow_miss_ctx.vport != ODPP_NONE) {
             if (is_all_zeros(&flow_miss_ctx.tnl, sizeof flow_miss_ctx.tnl)) {
                 vport_netdev = netdev_ports_get(flow_miss_ctx.vport,

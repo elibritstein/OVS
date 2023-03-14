@@ -1176,7 +1176,6 @@ doca_hash_pipe_init(struct netdev *netdev,
     return 0;
 }
 
-OVS_UNUSED
 static struct doca_hash_pipe_ctx *
 doca_hash_pipe_ctx_init(struct doca_flow_pipe *next_pipe,
                         struct netdev *netdev,
@@ -1288,7 +1287,6 @@ err:
     return NULL;
 }
 
-OVS_UNUSED
 static struct doca_flow_pipe *
 get_ctl_pipe_root(struct doca_ctl_pipe_ctx *next_pipe_ctx,
                   struct doca_flow_match *spec,
@@ -1323,6 +1321,7 @@ doca_translate_actions(struct netdev *netdev,
     struct doca_flow_header_format *outer_masks = &dacts_masks->outer;
     struct doca_flow_header_format *outer = &dacts->outer;
     bool vlan_act_push = false;
+    bool has_dp_hash = false;
 
     for (; actions->type != RTE_FLOW_ACTION_TYPE_END; actions++) {
         int act_type = actions->type;
@@ -1438,9 +1437,18 @@ doca_translate_actions(struct netdev *netdev,
             if (!next_pipe_ctx) {
                 return -1;
             }
+            if (has_dp_hash) {
+                next_pipe_ctx->hash_pipe_ctx =
+                    doca_hash_pipe_ctx_init(next_pipe_ctx->pipe, netdev,
+                                            jump->group);
+                if (next_pipe_ctx->hash_pipe_ctx == NULL) {
+                    return -1;
+                }
+            }
 
             fwd->type = DOCA_FLOW_FWD_PIPE;
-            fwd->next_pipe = next_pipe_ctx->pipe;
+            fwd->next_pipe = get_ctl_pipe_root(next_pipe_ctx, spec,
+                                               has_dp_hash);
             flow_res->next_pipe_ctx = next_pipe_ctx;
             flow_res->next_group = jump->group;
         } else if (act_type == RTE_FLOW_ACTION_TYPE_VXLAN_ENCAP) {
@@ -1485,6 +1493,8 @@ doca_translate_actions(struct netdev *netdev,
             vlan_act_push = true;
         } else if (act_type == RTE_FLOW_ACTION_TYPE_OF_SET_VLAN_PCP) {
             continue;
+        } else if (act_type == OVS_RTE_FLOW_ACTION_TYPE(HASH)) {
+            has_dp_hash = true;
         } else {
             return -1;
         }
@@ -2043,8 +2053,8 @@ dpdk_offload_doca_get_pkt_recover_info(struct dp_packet *p,
     if (dpdk_offload_get_reg_field(p, REG_FIELD_FLOW_INFO,
                                    &info->flow_miss_id)) {
         dp_packet_set_flow_mark(p, info->flow_miss_id);
-        dpdk_offload_get_reg_field(p, REG_FIELD_CT_CTX,
-                                   &info->ct_miss_id);
+        dpdk_offload_get_reg_field(p, REG_FIELD_CT_CTX, &info->ct_miss_id);
+        dpdk_offload_get_reg_field(p, REG_FIELD_DP_HASH, &info->dp_hash);
     }
 }
 
