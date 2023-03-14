@@ -6287,7 +6287,7 @@ dpif_netdev_offload_stats_get(struct dpif *dpif,
             atomic_read_relaxed(&dp_offload_threads[tid].ct_bi_dir_connections,
                                 &counts[DP_NETDEV_HW_OFFLOADS_STATS_CT_BI_DIR_CONNS]);
             counts[DP_NETDEV_HW_OFFLOADS_STATS_CT_BI_DIR_CONNS] +=
-                total_nos[tid].n_conns;
+                total_nos[tid].n_conns / 2;
 
             counts[DP_NETDEV_HW_OFFLOADS_STATS_LAT_CMA_MEAN] =
                 mov_avg_cma(&dp_offload_threads[tid].cma);
@@ -6473,7 +6473,7 @@ hw_offload_read_value(double *values, void *_it)
     values[HWOL_METRICS_CT_UNIDIR] = count;
 
     atomic_read_relaxed(&t->ct_bi_dir_connections, &count);
-    values[HWOL_METRICS_CT_BIDIR] = total_nos[tid].n_conns + count;
+    values[HWOL_METRICS_CT_BIDIR] = total_nos[tid].n_conns / 2 + count;
 }
 
 METRICS_ENTRIES(foreach_hw_offload_threads_dbg, hw_offload_threads_dbg_entries,
