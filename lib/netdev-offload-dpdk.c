@@ -2440,6 +2440,15 @@ dpdk_offload_rte_create(struct netdev *netdev,
 
         if (act_type == OVS_RTE_FLOW_ACTION_TYPE_FLOW_INFO) {
             a->type = RTE_FLOW_ACTION_TYPE_MARK;
+        } else if (act_type == OVS_RTE_FLOW_ACTION_TYPE_CT_INFO) {
+            struct rte_flow_action_set_meta *set_meta;
+            struct reg_field *reg_field;
+
+            a->type = RTE_FLOW_ACTION_TYPE_SET_META;
+            reg_field = &reg_fields[REG_FIELD_CT_CTX];
+            set_meta = CONST_CAST(struct rte_flow_action_set_meta *, a->conf);
+            set_meta->data = (set_meta->data & reg_field->mask) << reg_field->offset;
+            set_meta->mask = reg_field->mask << reg_field->offset;
         }
     }
 
@@ -4625,6 +4634,7 @@ parse_ct_actions(struct netdev *netdev,
         } else if (nl_attr_type(cta) == OVS_CT_ATTR_NAT) {
             act_vars->ct_mode = CT_MODE_CT_NAT;
         } else if (nl_attr_type(cta) == OVS_CT_ATTR_HELPER) {
+            struct rte_flow_action_set_meta *set_meta;
             const char *helper = nl_attr_get(cta);
             uintptr_t ctid_key;
 
@@ -4663,8 +4673,9 @@ parse_ct_actions(struct netdev *netdev,
             }
             add_action_set_reg_field(actions, REG_FIELD_CT_STATE,
                                      ct_miss_ctx.state, 0xFF);
-            add_action_set_reg_field(actions, REG_FIELD_CT_CTX,
-                                     act_resources->ct_miss_ctx_id, 0xFFFFFFFF);
+            set_meta = per_thread_xzalloc(sizeof *set_meta);
+            set_meta->data = act_resources->ct_miss_ctx_id;
+            add_flow_action(actions, OVS_RTE_FLOW_ACTION_TYPE_CT_INFO, set_meta);
             if (act_resources->flow_id != INVALID_FLOW_MARK) {
                 struct rte_flow_action_mark *mark =
                     per_thread_xzalloc(sizeof *mark);
@@ -6637,10 +6648,11 @@ conn_build_actions(struct netdev *netdev,
                    struct act_resources *act_resources,
                    struct act_vars *act_vars)
 {
+    struct rte_flow_action_set_meta *set_meta;
     struct flows_counter_key counter_id_key;
     struct ct_miss_ctx miss_ctx;
-    struct indirect_ctx *ctx;
     struct rte_flow_action *ia;
+    struct indirect_ctx *ctx;
     size_t size;
 
     if (add_count_action(netdev, actions, act_resources, act_vars)) {
@@ -6746,9 +6758,9 @@ conn_build_actions(struct netdev *netdev,
         VLOG_ERR("Could not get a CT context ID");
         return -1;
     }
-    add_action_set_reg_field(actions, REG_FIELD_CT_CTX,
-                             act_resources->ct_miss_ctx_id,
-                             offload->reg_fields()[REG_FIELD_CT_CTX].mask);
+    set_meta = per_thread_xzalloc(sizeof *set_meta);
+    set_meta->data = act_resources->ct_miss_ctx_id;
+    add_flow_action(actions, OVS_RTE_FLOW_ACTION_TYPE_CT_INFO, set_meta);
 
     /* Last CT action is to go to Post-CT. */
     add_jump_action(actions, POSTCT_TABLE_ID);

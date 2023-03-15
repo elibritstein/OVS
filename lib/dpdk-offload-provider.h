@@ -37,6 +37,7 @@
 /* Proprietary rte-flow action enums. */
 enum {
     OVS_RTE_FLOW_ACTION_TYPE_FLOW_INFO = INT_MIN,
+    OVS_RTE_FLOW_ACTION_TYPE_CT_INFO,
 };
 
 struct dpdk_offload_recovery_info {
