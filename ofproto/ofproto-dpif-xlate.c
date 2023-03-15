@@ -4198,7 +4198,7 @@ terminate_native_tunnel(struct xlate_ctx *ctx, const struct xport *xport,
                 s_ip6 = flow->ipv6_src;
             }
 
-            tnl_neigh_set(ctx->xbridge->name, &s_ip6, mac);
+            tnl_neigh_set(ctx->xbridge->name, &s_ip6, mac, false);
         }
     }
 

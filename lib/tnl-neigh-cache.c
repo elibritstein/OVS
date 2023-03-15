@@ -54,6 +54,7 @@ struct tnl_neigh_entry {
     struct eth_addr mac;
     atomic_llong expires;       /* Expiration time in ms. */
     char br_name[IFNAMSIZ];
+    bool perm;
 };
 
 static struct cmap table = CMAP_INITIALIZER;
@@ -70,6 +71,10 @@ static bool
 tnl_neigh_expired(struct tnl_neigh_entry *neigh)
 {
     long long expires;
+
+    if (neigh->perm) {
+        return false;
+    }
 
     atomic_read_explicit(&neigh->expires, &expires, memory_order_acquire);
 
@@ -138,7 +143,7 @@ tnl_neigh_delete(struct tnl_neigh_entry *neigh)
 
 void
 tnl_neigh_set(const char name[IFNAMSIZ], const struct in6_addr *dst,
-              const struct eth_addr mac)
+              const struct eth_addr mac, bool perm)
 {
     ovs_mutex_lock(&mutex);
     struct tnl_neigh_entry *neigh = tnl_neigh_lookup__(name, dst);
@@ -157,6 +162,7 @@ tnl_neigh_set(const char name[IFNAMSIZ], const struct in6_addr *dst,
 
     neigh->ip = *dst;
     neigh->mac = mac;
+    neigh->perm = perm;
     atomic_store_relaxed(&neigh->expires, time_msec() +
                          tnl_neigh_get_aging());
     ovs_strlcpy(neigh->br_name, name, sizeof neigh->br_name);
@@ -169,7 +175,7 @@ tnl_arp_set(const char name[IFNAMSIZ], ovs_be32 dst,
             const struct eth_addr mac)
 {
     struct in6_addr dst6 = in6_addr_mapped_ipv4(dst);
-    tnl_neigh_set(name, &dst6, mac);
+    tnl_neigh_set(name, &dst6, mac, false);
 }
 
 static int
@@ -214,7 +220,7 @@ tnl_nd_snoop(const struct flow *flow, struct flow_wildcards *wc,
     memset(&wc->masks.nd_target, 0xff, sizeof wc->masks.nd_target);
 
     if (allow_update) {
-        tnl_neigh_set(name, &flow->nd_target, flow->arp_tha);
+        tnl_neigh_set(name, &flow->nd_target, flow->arp_tha, false);
     }
     return 0;
 }
@@ -353,6 +359,7 @@ tnl_neigh_cache_add(struct unixctl_conn *conn, int argc OVS_UNUSED,
     const char *br_name = argv[1];
     struct eth_addr mac;
     struct in6_addr ip6;
+    bool perm = false;
 
     if (lookup_any(argv[2], &ip6) != 0) {
         unixctl_command_reply_error(conn, "bad IP address");
@@ -364,7 +371,16 @@ tnl_neigh_cache_add(struct unixctl_conn *conn, int argc OVS_UNUSED,
         return;
     }
 
-    tnl_neigh_set(br_name, &ip6, mac);
+    if (argc == 5) {
+        if (!strcmp(argv[4], "PERM")) {
+            perm = true;
+        } else {
+            unixctl_command_reply_error(conn, "Invalid parameters");
+            return;
+        }
+    }
+
+    tnl_neigh_set(br_name, &ip6, mac, perm);
     unixctl_command_reply(conn, "OK");
 }
 
@@ -392,6 +408,9 @@ tnl_neigh_cache_show(struct unixctl_conn *conn, int argc OVS_UNUSED,
         if (tnl_neigh_expired(neigh)) {
             ds_put_format(&ds, " STALE");
         }
+        if (neigh->perm) {
+            ds_put_format(&ds, " PERM");
+        }
         ds_put_char(&ds, '\n');
 
     }
@@ -414,7 +433,7 @@ tnl_neigh_cache_init(void)
                              tnl_neigh_cache_aging, NULL);
     unixctl_command_register("tnl/neigh/show", "", 0, 0,
                              tnl_neigh_cache_show, NULL);
-    unixctl_command_register("tnl/neigh/set", "BRIDGE IP MAC", 3, 3,
+    unixctl_command_register("tnl/neigh/set", "BRIDGE IP MAC [PERM]", 3, 4,
                              tnl_neigh_cache_add, NULL);
     unixctl_command_register("tnl/neigh/flush", "", 0, 0,
                              tnl_neigh_cache_flush, NULL);

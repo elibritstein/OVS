@@ -1,5 +1,8 @@
 v2.17.6 - xx xxx xxxx
 ---------------------
+   - ovs-appctl:
+     * New optional "PERM" parameter to tnl/neigh/set to set this entry as
+       permanent.
 
 v2.17.5 - 20 Dec 2022
 ---------------------

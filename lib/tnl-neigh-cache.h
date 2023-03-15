@@ -34,7 +34,7 @@
 int tnl_neigh_snoop(const struct flow *flow, struct flow_wildcards *wc,
                     const char dev_name[IFNAMSIZ], bool allow_update);
 void tnl_neigh_set(const char name[IFNAMSIZ], const struct in6_addr *dst,
-                   const struct eth_addr mac);
+                   const struct eth_addr mac, bool perm);
 int tnl_neigh_lookup(const char dev_name[IFNAMSIZ], const struct in6_addr *dst,
                      struct eth_addr *mac);
 void tnl_neigh_cache_init(void);
