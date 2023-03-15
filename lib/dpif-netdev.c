@@ -4292,8 +4292,19 @@ dp_netdev_ct_offload_active(struct ct_flow_offload_item *offload,
     }
 
     ret = netdev_conn_stats(netdev, offload, &stats, NULL, now);
-    netdev_close(netdev);
+    if (ret && dp_netdev_e2e_cache_enabled) {
+        /* We failed to find the conn in multi-table offloads and e2e-cache is enabled.
+         * Query e2e as well. */
+        if (e2e_cache_get_merged_flows_stats(netdev, NULL, NULL,
+                                             &offload->ufid, &stats, NULL,
+                                             now, prev_now)) {
+            /* Query was successful, this conn is within the e2e merged-flow DB.
+             * 'stats' contains valid info now. */
+            ret = 0;
+        }
+    }
 
+    netdev_close(netdev);
     if (ret) {
         return ret;
     }
