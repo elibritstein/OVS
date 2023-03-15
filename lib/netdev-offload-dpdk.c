@@ -2415,9 +2415,9 @@ dpdk_offload_rte_create(struct netdev *netdev,
     for (a = actions; a->type != RTE_FLOW_ACTION_TYPE_END; a++) {
         int act_type = a->type;
 
-        if (act_type == OVS_RTE_FLOW_ACTION_TYPE_FLOW_INFO) {
+        if (act_type == OVS_RTE_FLOW_ACTION_TYPE(FLOW_INFO)) {
             a->type = RTE_FLOW_ACTION_TYPE_MARK;
-        } else if (act_type == OVS_RTE_FLOW_ACTION_TYPE_CT_INFO) {
+        } else if (act_type == OVS_RTE_FLOW_ACTION_TYPE(CT_INFO)) {
             struct rte_flow_action_set_meta *set_meta;
             struct reg_field *reg_field;
 
@@ -4340,7 +4340,7 @@ add_miss_flow(struct netdev *netdev,
     struct rte_flow_action_mark miss_mark;
     struct flow_actions miss_actions = {
         .actions = (struct rte_flow_action []) {
-            { .type = OVS_RTE_FLOW_ACTION_TYPE_FLOW_INFO, .conf = &miss_mark },
+            { .type = OVS_RTE_FLOW_ACTION_TYPE(FLOW_INFO), .conf = &miss_mark },
             { .type = RTE_FLOW_ACTION_TYPE_JUMP, .conf = &miss_jump },
             { .type = RTE_FLOW_ACTION_TYPE_END, },
         },
@@ -4656,13 +4656,13 @@ parse_ct_actions(struct netdev *netdev,
                                      ct_miss_ctx.state, 0xFF);
             set_meta = per_thread_xzalloc(sizeof *set_meta);
             set_meta->data = act_resources->ct_miss_ctx_id;
-            add_flow_action(actions, OVS_RTE_FLOW_ACTION_TYPE_CT_INFO, set_meta);
+            add_flow_action(actions, OVS_RTE_FLOW_ACTION_TYPE(CT_INFO), set_meta);
             if (act_resources->flow_id != INVALID_FLOW_MARK) {
                 struct rte_flow_action_mark *mark =
                     per_thread_xzalloc(sizeof *mark);
 
                 mark->id = act_resources->flow_id;
-                add_flow_action(actions, OVS_RTE_FLOW_ACTION_TYPE_FLOW_INFO,
+                add_flow_action(actions, OVS_RTE_FLOW_ACTION_TYPE(FLOW_INFO),
                                 mark);
             }
             add_jump_action(actions, POSTCT_TABLE_ID);
@@ -4927,7 +4927,7 @@ create_pre_post_ct(struct netdev *netdev,
         act_resources->associated_flow_id = true;
     }
     pre_ct_mark.id = act_resources->flow_id;
-    add_flow_action(&pre_ct_actions, OVS_RTE_FLOW_ACTION_TYPE_FLOW_INFO,
+    add_flow_action(&pre_ct_actions, OVS_RTE_FLOW_ACTION_TYPE(FLOW_INFO),
                     &pre_ct_mark);
     pre_ct_jump.group = ct_table_id;
     add_flow_action(&pre_ct_actions, RTE_FLOW_ACTION_TYPE_JUMP, &pre_ct_jump);
@@ -6747,7 +6747,7 @@ conn_build_actions(struct netdev *netdev,
     }
     set_meta = per_thread_xzalloc(sizeof *set_meta);
     set_meta->data = act_resources->ct_miss_ctx_id;
-    add_flow_action(actions, OVS_RTE_FLOW_ACTION_TYPE_CT_INFO, set_meta);
+    add_flow_action(actions, OVS_RTE_FLOW_ACTION_TYPE(CT_INFO), set_meta);
 
     /* Last CT action is to go to Post-CT. */
     add_jump_action(actions, POSTCT_TABLE_ID);

@@ -629,7 +629,7 @@ doca_translate_actions(struct netdev *netdev OVS_UNUSED,
             if (doca_translate_vxlan_encap(actions, dacts)) {
                 return -1;
             }
-        } else if (act_type == OVS_RTE_FLOW_ACTION_TYPE_FLOW_INFO) {
+        } else if (act_type == OVS_RTE_FLOW_ACTION_TYPE(FLOW_INFO)) {
             uint32_t reg_offset = reg_fields[REG_FIELD_FLOW_INFO].offset;
             const struct rte_flow_action_mark *mark = actions->conf;
             uint32_t reg_mask = reg_fields[REG_FIELD_FLOW_INFO].mask;

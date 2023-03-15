@@ -61,6 +61,9 @@ enum {
     OVS_RTE_FLOW_ACTION_TYPE_CT_INFO,
 };
 
+#define OVS_RTE_FLOW_ACTION_TYPE(TYPE) \
+    ((enum rte_flow_action_type) OVS_RTE_FLOW_ACTION_TYPE_##TYPE)
+
 struct dpdk_offload_recovery_info {
     uint32_t flow_miss_id;
     uint32_t ct_miss_id;
