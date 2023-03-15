@@ -200,6 +200,12 @@ static struct reg_field reg_fields[] = {
         .offset = 0,
         .mask = 0x0000FFFF,
     },
+    [REG_FIELD_FLOW_INFO] = {
+        .type = REG_TYPE_META,
+        .index = 0,
+        .offset = 0,
+        .mask = 0x00FFFFFF,
+    },
 };
 
 static struct reg_field *
@@ -563,7 +569,7 @@ doca_translate_actions(struct netdev *netdev OVS_UNUSED,
             if (doca_translate_vxlan_encap(actions, dacts)) {
                 return -1;
             }
-        } else if (act_type == RTE_FLOW_ACTION_TYPE_MARK) {
+        } else if (act_type == OVS_RTE_FLOW_ACTION_TYPE_FLOW_INFO) {
             const struct rte_flow_action_mark *mark = actions->conf;
 
             dacts->meta.pkt_meta = mark->id;
@@ -776,14 +782,9 @@ static void
 dpdk_offload_doca_get_pkt_recover_info(struct dp_packet *p,
                                        struct dpdk_offload_recovery_info *info)
 {
-    uint32_t flow_miss_id;
-
-    memset(info, 0x0, sizeof *info);
-    if (!dp_packet_get_meta(p, &flow_miss_id)) {
-        return;
-    }
-
-    info->flow_miss_id = flow_miss_id;
+    memset(info, 0, sizeof *info);
+    get_packet_reg_field(p, &reg_fields[REG_FIELD_FLOW_INFO],
+                         &info->flow_miss_id);
 }
 
 static int

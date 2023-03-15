@@ -34,6 +34,11 @@
 #define MAX_TABLE_ID     0xf0000000
 #define NUM_TABLE_ID     (MAX_TABLE_ID - MIN_TABLE_ID + 1)
 
+/* Proprietary rte-flow action enums. */
+enum {
+    OVS_RTE_FLOW_ACTION_TYPE_FLOW_INFO = INT_MIN,
+};
+
 struct dpdk_offload_recovery_info {
     uint32_t flow_miss_id;
     uint32_t ct_miss_id;
@@ -48,12 +53,14 @@ enum dpdk_reg_id {
     REG_FIELD_TUN_INFO,
     REG_FIELD_CT_CTX,
     REG_FIELD_SFLOW_CTX,
+    REG_FIELD_FLOW_INFO,
     REG_FIELD_NUM,
 };
 
 enum reg_type {
     REG_TYPE_TAG,
     REG_TYPE_META,
+    REG_TYPE_MARK,
 };
 
 struct reg_field {
@@ -109,5 +116,10 @@ struct dpdk_offload_api {
 
 extern struct dpdk_offload_api dpdk_offload_api_rte;
 extern struct dpdk_offload_api dpdk_offload_api_doca;
+
+int
+get_packet_reg_field(struct dp_packet *packet,
+                     struct reg_field *reg_field,
+                     uint32_t *val);
 
 #endif /* DPDK_OFFLOAD_PROVIDER_H */

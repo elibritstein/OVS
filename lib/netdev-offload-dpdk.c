@@ -498,6 +498,12 @@ static struct reg_field reg_fields[] = {
         .offset = 0,
         .mask = 0x0000FFFF,
     },
+    [REG_FIELD_FLOW_INFO] = {
+        .type = REG_TYPE_MARK,
+        .index = 0,
+        .offset = 0,
+        .mask = 0x00FFFFFF,
+    },
 };
 
 static struct reg_field *
@@ -2427,6 +2433,16 @@ dpdk_offload_rte_create(struct netdev *netdev,
                         struct rte_flow_action *actions,
                         struct rte_flow_error *error)
 {
+    struct rte_flow_action *a;
+
+    for (a = actions; a->type != RTE_FLOW_ACTION_TYPE_END; a++) {
+        int act_type = a->type;
+
+        if (act_type == OVS_RTE_FLOW_ACTION_TYPE_FLOW_INFO) {
+            a->type = RTE_FLOW_ACTION_TYPE_MARK;
+        }
+    }
+
     return netdev_dpdk_rte_flow_create(netdev, attr, items, actions, error);
 }
 
@@ -3099,39 +3115,43 @@ parse_flow_tnl_match(struct netdev *tnldev,
     return ret;
 }
 
-static int
-get_packet_reg_field(struct dp_packet *packet, uint8_t reg_field_id,
+int
+get_packet_reg_field(struct dp_packet *packet,
+                     struct reg_field *reg_field,
                      uint32_t *val)
 {
-    struct reg_field *reg_field;
     uint32_t mark = 0;
     uint32_t meta;
 
-    if (reg_field_id >= REG_FIELD_NUM) {
-        VLOG_ERR("unkonwn reg id %d", reg_field_id);
-        return -1;
+    if (reg_field->type == REG_TYPE_META) {
+        if (!dp_packet_get_meta(packet, &meta)) {
+            return -1;
+        }
+
+        meta >>= reg_field->offset;
+        meta &= reg_field->mask;
+
+        if (meta == 0) {
+            dp_packet_has_flow_mark(packet, &mark);
+            VLOG_ERR_RL(&rl, "port %d, recirc=%d, mark=%d, has meta 0",
+                        packet->md.in_port.odp_port, packet->md.recirc_id,
+                        mark);
+            return -1;
+        }
+
+        *val = meta;
+        return 0;
     }
-    reg_field = &offload->reg_fields()[reg_field_id];
-    if (reg_field->type != REG_TYPE_META) {
-        VLOG_ERR("reg id %d is not meta", reg_field_id);
-        return -1;
-    }
-    if (!dp_packet_get_meta(packet, &meta)) {
+
+    if (reg_field->type == REG_TYPE_MARK) {
+        if (dp_packet_has_flow_mark(packet, &mark)) {
+            *val = mark;
+            return 0;
+        }
         return -1;
     }
 
-    meta >>= reg_field->offset;
-    meta &= reg_field->mask;
-
-    if (meta == 0) {
-        dp_packet_has_flow_mark(packet, &mark);
-        VLOG_ERR_RL(&rl, "port %d, recirc=%d: packet reg field id %d is 0, mark=%d",
-                    packet->md.in_port.odp_port, packet->md.recirc_id, reg_field_id, mark);
-        return -1;
-    }
-
-    *val = meta;
-    return 0;
+    OVS_NOT_REACHED();
 }
 
 static int
@@ -3189,6 +3209,7 @@ add_pattern_match_reg_field(struct flow_patterns *patterns,
         add_flow_pattern(patterns, RTE_FLOW_ITEM_TYPE_META, meta_spec,
                          meta_mask, NULL);
         break;
+    case REG_TYPE_MARK:
     default:
         VLOG_ERR("unkonwn reg type (%d) for reg field %d", reg_field->type,
                  reg_field_id);
@@ -3234,6 +3255,7 @@ add_action_set_reg_field(struct flow_actions *actions,
         set_meta->mask = reg_mask;
         add_flow_action(actions, RTE_FLOW_ACTION_TYPE_SET_META, set_meta);
         break;
+    case REG_TYPE_MARK:
     default:
         VLOG_ERR("unkonwn reg type (%d) for reg field %d", reg_field->type,
                  reg_field_id);
@@ -4328,7 +4350,7 @@ add_miss_flow(struct netdev *netdev,
     struct rte_flow_action_mark miss_mark;
     struct flow_actions miss_actions = {
         .actions = (struct rte_flow_action []) {
-            { .type = RTE_FLOW_ACTION_TYPE_MARK, .conf = &miss_mark },
+            { .type = OVS_RTE_FLOW_ACTION_TYPE_FLOW_INFO, .conf = &miss_mark },
             { .type = RTE_FLOW_ACTION_TYPE_JUMP, .conf = &miss_jump },
             { .type = RTE_FLOW_ACTION_TYPE_END, },
         },
@@ -4648,7 +4670,8 @@ parse_ct_actions(struct netdev *netdev,
                     per_thread_xzalloc(sizeof *mark);
 
                 mark->id = act_resources->flow_id;
-                add_flow_action(actions, RTE_FLOW_ACTION_TYPE_MARK, mark);
+                add_flow_action(actions, OVS_RTE_FLOW_ACTION_TYPE_FLOW_INFO,
+                                mark);
             }
             add_jump_action(actions, POSTCT_TABLE_ID);
         } else {
@@ -4912,7 +4935,8 @@ create_pre_post_ct(struct netdev *netdev,
         act_resources->associated_flow_id = true;
     }
     pre_ct_mark.id = act_resources->flow_id;
-    add_flow_action(&pre_ct_actions, RTE_FLOW_ACTION_TYPE_MARK, &pre_ct_mark);
+    add_flow_action(&pre_ct_actions, OVS_RTE_FLOW_ACTION_TYPE_FLOW_INFO,
+                    &pre_ct_mark);
     pre_ct_jump.group = ct_table_id;
     add_flow_action(&pre_ct_actions, RTE_FLOW_ACTION_TYPE_JUMP, &pre_ct_jump);
     add_flow_action(&pre_ct_actions, RTE_FLOW_ACTION_TYPE_END, NULL);
@@ -6023,10 +6047,13 @@ rte_get_packet_recovery_info(struct dp_packet *packet,
                              struct dpdk_offload_recovery_info *info)
 {
     memset(info, 0, sizeof *info);
-    if (dp_packet_has_flow_mark(packet, &info->flow_miss_id)) {
-        get_packet_reg_field(packet, REG_FIELD_CT_CTX, &info->ct_miss_id);
+    if (get_packet_reg_field(packet, &reg_fields[REG_FIELD_FLOW_INFO],
+                             &info->flow_miss_id)) {
+        get_packet_reg_field(packet, &reg_fields[REG_FIELD_CT_CTX],
+                             &info->ct_miss_id);
     } else {
-        get_packet_reg_field(packet, REG_FIELD_SFLOW_CTX, &info->sflow_id);
+        get_packet_reg_field(packet, &reg_fields[REG_FIELD_SFLOW_CTX],
+                             &info->sflow_id);
     }
 }
 
