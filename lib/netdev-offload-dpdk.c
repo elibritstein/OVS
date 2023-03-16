@@ -3137,9 +3137,10 @@ get_packet_reg_field(struct dp_packet *packet,
             return -1;
         }
 
-        meta >>= reg_field->offset;
-        meta &= reg_field->mask;
-
+        /* An error should be returned above if meta is 0.
+         * We perform another validation and alert on unexpected
+         * DPDK behavior.
+         */
         if (meta == 0) {
             dp_packet_has_flow_mark(packet, &mark);
             VLOG_ERR_RL(&rl, "port %d, recirc=%d, mark=%d, has meta 0",
@@ -3147,6 +3148,9 @@ get_packet_reg_field(struct dp_packet *packet,
                         mark);
             return -1;
         }
+
+        meta >>= reg_field->offset;
+        meta &= reg_field->mask;
 
         *val = meta;
         return 0;
