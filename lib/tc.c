@@ -1272,35 +1272,6 @@ nl_parse_act_geneve_opts(const struct nlattr *in_nlattr,
 }
 
 static int
-nl_parse_act_vxlan_opts(struct nlattr *in_nlattr, struct tc_action *action)
-{
-    const struct ofpbuf *msg;
-    struct nlattr *nla;
-    struct ofpbuf buf;
-    size_t left;
-
-    nl_attr_get_nested(in_nlattr, &buf);
-    msg = &buf;
-
-    NL_ATTR_FOR_EACH (nla, left, ofpbuf_at(msg, 0, 0), msg->size) {
-        uint16_t type = nl_attr_type(nla);
-        int32_t gbp_raw;
-
-        switch (type) {
-        case TCA_FLOWER_KEY_ENC_OPT_VXLAN_GBP:
-            gbp_raw = nl_attr_get_u32(nla);
-            odp_decode_gbp_raw(gbp_raw, &action->encap.gbp.id,
-                               &action->encap.gbp.flags);
-            action->encap.gbp.id_present = true;
-
-            break;
-        }
-    }
-
-    return 0;
-}
-
-static int
 nl_parse_act_tunnel_opts(struct nlattr *options, struct tc_action *action)
 {
     const struct ofpbuf *msg;
@@ -1321,13 +1292,6 @@ nl_parse_act_tunnel_opts(struct nlattr *options, struct tc_action *action)
         switch (type) {
         case TCA_TUNNEL_KEY_ENC_OPTS_GENEVE:
             err = nl_parse_act_geneve_opts(nla, action);
-            if (err) {
-                return err;
-            }
-
-            break;
-        case TCA_TUNNEL_KEY_ENC_OPTS_VXLAN:
-            err = nl_parse_act_vxlan_opts(nla, action);
             if (err) {
                 return err;
             }
@@ -2468,26 +2432,6 @@ nl_msg_put_act_tunnel_geneve_option(struct ofpbuf *request,
 }
 
 static void
-nl_msg_put_act_tunnel_vxlan_opts(struct ofpbuf *request,
-                                 struct tc_action_encap *encap)
-{
-    size_t outer, inner;
-    uint32_t gbp_raw;
-
-    if (!encap->gbp.id_present) {
-        return;
-    }
-
-    gbp_raw = odp_encode_gbp_raw(encap->gbp.flags,
-                                 encap->gbp.id);
-    outer = nl_msg_start_nested(request, TCA_TUNNEL_KEY_ENC_OPTS);
-    inner = nl_msg_start_nested(request, TCA_TUNNEL_KEY_ENC_OPTS_VXLAN);
-    nl_msg_put_u32(request, TCA_TUNNEL_KEY_ENC_OPT_VXLAN_GBP, gbp_raw);
-    nl_msg_end_nested(request, inner);
-    nl_msg_end_nested(request, outer);
-}
-
-static void
 nl_msg_put_act_tunnel_key_set(struct ofpbuf *request,
                               struct tc_action_encap *encap)
 {
@@ -2526,7 +2470,6 @@ nl_msg_put_act_tunnel_key_set(struct ofpbuf *request,
             nl_msg_put_be16(request, TCA_TUNNEL_KEY_ENC_DST_PORT,
                             encap->tp_dst);
         }
-        nl_msg_put_act_tunnel_vxlan_opts(request, encap);
         nl_msg_put_act_tunnel_geneve_option(request, encap->data);
         nl_msg_put_u8(request, TCA_TUNNEL_KEY_NO_CSUM, encap->no_csum);
     }

@@ -3078,11 +3078,20 @@ odp_tun_key_from_attr__(const struct nlattr *attr, bool is_mask,
             tun->flags |= FLOW_TNL_F_OAM;
             break;
         case OVS_TUNNEL_KEY_ATTR_VXLAN_OPTS: {
-            if (odp_vxlan_tun_opts_from_attr(a, &tun->gbp_id,
-                                             &tun->gbp_flags,
-                                             NULL)) {
+            static const struct nl_policy vxlan_opts_policy[] = {
+                [OVS_VXLAN_EXT_GBP] = { .type = NL_A_U32 },
+            };
+            struct nlattr *ext[ARRAY_SIZE(vxlan_opts_policy)];
+
+            if (!nl_parse_nested(a, vxlan_opts_policy, ext, ARRAY_SIZE(ext))) {
                 odp_parse_error(&rl, errorp, "error parsing VXLAN options");
                 return ODP_FIT_ERROR;
+            }
+
+            if (ext[OVS_VXLAN_EXT_GBP]) {
+                uint32_t gbp = nl_attr_get_u32(ext[OVS_VXLAN_EXT_GBP]);
+
+                odp_decode_gbp_raw(gbp, &tun->gbp_id, &tun->gbp_flags);
             }
 
             break;
@@ -8781,30 +8790,4 @@ commit_odp_actions(const struct flow *flow, struct flow *base,
     commit_set_pkt_mark_action(flow, base, odp_actions, wc, use_masked);
 
     return slow1 ? slow1 : slow2;
-}
-
-int
-odp_vxlan_tun_opts_from_attr(const struct nlattr *tun_attr, ovs_be16 *id,
-                             uint8_t *flags, bool *id_present)
-{
-    static const struct nl_policy vxlan_opts_policy[] = {
-        [OVS_VXLAN_EXT_GBP] = { .type = NL_A_U32 },
-    };
-    struct nlattr *ext[ARRAY_SIZE(vxlan_opts_policy)];
-
-    if (!nl_parse_nested(tun_attr, vxlan_opts_policy, ext, ARRAY_SIZE(ext))) {
-        return EINVAL;
-    }
-
-    if (ext[OVS_VXLAN_EXT_GBP]) {
-        uint32_t gbp_raw = nl_attr_get_u32(ext[OVS_VXLAN_EXT_GBP]);
-
-        odp_decode_gbp_raw(gbp_raw, id, flags);
-    }
-
-    if (id_present) {
-        *id_present = !!ext[OVS_VXLAN_EXT_GBP];
-    }
-
-    return 0;
 }

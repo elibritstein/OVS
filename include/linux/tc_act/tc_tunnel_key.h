@@ -1,7 +1,7 @@
 #ifndef __LINUX_TC_ACT_TC_TUNNEL_KEY_WRAPPER_H
 #define __LINUX_TC_ACT_TC_TUNNEL_KEY_WRAPPER_H 1
 
-#if defined(__KERNEL__) || defined(HAVE_TCA_TUNNEL_KEY_ENC_OPTS_VXLAN)
+#if defined(__KERNEL__) || defined(HAVE_TCA_TUNNEL_KEY_ENC_TTL)
 #include_next <linux/tc_act/tc_tunnel_key.h>
 #else
 
@@ -53,10 +53,6 @@ enum {
 					 * TCA_TUNNEL_KEY_ENC_OPTS_GENEVE
 					 * attributes
 					 */
-	TCA_TUNNEL_KEY_ENC_OPTS_VXLAN,	/* Nested
-					 * TCA_TUNNEL_KEY_ENC_OPTS_VXLAN
-					 * attributes
-					 */
 	__TCA_TUNNEL_KEY_ENC_OPTS_MAX,
 };
 
@@ -74,15 +70,6 @@ enum {
 #define TCA_TUNNEL_KEY_ENC_OPT_GENEVE_MAX \
 	(__TCA_TUNNEL_KEY_ENC_OPT_GENEVE_MAX - 1)
 
-enum {
-	TCA_TUNNEL_KEY_ENC_OPT_VXLAN_UNSPEC,
-	TCA_TUNNEL_KEY_ENC_OPT_VXLAN_GBP,	/* u32 */
-	__TCA_TUNNEL_KEY_ENC_OPT_VXLAN_MAX,
-};
-
-#define TCA_TUNNEL_KEY_ENC_OPT_VXLAN_MAX \
-	(__TCA_TUNNEL_KEY_ENC_OPT_VXLAN_MAX - 1)
-
-#endif /* __KERNEL__ || HAVE_TCA_TUNNEL_KEY_ENC_OPTS_VXLAN */
+#endif /* __KERNEL__ || HAVE_TCA_TUNNEL_KEY_ENC_TTL */
 
 #endif /* __LINUX_TC_ACT_TC_TUNNEL_KEY_WRAPPER_H */
