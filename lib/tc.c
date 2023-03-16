@@ -39,7 +39,6 @@
 #include "byte-order.h"
 #include "netlink-socket.h"
 #include "netlink.h"
-#include "odp-util.h"
 #include "openvswitch/ofpbuf.h"
 #include "openvswitch/util.h"
 #include "openvswitch/vlog.h"
@@ -699,38 +698,6 @@ nl_parse_geneve_key(const struct nlattr *in_nlattr,
 }
 
 static int
-nl_parse_vxlan_key(const struct nlattr *in_nlattr,
-                   struct tc_flower_tunnel *tunnel)
-{
-    const struct ofpbuf *msg;
-    struct nlattr *nla;
-    struct ofpbuf buf;
-    uint32_t gbp_raw;
-    size_t left;
-
-    nl_attr_get_nested(in_nlattr, &buf);
-    msg = &buf;
-
-    NL_ATTR_FOR_EACH (nla, left, ofpbuf_at(msg, 0, 0), msg->size) {
-        uint16_t type = nl_attr_type(nla);
-
-        switch (type) {
-        case TCA_FLOWER_KEY_ENC_OPT_VXLAN_GBP:
-            gbp_raw = nl_attr_get_u32(nla);
-            odp_decode_gbp_raw(gbp_raw, &tunnel->gbp.id,
-                               &tunnel->gbp.flags);
-            tunnel->gbp.id_present = true;
-            break;
-        default:
-            VLOG_ERR_RL(&error_rl, "failed to parse vxlan tun options");
-            return EINVAL;
-        }
-    }
-
-    return 0;
-}
-
-static int
 nl_parse_flower_tunnel_opts(struct nlattr *options,
                             struct tc_flower_tunnel *tunnel)
 {
@@ -748,13 +715,6 @@ nl_parse_flower_tunnel_opts(struct nlattr *options,
         switch (type) {
         case TCA_FLOWER_KEY_ENC_OPTS_GENEVE:
             err = nl_parse_geneve_key(nla, &tunnel->metadata);
-            if (err) {
-                return err;
-            }
-
-            break;
-        case TCA_FLOWER_KEY_ENC_OPTS_VXLAN:
-            err = nl_parse_vxlan_key(nla, tunnel);
             if (err) {
                 return err;
             }
@@ -3077,12 +3037,11 @@ nl_msg_put_flower_tunnel_opts(struct ofpbuf *request, uint16_t type,
     int len, cnt = 0;
 
     len = metadata->present.len;
-    if (!len && !tunnel->gbp.id_present) {
+    if (!len) {
         return;
     }
 
     outer = nl_msg_start_nested(request, type);
-    /* Geneve */
     while (len) {
         opt = &metadata->opts.gnv[cnt];
         inner = nl_msg_start_nested(request, TCA_FLOWER_KEY_ENC_OPTS_GENEVE);
@@ -3096,17 +3055,6 @@ nl_msg_put_flower_tunnel_opts(struct ofpbuf *request, uint16_t type,
         cnt += sizeof(struct geneve_opt) / 4 + opt->length;
         len -= sizeof(struct geneve_opt) + opt->length * 4;
 
-        nl_msg_end_nested(request, inner);
-    }
-
-    /* VxLAN GBP */
-    if (tunnel->gbp.id_present) {
-        uint32_t gbp_raw;
-
-        gbp_raw = odp_encode_gbp_raw(tunnel->gbp.flags, tunnel->gbp.id);
-        inner = nl_msg_start_nested(request, TCA_FLOWER_KEY_ENC_OPTS_VXLAN);
-
-        nl_msg_put_u32(request, TCA_FLOWER_KEY_ENC_OPT_VXLAN_GBP, gbp_raw);
         nl_msg_end_nested(request, inner);
     }
     nl_msg_end_nested(request, outer);
