@@ -6058,8 +6058,8 @@ rte_get_packet_recovery_info(struct dp_packet *packet,
                              struct dpdk_offload_recovery_info *info)
 {
     memset(info, 0, sizeof *info);
-    if (get_packet_reg_field(packet, &reg_fields[REG_FIELD_FLOW_INFO],
-                             &info->flow_miss_id)) {
+    if (!get_packet_reg_field(packet, &reg_fields[REG_FIELD_FLOW_INFO],
+                              &info->flow_miss_id)) {
         get_packet_reg_field(packet, &reg_fields[REG_FIELD_CT_CTX],
                              &info->ct_miss_id);
     } else {
