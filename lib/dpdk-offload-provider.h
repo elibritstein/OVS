@@ -33,6 +33,27 @@
 #define MIN_TABLE_ID     1
 #define MAX_TABLE_ID     0xf0000000
 #define NUM_TABLE_ID     (MAX_TABLE_ID - MIN_TABLE_ID + 1)
+#define MIN_ZONE_ID     1
+#define MAX_ZONE_ID     0x000000FF
+#define NUM_ZONE_ID     (MAX_ZONE_ID - MIN_ZONE_ID + 1)
+
+struct fixed_rule {
+    struct rte_flow *flow;
+    unsigned int creation_tid;
+};
+
+struct netdev_offload_dpdk_data {
+    struct cmap ufid_to_rte_flow;
+    uint64_t *offload_counters;
+    uint64_t *flow_counters;
+    uint64_t *conn_counters;
+    struct ovs_mutex map_lock;
+    struct ovsthread_once ct_tables_once;
+    struct fixed_rule ct_nat_miss;
+    struct fixed_rule zone_flows[2][2][MAX_ZONE_ID + 1];
+    struct fixed_rule hairpin;
+    void *eswitch_ctx;
+};
 
 /* Proprietary rte-flow action enums. */
 enum {

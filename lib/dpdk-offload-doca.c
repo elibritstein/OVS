@@ -31,6 +31,10 @@
 VLOG_DEFINE_THIS_MODULE(dpdk_offload_doca);
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(600, 600);
 
+OVS_ASSERT_PACKED(struct doca_eswitch_ctx,
+    struct doca_flow_port *esw_port;
+);
+
 struct doca_flow_handle {
      struct doca_flow_pipe_entry *flow;
      uint32_t group;
@@ -861,6 +865,77 @@ dpdk_offload_doca_update_stats(struct dpif_flow_stats *stats,
 
     stats->n_packets = query->hits;
     stats->n_bytes = query->bytes;
+}
+
+static struct offload_metadata *doca_eswitch_md;
+
+static void
+doca_eswitch_ctx_uninit(void *ctx_)
+{
+    struct doca_eswitch_ctx *ctx = ctx_;
+
+    ctx->esw_port = NULL;
+}
+
+static int
+doca_eswitch_ctx_init(void *ctx_, void *arg_, uint32_t id OVS_UNUSED)
+{
+    struct netdev *netdev = (struct netdev *) arg_;
+    struct doca_eswitch_ctx *ctx = ctx_;
+
+    ctx->esw_port = doca_flow_port_switch_get();
+
+    return 0;
+}
+
+static struct ds *
+dump_doca_eswitch(struct ds *s, void *key_, void *ctx_, void *arg_ OVS_UNUSED)
+{
+    struct doca_flow_port *esw_port = key_;
+
+    ds_put_format(s, "esw_port=%p, ", esw_port);
+
+    return s;
+}
+
+static void
+doca_eswitch_init(void)
+{
+    static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
+
+    if (ovsthread_once_start(&init_once)) {
+        struct offload_metadata_parameters params = {
+            .priv_size = sizeof(struct doca_eswitch_ctx),
+            .priv_init = doca_eswitch_ctx_init,
+            .priv_uninit = doca_eswitch_ctx_uninit,
+        };
+        unsigned int nb_thread = netdev_offload_thread_nb();
+
+        doca_eswitch_md = offload_metadata_create(nb_thread, "doca_eswitch",
+                                                  sizeof(struct doca_flow_port *),
+                                                  dump_doca_eswitch, params);
+
+        ovsthread_once_done(&init_once);
+    }
+}
+
+
+static struct doca_eswitch_ctx *
+doca_eswitch_ctx_ref(struct netdev *netdev)
+{
+    struct doca_flow_port *esw_port = doca_flow_port_switch_get();
+
+    doca_eswitch_init();
+    return offload_metadata_priv_get(doca_eswitch_md, &esw_port, netdev,
+                                     NULL, true);
+}
+
+static void
+doca_eswitch_ctx_unref(struct doca_eswitch_ctx *ctx)
+{
+    offload_metadata_priv_unref(doca_eswitch_md,
+                                netdev_offload_thread_id(),
+                                ctx);
 }
 
 struct dpdk_offload_api dpdk_offload_api_doca = {
