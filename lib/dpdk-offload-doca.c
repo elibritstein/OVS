@@ -29,13 +29,15 @@
 #include "netdev-vport.h"
 #include "util.h"
 
+#define NUM_ZONE_FLOWS 4
+
 VLOG_DEFINE_THIS_MODULE(dpdk_offload_doca);
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(600, 600);
 
 OVS_ASSERT_PACKED(struct doca_eswitch_ctx,
     struct doca_flow_port *esw_port;
     struct fixed_rule ct_nat_miss;
-    struct fixed_rule zone_flows[2][2][MAX_ZONE_ID + 1];
+    struct fixed_rule zone_flows[2][NUM_ZONE_FLOWS][MAX_ZONE_ID + 1];
 );
 
 struct doca_flow_handle_resources {
@@ -162,7 +164,7 @@ doca_ctl_pipe_ctx_ref(struct netdev *netdev,
     arg.cfg.port = doca_flow_port_switch_get();
 
     if (is_ct_zone_group_id(group_id)) {
-        arg.cfg.attr.nb_flows = 2;
+        arg.cfg.attr.nb_flows = NUM_ZONE_FLOWS;
     } else if (group_id == MISS_TABLE_ID) {
         arg.cfg.attr.nb_flows = 1;
     } else if (group_id == CT_TABLE_ID || group_id == CTNAT_TABLE_ID) {
@@ -1024,7 +1026,7 @@ doca_ct_zones_uninit(unsigned int tid,
     }
 
     for (nat = 0; nat < 2; nat++) {
-        for (i = 0; i < 2; i++) {
+        for (i = 0; i < NUM_ZONE_FLOWS; i++) {
             for (zone_id = MIN_ZONE_ID; zone_id <= MAX_ZONE_ID; zone_id++) {
                 fr = &ctx->zone_flows[nat][i][zone_id];
 
@@ -1088,12 +1090,14 @@ doca_create_ct_zone_revisit_rule(struct netdev *netdev, uint32_t group,
 
 static void *
 doca_create_ct_zone_uphold_rule(struct netdev *netdev, uint32_t group,
-                                uint16_t zone, int nat)
+                                uint16_t zone, int nat, bool match_tcp)
 {
     struct doca_flow_handle_resources flow_res;
     struct doca_flow_action_descs dacts_descs;
     struct doca_ctl_pipe_ctx *next_pipe_ctx;
     struct doca_flow_actions dacts;
+    struct doca_flow_match spec;
+    struct doca_flow_match mask;
     struct rte_flow_error error;
     struct reg_field *reg_field;
     struct doca_flow_fwd fwd;
@@ -1103,6 +1107,21 @@ doca_create_ct_zone_uphold_rule(struct netdev *netdev, uint32_t group,
     memset(&flow_res, 0x0, sizeof flow_res);
     memset(&dacts, 0x0, sizeof dacts);
     memset(&fwd, 0x0, sizeof fwd);
+    memset(&spec, 0, sizeof spec);
+    memset(&mask, 0, sizeof mask);
+
+    spec.outer.l3_type = DOCA_FLOW_L3_TYPE_IP4;
+    mask.outer.l3_type = DOCA_FLOW_L3_TYPE_IP4;
+    if (match_tcp) {
+        spec.outer.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_TCP;
+        mask.outer.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_TCP;
+        /* Ensure that none of SYN | RST | FIN flag is set in
+         * packets going to CT: they must miss and go to SW. */
+        mask.outer.tcp.flags = TCP_SYN | TCP_RST | TCP_FIN;
+    } else {
+        spec.outer.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_UDP;
+        mask.outer.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_UDP;
+    }
 
     reg_field = &reg_fields[REG_FIELD_CT_ZONE];
     dacts.meta.u32[reg_field->index] |= zone << reg_field->offset;
@@ -1120,8 +1139,34 @@ doca_create_ct_zone_uphold_rule(struct netdev *netdev, uint32_t group,
     flow_res.next_pipe = next_pipe_ctx;
     flow_res.next_group = next_group;
 
-    return create_doca_flow_handle(netdev, 1, group, NULL, NULL,
+    return create_doca_flow_handle(netdev, 1, group, &spec, &mask,
                                    &dacts, &dacts_descs, NULL,
+                                   &fwd, &flow_res, &error);
+}
+
+static void *
+doca_create_ct_zone_miss_rule(struct netdev *netdev, uint32_t group)
+{
+    struct doca_flow_handle_resources flow_res;
+    struct doca_ctl_pipe_ctx *pipe_ctx;
+    struct rte_flow_error error;
+    struct doca_flow_fwd fwd;
+
+    memset(&flow_res, 0, sizeof flow_res);
+    memset(&fwd, 0, sizeof fwd);
+
+    pipe_ctx = doca_ctl_pipe_ctx_ref(netdev, MISS_TABLE_ID);
+    if (!pipe_ctx) {
+        return NULL;
+    }
+
+    fwd.type = DOCA_FLOW_FWD_PIPE;
+    fwd.next_pipe = pipe_ctx->pipe;
+    flow_res.next_pipe = pipe_ctx;
+    flow_res.next_group = MISS_TABLE_ID;
+
+    return create_doca_flow_handle(netdev, 2, group,
+                                   NULL, NULL, NULL, NULL, NULL,
                                    &fwd, &flow_res, &error);
 }
 
@@ -1146,6 +1191,9 @@ doca_ct_zones_init(struct netdev *netdev, unsigned int tid,
         base_group = nat ? CTNAT_TABLE_ID : CT_TABLE_ID;
 
         for (zone_id = MIN_ZONE_ID; zone_id <= MAX_ZONE_ID; zone_id++) {
+            /* If the zone is already set, then CT for this zone has already
+             * been executed: skip to post-ct. */
+
             fr = &ctx->zone_flows[nat][0][zone_id];
             fr->flow = doca_create_ct_zone_revisit_rule(netdev, base_group + zone_id,
                                                         zone_id, nat);
@@ -1154,10 +1202,32 @@ doca_ct_zones_init(struct netdev *netdev, unsigned int tid,
                 goto err;
             }
 
-            fr = &ctx->zone_flows[nat][1][zone_id];
             /* Otherwise, set the zone and go to CT/CT-NAT. */
-            fr->flow = doca_create_ct_zone_uphold_rule(netdev, base_group + zone_id,
-                                                       zone_id, nat);
+
+            fr = &ctx->zone_flows[nat][1][zone_id];
+            fr->flow = doca_create_ct_zone_uphold_rule(netdev,
+                                                       base_group + zone_id,
+                                                       zone_id, nat, false);
+            fr->creation_tid = tid;
+            if (fr->flow == NULL) {
+                goto err;
+            }
+
+            fr = &ctx->zone_flows[nat][2][zone_id];
+            fr->flow = doca_create_ct_zone_uphold_rule(netdev,
+                                                       base_group + zone_id,
+                                                       zone_id, nat, true);
+            fr->creation_tid = tid;
+            if (fr->flow == NULL) {
+                goto err;
+            }
+
+            /* Finally if the CT-zone was never visited, but the packet does
+             * not match either TCP(!SFR) or UDP, miss and go to SW. */
+
+            fr = &ctx->zone_flows[nat][3][zone_id];
+            fr->flow = doca_create_ct_zone_miss_rule(netdev,
+                                                     base_group + zone_id);
             fr->creation_tid = tid;
             if (fr->flow == NULL) {
                 goto err;
