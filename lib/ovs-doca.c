@@ -22,6 +22,7 @@
 #include "netdev-offload-provider.h"
 #include "openvswitch/vlog.h"
 #include "ovs-doca.h"
+#include "unixctl.h"
 
 VLOG_DEFINE_THIS_MODULE(ovs_doca);
 
@@ -77,6 +78,104 @@ static cookie_io_functions_t ovs_doca_log_func = {
     .write = ovs_doca_log_write,
 };
 
+static void
+ovs_doca_unixctl_mem_stream(struct unixctl_conn *conn, int argc OVS_UNUSED,
+                            const char *argv[] OVS_UNUSED, void *aux)
+{
+    void (*callback)(FILE *) = aux;
+    char *response = NULL;
+    FILE *stream;
+    size_t size;
+
+    stream = open_memstream(&response, &size);
+    if (!stream) {
+        response = xasprintf("Unable to open memstream: %s.",
+                             ovs_strerror(errno));
+        unixctl_command_reply_error(conn, response);
+        goto out;
+    }
+
+    callback(stream);
+    fclose(stream);
+    unixctl_command_reply(conn, response);
+out:
+    free(response);
+}
+
+static const char * const levels[] = {
+    [DOCA_LOG_LEVEL_CRIT]    = "critical",
+    [DOCA_LOG_LEVEL_ERROR]   = "error",
+    [DOCA_LOG_LEVEL_WARNING] = "warning",
+    [DOCA_LOG_LEVEL_INFO]    = "info",
+    [DOCA_LOG_LEVEL_DEBUG]   = "debug",
+};
+
+static int
+ovs_doca_parse_log_level(const char *s)
+{
+    int i;
+
+    for (i = 0; i < ARRAY_SIZE(levels); ++i) {
+        if (levels[i] && !strcmp(s, levels[i])) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static const char *
+ovs_doca_log_level_to_str(uint32_t log_level)
+{
+    int i;
+
+    for (i = 0; i < ARRAY_SIZE(levels); ++i) {
+        if (i == log_level && levels[i]) {
+            return levels[i];
+        }
+    }
+    return NULL;
+}
+
+static void
+ovs_doca_unixctl_log_set(struct unixctl_conn *conn, int argc,
+                         const char *argv[], void *aux OVS_UNUSED)
+{
+    char *err_msg = NULL;
+    int level;
+
+    /* With no argument, set level to 'debug'. */
+    if (argc == 1) {
+        level = DOCA_LOG_LEVEL_DEBUG;
+    } if (argc == 2) {
+        const char *level_string;
+
+        level_string = argv[1];
+        level = ovs_doca_parse_log_level(level_string);
+        if (level == -1) {
+            err_msg = xasprintf("invalid log level: '%s'", level_string);
+        }
+    }
+
+    if (err_msg) {
+        unixctl_command_reply_error(conn, err_msg);
+        free(err_msg);
+        return;
+    } else {
+        doca_log_global_level_set(level);
+    }
+
+    unixctl_command_reply(conn, NULL);
+}
+
+static void
+ovs_doca_log_dump(FILE *stream)
+{
+    uint32_t log_level;
+
+    log_level = doca_log_global_level_get();
+    fprintf(stream, "DOCA log level is %s", ovs_doca_log_level_to_str(log_level));
+}
+
 int
 ovs_doca_init(const struct smap *ovs_other_config)
 {
@@ -101,6 +200,11 @@ ovs_doca_init(const struct smap *ovs_other_config)
             return EXIT_FAILURE;
         }
     }
+    unixctl_command_register("doca/log-set", "{level}. level=critical/error/"
+                             "warning/info/debug", 0, 1,
+                             ovs_doca_unixctl_log_set, NULL);
+    unixctl_command_register("doca/log-get", "", 0, 0,
+                             ovs_doca_unixctl_mem_stream, ovs_doca_log_dump);
 
     if (!enabled && ovs_other_config &&
         smap_get_bool(ovs_other_config, "doca-init", false)) {
