@@ -44,6 +44,8 @@ struct indirect_ctx {
     struct rte_flow_action_handle *act_hdl;
     struct netdev *netdev;
     int port_id;
+    uint32_t act_type;
+    uint32_t res_id;
 };
 
 struct raw_encap_data {

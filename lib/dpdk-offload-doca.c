@@ -25,6 +25,7 @@
 #include "coverage.h"
 #include "dp-packet.h"
 #include "dpdk-offload-provider.h"
+#include "id-fpool.h"
 #include "openvswitch/vlog.h"
 #include "offload-metadata.h"
 #include "netdev-dpdk.h"
@@ -207,6 +208,7 @@ OVS_ASSERT_PACKED(struct doca_eswitch_ctx,
     struct doca_async_state async_state[MAX_OFFLOAD_QUEUE_NB];
     struct doca_basic_pipe_ctx ct_pipes[NUM_CT_NW][NUM_CT_TP];
     struct fixed_rule zone_flows[2][NUM_ZONE_FLOWS][MAX_ZONE_ID + 1];
+    struct id_fpool *shared_cnt_id_pool;
 );
 
 OVS_ASSERT_PACKED(struct doca_ctl_pipe_key,
@@ -1878,6 +1880,7 @@ dpdk_offload_doca_create(struct netdev *netdev,
                          struct dpdk_offload_handle *doh,
                          struct rte_flow_error *error)
 {
+    struct doca_eswitch_ctx *esw_ctx = doca_eswitch_ctx_get(netdev);
     unsigned int tid = netdev_offload_thread_id();
     struct doca_flow_actions dacts, dacts_masks;
     struct doca_flow_handle_resources flow_res;
@@ -1888,6 +1891,11 @@ dpdk_offload_doca_create(struct netdev *netdev,
     unsigned int queue_id = tid;
     struct doca_flow_fwd fwd;
     uint32_t prio;
+
+    /* If it's a post ct rule, check for eswitch ct offload support */
+    if (attr->group == POSTCT_TABLE_ID && !esw_ctx->shared_cnt_id_pool) {
+        return -1;
+    }
 
     memset(&dacts_masks, 0x0, sizeof dacts_masks);
     memset(&flow_res, 0x0, sizeof flow_res);
@@ -2027,29 +2035,88 @@ dpdk_offload_doca_query_count(struct netdev *netdev,
     return 0;
 }
 
-static struct rte_flow_action_handle *
-dpdk_offload_doca_shared_create(struct netdev *netdev OVS_UNUSED,
-                                const struct rte_flow_action *action OVS_UNUSED,
-                                struct rte_flow_error *error OVS_UNUSED)
+static int
+dpdk_offload_doca_shared_create(struct netdev *netdev,
+                                struct indirect_ctx *ctx,
+                                const struct rte_flow_action *action,
+                                struct rte_flow_error *error)
 {
-    return NULL;
+    struct doca_eswitch_ctx *esw_ctx = doca_eswitch_ctx_get(netdev);
+    unsigned int tid = netdev_offload_thread_id();
+    uint32_t id;
+
+    if (!esw_ctx->shared_cnt_id_pool) {
+        return -1;
+    }
+
+    if (action->type != RTE_FLOW_ACTION_TYPE_COUNT) {
+        return -1;
+    }
+
+    if (!id_fpool_new_id(esw_ctx->shared_cnt_id_pool, tid, &id)) {
+        VLOG_ERR("Failed to alloc a new shared counter id");
+        error->type = RTE_FLOW_ERROR_TYPE_UNSPECIFIED;
+        error->message = "Failed to alloc a new shared counter id";
+        return -1;
+    }
+
+    ctx->res_id = id;
+    ctx->act_type = action->type;
+
+    return 0;
 }
 
 static int
-dpdk_offload_doca_shared_destroy(int port_id OVS_UNUSED,
-                                 struct rte_flow_action_handle *act_hdl OVS_UNUSED,
+dpdk_offload_doca_shared_destroy(struct indirect_ctx *ctx,
                                  struct rte_flow_error *error OVS_UNUSED)
 {
-    return -1;
+    struct doca_eswitch_ctx *esw_ctx = doca_eswitch_ctx_get(ctx->netdev);
+    unsigned int tid = netdev_offload_thread_id();
+
+    id_fpool_free_id(esw_ctx->shared_cnt_id_pool, tid, ctx->res_id);
+
+    return 0;
 }
 
 static int
-dpdk_offload_doca_shared_query(int port_id OVS_UNUSED,
-                               struct rte_flow_action_handle *act_hdl OVS_UNUSED,
-                               void *data OVS_UNUSED,
-                               struct rte_flow_error *error OVS_UNUSED)
+dpdk_offload_doca_shared_query(struct indirect_ctx *ctx,
+                               void *data,
+                               struct rte_flow_error *error)
 {
-    return -1;
+    struct doca_flow_shared_resource_result query_results;
+    struct rte_flow_query_count *query;
+    struct doca_flow_query *stats;
+    doca_error_t ret;
+    uint32_t cnt_id;
+
+    /* Only shared counter supported at the moment */
+    if (ctx->act_type != RTE_FLOW_ACTION_TYPE_COUNT) {
+        return -1;
+    }
+
+    query = (struct rte_flow_query_count *) data;
+    memset(query, 0, sizeof *query);
+    memset(&query_results, 0, sizeof query_results);
+
+    /* Doca counter ids are 0 based while internal mapping
+     * is 1 based.
+     */
+    cnt_id = ctx->res_id - 1;
+    ret = doca_flow_shared_resources_query(DOCA_FLOW_SHARED_RESOURCE_COUNT,
+                                           &cnt_id, &query_results, 1);
+    if (ret != DOCA_SUCCESS) {
+        VLOG_ERR("Failed to query shared counter id 0x%.8x: %s",
+                 ctx->res_id, doca_get_error_string(ret));
+        error->type = RTE_FLOW_ERROR_TYPE_UNSPECIFIED;
+        error->message = doca_get_error_string(ret);
+        return -1;
+    }
+
+    stats = &query_results.counter;
+    query->hits = stats->total_pkts;
+    query->bytes = stats->total_bytes;
+
+    return 0;
 }
 
 static void
@@ -2516,7 +2583,8 @@ doca_ct_pipe_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx,
     match_mask = ct_matches[nw_type][tp_type];
     doca_port = netdev_dpdk_doca_port_get(netdev);
 
-    monitor.flags = DOCA_FLOW_MONITOR_COUNT;
+    monitor.shared_counter_id = UINT32_MAX;
+
     cfg.attr.name = ds_cstr(&pipe_name);
     cfg.attr.type = DOCA_FLOW_PIPE_BASIC;
     cfg.attr.is_root = false;
@@ -2589,6 +2657,70 @@ error:
     return -1;
 }
 
+#define MIN_SHARED_CNT_ID 1
+#define MAX_SHARED_CNT_ID OVS_DOCA_MAX_CT_COUNTERS
+
+/* Init the shared counter id map for the first
+ * eswitch context that requests it. This is the only
+ * eswitch that will support CT offload for now.
+ * After DOCA adds proper support this limitation should
+ * be lifted and support shared counters for every eswitch
+ * will be added.
+ */
+static void
+shared_cnt_id_init(struct doca_eswitch_ctx *ctx)
+{
+    static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
+
+    if (ovsthread_once_start(&init_once)) {
+        ctx->shared_cnt_id_pool = id_fpool_create(1,
+                                                  MIN_SHARED_CNT_ID,
+                                                  MAX_SHARED_CNT_ID);
+        ovsthread_once_done(&init_once);
+    }
+}
+
+#define SHARED_CNT_IDS_ARR_SZ 5000
+BUILD_ASSERT_DECL(OVS_DOCA_MAX_CT_COUNTERS % SHARED_CNT_IDS_ARR_SZ == 0);
+
+static int
+doca_bind_shared_cntrs(struct doca_eswitch_ctx *ctx)
+{
+    struct doca_flow_shared_resource_cfg cfg =
+        { .domain = DOCA_FLOW_PIPE_DOMAIN_DEFAULT };
+    uint32_t ids[SHARED_CNT_IDS_ARR_SZ];
+    uint32_t base_id;
+    int i, ret;
+
+    /* DOCA IDs are 0 based therefore the range is shifted by 1
+     * during the config and binding.
+     */
+    for (base_id = 0; base_id < MAX_SHARED_CNT_ID;
+         base_id += SHARED_CNT_IDS_ARR_SZ) {
+        for (i = 0; i < SHARED_CNT_IDS_ARR_SZ; i++) {
+            ids[i] = base_id + i;
+            ret = doca_flow_shared_resource_cfg(DOCA_FLOW_SHARED_RESOURCE_COUNT,
+                                                ids[i], &cfg);
+            if (ret != DOCA_SUCCESS) {
+                VLOG_ERR("Failed to config shared counter id %d, err %d - %s",
+                         ids[i], ret, doca_get_error_string(ret));
+                return -1;
+            }
+        }
+        ret = doca_flow_shared_resources_bind(DOCA_FLOW_SHARED_RESOURCE_COUNT,
+                                              ids, SHARED_CNT_IDS_ARR_SZ,
+                                              ctx->esw_port);
+        if (ret != DOCA_SUCCESS) {
+            VLOG_ERR("Shared counters binding failed, ids %d-%d, err %d - %s",
+                     ids[0], ids[SHARED_CNT_IDS_ARR_SZ - 1], ret,
+                     doca_get_error_string(ret));
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
 static struct offload_metadata *doca_eswitch_md;
 
 static void
@@ -2610,8 +2742,10 @@ doca_eswitch_ctx_uninit(void *ctx_)
      * are meant to be removed after this, the original counts will
      * have been removed once the uninit has finished.
      */
-    doca_ct_zones_uninit(NULL, ctx);
-    doca_ct_pipes_destroy(ctx);
+    if (ctx->shared_cnt_id_pool) {
+        doca_ct_zones_uninit(NULL, ctx);
+        doca_ct_pipes_destroy(ctx);
+    }
     doca_ctl_pipe_ctx_unref(ctx->root_pipe_ctx);
     if (ctx->gnv_opt_parser.parser) {
         doca_flow_parser_geneve_opt_destroy(ctx->gnv_opt_parser.parser);
@@ -2622,6 +2756,13 @@ doca_eswitch_ctx_uninit(void *ctx_)
         ovs_mutex_destroy(&ctx->gnv_opt_parser.once.mutex);
     }
     ctx->root_pipe_ctx = NULL;
+    if (ctx->shared_cnt_id_pool) {
+        /* DOCA doesn't provide an api to unbind shared counters
+         * and they will remain bound until the port is destroyed.
+         */
+        id_fpool_destroy(ctx->shared_cnt_id_pool);
+        ctx->shared_cnt_id_pool = NULL;
+    }
     ctx->esw_port = NULL;
 }
 
@@ -2645,18 +2786,26 @@ doca_eswitch_ctx_init(void *ctx_, void *arg_, uint32_t id OVS_UNUSED)
         goto error;
     }
 
-    if (doca_ct_pipes_init(netdev, ctx)) {
-        goto error;
-    }
-
-    if (doca_ct_zones_init(netdev, ctx)) {
-        goto error;
-    }
+    shared_cnt_id_init(ctx);
 
     doca_port = netdev_dpdk_doca_port_get(netdev);
     ctx->esw_port = doca_flow_port_switch_get(doca_port);
     ctx->gnv_opt_parser.once =
         (struct ovsthread_once) OVSTHREAD_ONCE_INITIALIZER;
+
+    if (ctx->shared_cnt_id_pool) {
+        if (doca_ct_pipes_init(netdev, ctx)) {
+            goto error;
+        }
+
+        if (doca_ct_zones_init(netdev, ctx)) {
+            goto error;
+        }
+
+        if (doca_bind_shared_cntrs(ctx)) {
+            goto error;
+        }
+    }
 
     return 0;
 
@@ -2858,13 +3007,14 @@ dpdk_offload_doca_insert_conn(struct netdev *netdev,
                               struct ct_flow_offload_item ct_offload[1],
                               uint32_t ct_match_zone_id,
                               uint32_t ct_action_label_id,
-                              struct indirect_ctx *shared_count_ctx OVS_UNUSED,
+                              struct indirect_ctx *shared_count_ctx,
                               uint32_t ct_miss_ctx_id,
                               struct flow_item *fi)
 {
     struct doca_flow_header_format *dhdr;
     const struct ct_match *ct_match;
     struct doca_flow_actions dacts;
+    struct doca_flow_monitor dmon;
     struct doca_flow_match dspec;
     struct doca_eswitch_ctx *ctx;
     struct doca_flow_pipe *pipe;
@@ -2950,6 +3100,12 @@ dpdk_offload_doca_insert_conn(struct netdev *netdev,
         is_ct = true;
     }
 
+    /* Doca counter ids are 0 based while internal mapping
+     * is 1 based.
+     */
+    memset(&dmon, 0, sizeof dmon);
+    dmon.shared_counter_id = shared_count_ctx->res_id - 1;
+
     memset(dacts.meta.u32, 0, sizeof dacts.meta.u32);
 
     /* CT MARK */
@@ -2978,7 +3134,7 @@ dpdk_offload_doca_insert_conn(struct netdev *netdev,
     dacts.action_idx = 0;
     pipe = ctx->ct_pipes[nw_type][tp_type].pipe;
     if (create_doca_basic_flow_entry(netdev, queue_id, pipe, &dspec,
-                                     &dacts, NULL, NULL, &fi->doh[0],
+                                     &dacts, &dmon, NULL, &fi->doh[0],
                                      &error)) {
         VLOG_WARN_RL(&rl, "%s: Failed to create ct entry: Error %d (%s)",
                      netdev_get_name(netdev), error.type, error.message);

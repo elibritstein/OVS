@@ -37,8 +37,6 @@ uint32_t ctl_pipe_size = 0;
 
 /* Estimated maximum number of megaflows */
 #define OVS_DOCA_MAX_MEGAFLOWS_COUNTERS (1 << 16)
-/* For now, no shared counters, and we 2 counters are used per connection. */
-#define OVS_DOCA_MAX_CT_COUNTERS (OVS_DOCA_MAX_CT_CONNS * 2)
 #define OVS_DOCA_MAX_COUNTERS \
     (OVS_DOCA_MAX_MEGAFLOWS_COUNTERS + OVS_DOCA_MAX_CT_COUNTERS)
 
@@ -282,6 +280,8 @@ ovs_doca_init(const struct smap *ovs_other_config)
         cfg.mode_args = "switch,hws,cpds";
         cfg.queue_depth = OVS_DOCA_QUEUE_DEPTH;
         cfg.cb = ovs_doca_entry_process_cb;
+        /* Set the sum of counters we want for both ports */
+        cfg.nr_shared_resources[DOCA_FLOW_SHARED_RESOURCE_COUNT] = OVS_DOCA_MAX_CT_COUNTERS;
 
         VLOG_INFO("DOCA Enabled - initializing...");
         err = doca_flow_init(&cfg);

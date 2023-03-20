@@ -32,6 +32,10 @@
  * to handle the number of CT connections supported by ovs-doca.
  */
 #define OVS_DOCA_MAX_CT_RULES (OVS_DOCA_MAX_CT_CONNS * 2)
+
+/* Using shared counters we need 1 per connection */
+#define OVS_DOCA_MAX_CT_COUNTERS OVS_DOCA_MAX_CT_CONNS
+
 #define OVS_DOCA_QUEUE_DEPTH 32
 
 extern bool ovs_doca_async;
