@@ -64,6 +64,14 @@ enum {
 #define OVS_RTE_FLOW_ACTION_TYPE(TYPE) \
     ((enum rte_flow_action_type) OVS_RTE_FLOW_ACTION_TYPE_##TYPE)
 
+/* Proprietary rte-flow item enums. */
+enum {
+    OVS_RTE_FLOW_ITEM_TYPE_FLOW_INFO = INT_MIN,
+};
+
+#define OVS_RTE_FLOW_ITEM_TYPE(TYPE) \
+    ((enum rte_flow_item_type) OVS_RTE_FLOW_ITEM_TYPE_##TYPE)
+
 struct dpdk_offload_recovery_info {
     uint32_t flow_miss_id;
     uint32_t ct_miss_id;

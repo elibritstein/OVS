@@ -481,7 +481,7 @@ doca_translate_items(struct netdev *netdev OVS_UNUSED,
             if (items->mask) {
                 doca_mask->meta.u32[spec->index] |= mask->data;
             }
-        } else if (item_type == RTE_FLOW_ITEM_TYPE_MARK) {
+        } else if (item_type == OVS_RTE_FLOW_ITEM_TYPE(FLOW_INFO)) {
             uint32_t reg_offset = reg_fields[REG_FIELD_FLOW_INFO].offset;
             uint32_t reg_mask = reg_fields[REG_FIELD_FLOW_INFO].mask;
             const struct rte_flow_item_mark *spec = items->spec;

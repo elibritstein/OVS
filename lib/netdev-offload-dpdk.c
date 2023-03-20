@@ -1909,7 +1909,7 @@ dump_flow_pattern(struct ds *s,
                               meta_spec->data, meta_mask->data, 0);
         }
         ds_put_cstr(s, "/ ");
-    } else if (item->type == RTE_FLOW_ITEM_TYPE_MARK) {
+    } else if (item->type == OVS_RTE_FLOW_ITEM_TYPE(FLOW_INFO)) {
         const struct rte_flow_item_mark *mark_spec = item->spec;
         const struct rte_flow_item_mark *mark_mask = item->mask;
 
@@ -2411,6 +2411,13 @@ dpdk_offload_rte_create(struct netdev *netdev,
                         struct rte_flow_error *error)
 {
     struct rte_flow_action *a;
+    struct rte_flow_item *it;
+
+    for (it = items; it->type != RTE_FLOW_ITEM_TYPE_END; it++) {
+        if (it->type == OVS_RTE_FLOW_ITEM_TYPE(FLOW_INFO)) {
+            it->type = RTE_FLOW_ITEM_TYPE_MARK;
+        }
+    }
 
     for (a = actions; a->type != RTE_FLOW_ACTION_TYPE_END; a++) {
         int act_type = a->type;
@@ -4873,7 +4880,7 @@ create_pre_post_ct(struct netdev *netdev,
     struct flow_patterns post_ct_patterns = {
         .items = (struct rte_flow_item []) {
             { .type = RTE_FLOW_ITEM_TYPE_PORT_ID, .spec = &port_id, },
-            { .type = RTE_FLOW_ITEM_TYPE_MARK, .spec = &post_ct_mark, },
+            { .type = OVS_RTE_FLOW_ITEM_TYPE(FLOW_INFO), .spec = &post_ct_mark, },
             { .type = RTE_FLOW_ITEM_TYPE_END, },
         },
         .cnt = 3,
@@ -6425,7 +6432,7 @@ hairpin_init(struct netdev *netdev, unsigned int tid,
     struct rte_flow_item_mark hp_mark;
     struct flow_patterns patterns = {
         .items = (struct rte_flow_item []) {
-            { .type = RTE_FLOW_ITEM_TYPE_MARK, .spec = &hp_mark, },
+            { .type = OVS_RTE_FLOW_ITEM_TYPE(FLOW_INFO), .spec = &hp_mark, },
             { .type = RTE_FLOW_ITEM_TYPE_END, },
         },
         .cnt = 2,
