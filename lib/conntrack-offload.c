@@ -98,7 +98,11 @@ conntrack_offload_del_conn(struct conntrack *ct,
          * checking.
          */
         conn_dir->offloads.flags |= CT_OFFLOAD_TERMINATED | CT_OFFLOAD_SKIP;
-        conn_dir->offloads.flags &= ~CT_OFFLOAD_BOTH;
+        if (dir == CT_DIR_REP) {
+            conn_dir->offloads.flags &= ~CT_OFFLOAD_REP;
+        } else {
+            conn_dir->offloads.flags &= ~CT_OFFLOAD_INIT;
+        }
     }
     item[CT_DIR_INIT].timestamp = now;
     item[CT_DIR_INIT].refcnt = conn->offloads.refcnt;
