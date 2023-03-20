@@ -1,7 +1,7 @@
 #ifndef __LINUX_PKT_CLS_WRAPPER_H
 #define __LINUX_PKT_CLS_WRAPPER_H 1
 
-#if defined(__KERNEL__) || defined(HAVE_TCA_POLICE_PKTRATE64)
+#if defined(__KERNEL__) || (defined(HAVE_TCA_POLICE_PKTRATE64) && defined(HAVE_TCA_FLOWER_KEY_ENC_OPTS_VXLAN))
 #include_next <linux/pkt_cls.h>
 #else
 

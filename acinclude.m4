@@ -319,6 +319,13 @@ AC_DEFUN([OVS_CHECK_LINUX_TC], [
     ])],
     [AC_DEFINE([HAVE_TCA_STATS_PKT64], [1],
                [Define to 1 if TCA_STATS_PKT64 is available.])])
+
+  AC_COMPILE_IFELSE([
+    AC_LANG_PROGRAM([#include <linux/pkt_cls.h>], [
+        int x = TCA_FLOWER_KEY_ENC_OPTS_VXLAN;
+    ])],
+    [AC_DEFINE([HAVE_TCA_FLOWER_KEY_ENC_OPTS_VXLAN], [1],
+               [Define to 1 if TCA_FLOWER_KEY_ENC_OPTS_VXLAN is available.])])
 ])
 
 dnl OVS_CHECK_LINUX_SCTP_CT
