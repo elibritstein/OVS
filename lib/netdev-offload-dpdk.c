@@ -2743,6 +2743,13 @@ netdev_offload_dpdk_destroy_flow(struct netdev *netdev,
 
     ret = offload->destroy(netdev, rte_flow, &error, is_esw);
     if (!ret) {
+        unsigned int tid = netdev_offload_thread_id();
+        struct netdev_offload_dpdk_data *data;
+
+        data = (struct netdev_offload_dpdk_data *)
+            ovsrcu_get(void *, &netdev->hw_info.offload_data);
+        data->offload_counters[tid]--;
+
         VLOG_DBG_RL(&rl, "%s: flow destroy %d user_id rule 0x%"PRIxPTR" ufid "
                     UUID_FMT, netdev_get_name(netdev),
                     is_esw ? netdev_dpdk_get_esw_mgr_port_id(netdev)
@@ -4966,7 +4973,6 @@ netdev_offload_dpdk_flow_create(struct netdev *netdev,
                                 struct act_vars *act_vars,
                                 struct flow_item *fi)
 {
-    struct netdev_offload_dpdk_data *data;
     int ret = 0;
 
     fi->flow_offload = true;
@@ -4991,19 +4997,6 @@ netdev_offload_dpdk_flow_create(struct netdev *netdev,
         break;
     default:
         OVS_NOT_REACHED();
-    }
-
-    data = (struct netdev_offload_dpdk_data *)
-        ovsrcu_get(void *, &netdev->hw_info.offload_data);
-
-    if (ret == 0) {
-        unsigned int tid = netdev_offload_thread_id();
-
-        if (fi->flow_offload) {
-            data->flow_counters[tid]++;
-        } else {
-            data->conn_counters[tid]++;
-        }
     }
 
     return ret;
@@ -5489,6 +5482,21 @@ netdev_offload_dpdk_actions(struct netdev *flowdev,
     ret = netdev_offload_dpdk_flow_create(netdev, &flow_attr, patterns,
                                           &actions, &error, act_resources,
                                           act_vars, fi);
+
+    if (ret == 0) {
+        unsigned int tid = netdev_offload_thread_id();
+        struct netdev_offload_dpdk_data *data;
+
+        /* The flowdev's counters are updated, not the netdev's ones. */
+        data = (struct netdev_offload_dpdk_data *)
+            ovsrcu_get(void *, &flowdev->hw_info.offload_data);
+
+        if (fi->flow_offload) {
+            data->flow_counters[tid]++;
+        } else {
+            data->conn_counters[tid]++;
+        }
+    }
 out:
     free_flow_actions(&actions, true);
     return ret;
@@ -5595,20 +5603,17 @@ netdev_offload_dpdk_remove_flows(struct ufid_to_rte_flow_data *rte_flow_data)
         }
 
         ret = netdev_offload_dpdk_destroy_flow(physdev, rte_flow, ufid, true);
-        if (ret == 0) {
-            data->offload_counters[tid]--;
-        } else {
+        if (ret) {
             break;
         }
     }
 
-    if (rte_flow_data->flow_item.flow_offload) {
-        data->flow_counters[tid]--;
-    } else {
-        data->conn_counters[tid]--;
-    }
-
     if (ret == 0) {
+        if (rte_flow_data->flow_item.flow_offload) {
+            data->flow_counters[tid]--;
+        } else {
+            data->conn_counters[tid]--;
+        }
         put_action_resources(&rte_flow_data->act_resources);
         ufid_to_rte_flow_disassociate(rte_flow_data);
         VLOG_DBG_RL(&rl, "%s/%s: removed flows 0x%"PRIxPTR"/0x%"PRIxPTR
@@ -6807,6 +6812,15 @@ netdev_offload_dpdk_insert_conn(struct netdev *netdev,
                                           &flow_attr, &patterns, &actions,
                                           &error, act_resources, &act_vars,
                                           fi);
+
+    if (ret == 0) {
+        unsigned int tid = netdev_offload_thread_id();
+        struct netdev_offload_dpdk_data *data;
+
+        data = (struct netdev_offload_dpdk_data *)
+            ovsrcu_get(void *, &netdev->hw_info.offload_data);
+        data->conn_counters[tid]++;
+    }
 free_actions:
     free_flow_actions(&actions, true);
 free_patterns:
