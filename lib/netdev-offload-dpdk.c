@@ -911,6 +911,7 @@ put_sflow_id(uint32_t sflow_id)
 static int
 find_sflow_ctx(int sflow_id, struct sflow_ctx *ctx)
 {
+    sflow_id_init();
     return offload_metadata_data_from_id(sflow_id_md, sflow_id, ctx);
 }
 
