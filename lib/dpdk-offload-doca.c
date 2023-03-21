@@ -359,6 +359,14 @@ doca_translate_items(struct netdev *netdev OVS_UNUSED,
                        sizeof doca_hdr_mask->eth.src_mac);
                 doca_hdr_mask->eth.type = mask->type;
             }
+        } else if (item_type == RTE_FLOW_ITEM_TYPE_VLAN) {
+            const struct rte_flow_item_vlan *spec = items->spec;
+            const struct rte_flow_item_vlan *mask = items->mask;
+
+            doca_hdr_spec->eth_vlan[0].tci = spec->tci;
+            doca_hdr_mask->eth_vlan[0].tci = mask->tci;
+            doca_hdr_spec->l2_valid_headers = DOCA_FLOW_L2_VALID_HEADER_VLAN_0;
+            doca_hdr_mask->l2_valid_headers = DOCA_FLOW_L2_VALID_HEADER_VLAN_0;
         /* L3 */
         } else if (item_type == RTE_FLOW_ITEM_TYPE_IPV4) {
             const struct rte_flow_item_ipv4 *spec = items->spec;
@@ -562,6 +570,7 @@ doca_translate_actions(struct netdev *netdev OVS_UNUSED,
                        struct doca_flow_handle_resources *flow_res)
 {
     struct doca_flow_header_format *outer = &dacts->outer;
+    bool vlan_act_push = false;
 
     for (; actions->type != RTE_FLOW_ACTION_TYPE_END; actions++) {
         int act_type = actions->type;
@@ -576,7 +585,16 @@ doca_translate_actions(struct netdev *netdev OVS_UNUSED,
             const struct rte_flow_action_of_set_vlan_vid *rte_vlan_vid;
 
             rte_vlan_vid = actions->conf;
-            outer->eth_vlan[0].tci = rte_vlan_vid->vlan_vid;
+            /* If preceeded by vlan push action, this is a new
+             * vlan tag. Otherwise, perfrom vlan modification.
+             */
+            if (vlan_act_push) {
+                dacts->push.type = DOCA_FLOW_PUSH_ACTION_VLAN;
+                dacts->push.vlan.tci = rte_vlan_vid->vlan_vid;
+                dacts->has_push = true;
+            } else {
+                outer->eth_vlan[0].tci = rte_vlan_vid->vlan_vid;
+            }
         } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_IPV4_SRC) {
             outer->l3_type = DOCA_FLOW_L3_TYPE_IP4;
             outer->ip4.src_ip = *(__be32 *) actions->conf;
@@ -652,6 +670,19 @@ doca_translate_actions(struct netdev *netdev OVS_UNUSED,
             dacts->meta.u32[index] |= set_tag->data;
             acts_descs->meta.u32[index].mask.u32 |= set_tag->mask;
             acts_descs->meta.u32[index].type = DOCA_FLOW_ACTION_SET;
+        } else if (act_type == RTE_FLOW_ACTION_TYPE_OF_POP_VLAN) {
+            /* Current support is for a single VLAN tag */
+            if (dacts->pop) {
+                return -1;
+            }
+            dacts->pop = true;
+        } else if (act_type == RTE_FLOW_ACTION_TYPE_OF_PUSH_VLAN) {
+            if (vlan_act_push) {
+                return -1;
+            }
+            vlan_act_push = true;
+        } else if (act_type == RTE_FLOW_ACTION_TYPE_OF_SET_VLAN_PCP) {
+            continue;
         } else {
             return -1;
         }
