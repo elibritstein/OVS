@@ -74,7 +74,7 @@ ovs_doca_init(const struct smap *ovs_other_config)
         }
         cfg.queues = smap_get_uint(ovs_other_config, "n-offload-threads", 1);
         cfg.resource.nb_counters = OVS_DOCA_MAX_COUNTERS;
-        cfg.mode_args = "switch,hws";
+        cfg.mode_args = "switch,hws,cpds";
         cfg.queue_depth = 32;
 
         VLOG_INFO("DOCA Enabled - initializing...");
