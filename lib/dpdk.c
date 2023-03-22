@@ -523,8 +523,10 @@ dpdk_init__(const struct smap *ovs_other_config)
                              dpdk_unixctl_mem_stream, rte_lcore_dump);
     unixctl_command_register("dpdk/log-list", "", 0, 0,
                              dpdk_unixctl_mem_stream, rte_log_dump);
-    unixctl_command_register("dpdk/log-set", "{level | pattern:level}", 0,
-                             INT_MAX, dpdk_unixctl_log_set, NULL);
+    unixctl_command_register("dpdk/log-set", "{level | pattern:level}. "
+                             "level=emergency/alert/critical/error/warning/"
+                             "notice/info/debug", 0, INT_MAX,
+                             dpdk_unixctl_log_set, NULL);
     unixctl_command_register("dpdk/get-malloc-stats", "", 0, 0,
                              dpdk_unixctl_mem_stream,
                              malloc_dump_malloc_stats_wrapper);
