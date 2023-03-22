@@ -1910,11 +1910,23 @@ dump_flow_pattern(struct ds *s,
                               meta_spec->data, meta_mask->data, 0);
         }
         ds_put_cstr(s, "/ ");
-    } else if (item->type == OVS_RTE_FLOW_ITEM_TYPE(FLOW_INFO)) {
+    } else if (item->type == RTE_FLOW_ITEM_TYPE_MARK) {
         const struct rte_flow_item_mark *mark_spec = item->spec;
         const struct rte_flow_item_mark *mark_mask = item->mask;
 
         ds_put_cstr(s, "mark ");
+        if (mark_spec) {
+            ds_put_format(s, "id spec %d ", mark_spec->id);
+        }
+        if (mark_mask) {
+            ds_put_format(s, "id mask %d ", mark_mask->id);
+        }
+        ds_put_cstr(s, "/ ");
+    } else if (item->type == OVS_RTE_FLOW_ITEM_TYPE(FLOW_INFO)) {
+        const struct rte_flow_item_mark *mark_spec = item->spec;
+        const struct rte_flow_item_mark *mark_mask = item->mask;
+
+        ds_put_cstr(s, "flow-info ");
         if (mark_spec) {
             ds_put_format(s, "id spec %d ", mark_spec->id);
         }
@@ -2118,6 +2130,14 @@ dump_flow_action(struct ds *s, struct ds *s_extra,
             ds_put_format(s, "id %d ", mark->id);
         }
         ds_put_cstr(s, "/ ");
+    } else if (actions->type == OVS_RTE_FLOW_ACTION_TYPE(FLOW_INFO)) {
+        const struct rte_flow_action_mark *mark = actions->conf;
+
+        ds_put_cstr(s, "flow-info ");
+        if (mark) {
+            ds_put_format(s, "id %d ", mark->id);
+        }
+        ds_put_cstr(s, "/ ");
     } else if (actions->type == RTE_FLOW_ACTION_TYPE_COUNT) {
         ds_put_cstr(s, "count / ");
     } else if (actions->type == RTE_FLOW_ACTION_TYPE_PORT_ID) {
@@ -2261,6 +2281,15 @@ dump_flow_action(struct ds *s, struct ds *s_extra,
         const struct rte_flow_action_set_meta *meta = actions->conf;
 
         ds_put_cstr(s, "set_meta ");
+        if (meta) {
+            ds_put_format(s, "data 0x%08x mask 0x%08x ", meta->data,
+                          meta->mask);
+        }
+        ds_put_cstr(s, "/ ");
+    } else if (actions->type == OVS_RTE_FLOW_ACTION_TYPE(CT_INFO)) {
+        const struct rte_flow_action_set_meta *meta = actions->conf;
+
+        ds_put_cstr(s, "ct-info ");
         if (meta) {
             ds_put_format(s, "data 0x%08x mask 0x%08x ", meta->data,
                           meta->mask);
