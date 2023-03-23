@@ -440,10 +440,6 @@ AC_DEFUN([OVS_CHECK_DOCA], [
         export PKG_CONFIG_PATH="${PKG_CONFIG_PATH}:${DOCA_PKGCONFIG}"
     fi
 
-    AC_COMPILE_IFELSE(
-      [AC_LANG_PROGRAM([#include <doca_flow.h>], [struct doca_flow_port *port = NULL ;])],
-      [], [AC_MSG_ERROR([unable to include doca_flow.h from '$DOCA_INCLUDE'])])
-
     echo "checking for DOCA in PKG_CONFIG_PATH='${PKG_CONFIG_PATH}'"
     case "$with_doca" in
        "static"|"shared") DOCA_LINK="$with_doca" ;;
@@ -455,33 +451,16 @@ AC_DEFUN([OVS_CHECK_DOCA], [
              DOCA_INCLUDE="$DOCA_CFLAGS"
              DOCA_LIB="$DOCA_LIBS"],
              [AC_MSG_ERROR([unable to use doca-flow.pc for static build])])
-
-         dnl Statically linked private DOCA objects of form
-         dnl -l:file.a must be positioned between
-         dnl --whole-archive ... --no-whole-archive linker parameters.
-         dnl Old pkg-config versions misplace --no-whole-archive parameter
-         dnl and put it next to --whole-archive.
-         AC_MSG_CHECKING([for faulty pkg-config version])
-         echo "$DOCA_LIB" | grep -q 'whole-archive.*l:lib.*no-whole-archive'
-         status=$?
-         case $status in
-           0)
-             AC_MSG_RESULT([no])
-             ;;
-           1)
-             AC_MSG_RESULT([yes])
-             AC_MSG_ERROR([Please upgrade pkg-config])
-             ;;
-           *)
-             AC_MSG_ERROR([grep exited with status $status])
-             ;;
-         esac
          ;;
     esac
 
     ovs_save_CFLAGS="$CFLAGS"
     ovs_save_LDFLAGS="$LDFLAGS"
     CFLAGS="$CFLAGS $DOCA_INCLUDE"
+
+    AC_COMPILE_IFELSE(
+      [AC_LANG_PROGRAM([#include <doca_flow.h>], [struct doca_flow_port *port = NULL ;])],
+      [], [AC_MSG_ERROR([unable to include doca_flow.h from '$DOCA_INCLUDE'])])
 
     LIBS="$DOCA_LIB $ovs_save_libs_before_dpdk"
     AC_MSG_CHECKING([for doca_flow.h])
