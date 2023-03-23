@@ -440,6 +440,10 @@ AC_DEFUN([OVS_CHECK_DOCA], [
         export PKG_CONFIG_PATH="${PKG_CONFIG_PATH}:${DOCA_PKGCONFIG}"
     fi
 
+    AC_COMPILE_IFELSE(
+      [AC_LANG_PROGRAM([#include <doca_flow.h>], [struct doca_flow_port *port = NULL ;])],
+      [], [AC_MSG_ERROR([unable to include doca_flow.h from '$DOCA_INCLUDE'])])
+
     echo "checking for DOCA in PKG_CONFIG_PATH='${PKG_CONFIG_PATH}'"
     case "$with_doca" in
        "static"|"shared") DOCA_LINK="$with_doca" ;;
@@ -478,10 +482,6 @@ AC_DEFUN([OVS_CHECK_DOCA], [
     ovs_save_CFLAGS="$CFLAGS"
     ovs_save_LDFLAGS="$LDFLAGS"
     CFLAGS="$CFLAGS $DOCA_INCLUDE"
-
-    AC_COMPILE_IFELSE(
-      [AC_LANG_PROGRAM([#include <doca_flow.h>], [struct doca_flow_port *port = NULL ;])],
-      [], [AC_MSG_ERROR([unable to include doca_flow.h from '$DOCA_INCLUDE'])])
 
     LIBS="$DOCA_LIB $ovs_save_libs_before_dpdk"
     AC_MSG_CHECKING([for doca_flow.h])
