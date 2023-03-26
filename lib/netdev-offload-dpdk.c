@@ -4290,13 +4290,6 @@ parse_vlan_push_action(struct flow_actions *actions,
     return 0;
 }
 
-struct raw_encap_data {
-    struct rte_flow_action_raw_encap conf;
-    uint8_t headroom[8];
-    uint8_t data[TNL_PUSH_HEADER_SIZE - 8];
-};
-BUILD_ASSERT_DECL(offsetof(struct raw_encap_data, conf) == 0);
-
 static int
 push_vlan_vxlan(struct vxlan_data *vxlan_data,
                 const struct ovs_action_push_vlan *vlan)
@@ -5047,8 +5040,8 @@ find_vxlan_spec(struct vxlan_data *vxlan_data, enum rte_flow_item_type type)
     return NULL;
 }
 
-static void *
-find_raw_encap_spec(struct raw_encap_data *raw_encap_data,
+void *
+find_raw_encap_spec(const struct raw_encap_data *raw_encap_data,
                     enum rte_flow_item_type type)
 {
     struct ovs_16aligned_ip6_hdr *ipv6;
@@ -5357,6 +5350,7 @@ parse_flow_actions(struct netdev *flowdev,
             raw_encap_data = per_thread_xzalloc(sizeof *raw_encap_data);
             memcpy(raw_encap_data->data, tnl_push->header,
                    tnl_push->header_len);
+            raw_encap_data->tnl_type = tnl_push->tnl_type;
             raw_encap_data->conf.data = raw_encap_data->data;
             raw_encap_data->conf.preserve = NULL;
             raw_encap_data->conf.size = tnl_push->header_len;

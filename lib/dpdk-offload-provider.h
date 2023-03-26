@@ -37,6 +37,14 @@
 #define MAX_ZONE_ID     0x0000003F
 #define NUM_ZONE_ID     (MAX_ZONE_ID - MIN_ZONE_ID + 1)
 
+struct raw_encap_data {
+    struct rte_flow_action_raw_encap conf;
+    uint8_t headroom[8];
+    uint8_t data[TNL_PUSH_HEADER_SIZE - 8];
+    uint32_t tnl_type;
+};
+BUILD_ASSERT_DECL(offsetof(struct raw_encap_data, conf) == 0);
+
 struct fixed_rule {
     void *flow;
     unsigned int creation_tid;
@@ -157,4 +165,7 @@ get_packet_reg_field(struct dp_packet *packet,
                      struct reg_field *reg_field,
                      uint32_t *val);
 
+void *
+find_raw_encap_spec(const struct raw_encap_data *raw_encap_data,
+                    enum rte_flow_item_type type);
 #endif /* DPDK_OFFLOAD_PROVIDER_H */

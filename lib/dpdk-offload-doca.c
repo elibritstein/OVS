@@ -692,6 +692,96 @@ doca_translate_items(struct netdev *netdev OVS_UNUSED,
 }
 
 static int
+doca_translate_gre_encap(const struct gre_base_hdr *gre,
+                         struct doca_flow_actions *dacts)
+{
+    struct doca_flow_encap_action *encap = &dacts->encap;
+    const void *gre_key;
+
+    encap->tun.protocol = gre->protocol;
+    encap->tun.type = DOCA_FLOW_TUN_GRE;
+    encap->tun.key_present = !!(gre->flags & GRE_KEY);
+
+    gre_key = gre + 1;
+    if (encap->tun.key_present) {
+        const uint32_t *key = gre_key;
+
+        encap->tun.gre_key = *key;
+    }
+
+    dacts->has_encap = true;
+
+    return 0;
+}
+
+static int
+doca_translate_raw_encap(const struct rte_flow_action *action,
+                         struct doca_flow_actions *dacts)
+{
+    struct doca_flow_header_format *outer = &dacts->encap.outer;
+    const struct raw_encap_data *data = action->conf;
+    struct ovs_16aligned_ip6_hdr *ip6;
+    struct vlan_header *vlan;
+    struct eth_header *eth;
+    struct ip_header *ip;
+    uint16_t proto;
+    void *l4;
+
+    /* L2 */
+    eth = find_raw_encap_spec(data, RTE_FLOW_ITEM_TYPE_ETH);
+    if (!eth) {
+        return -1;
+    }
+
+    memcpy(&outer->eth.src_mac, &eth->eth_src, DOCA_ETHER_ADDR_LEN);
+    memcpy(&outer->eth.dst_mac, &eth->eth_dst, DOCA_ETHER_ADDR_LEN);
+
+    proto = eth->eth_type;
+    if (proto == htons(ETH_TYPE_VLAN_8021Q)) {
+        vlan = ALIGNED_CAST(struct vlan_header *, (uint8_t *) (eth + 1));
+        outer->eth_vlan[0].tci = vlan->vlan_tci;
+        outer->l2_valid_headers = DOCA_FLOW_L2_VALID_HEADER_VLAN_0;
+        proto = vlan->vlan_next_type;
+    }
+
+    /* L3 */
+    if (proto == htons(ETH_TYPE_IP)) {
+        ip = find_raw_encap_spec(data, RTE_FLOW_ITEM_TYPE_IPV4);
+        if (!ip) {
+            return -1;
+        }
+
+        outer->l3_type = DOCA_FLOW_L3_TYPE_IP4;
+        outer->ip4.src_ip = get_16aligned_be32(&ip->ip_src);
+        outer->l3_type = DOCA_FLOW_L3_TYPE_IP4;
+        outer->ip4.dst_ip = get_16aligned_be32(&ip->ip_dst);
+        outer->ip4.ttl = ip->ip_ttl;
+        l4 = ip + 1;
+    } else if (proto == htons(ETH_TYPE_IPV6)) {
+        ip6 = find_raw_encap_spec(data, RTE_FLOW_ITEM_TYPE_IPV6);
+        if (!ip6) {
+            return -1;
+        }
+
+        outer->l3_type = DOCA_FLOW_L3_TYPE_IP6;
+        memcpy(&outer->ip6.src_ip, &ip6->ip6_src, sizeof ip6->ip6_src);
+        outer->l3_type = DOCA_FLOW_L3_TYPE_IP6;
+        memcpy(&outer->ip6.dst_ip, &ip6->ip6_dst, sizeof ip6->ip6_dst);
+        outer->ip6.hop_limit = ip6->ip6_hlim;
+        l4 = ip6 + 1;
+    } else {
+        return -1;
+    }
+
+    /* Tunnel */
+    if (data->tnl_type == OVS_VPORT_TYPE_GRE) {
+        return doca_translate_gre_encap(l4, dacts);
+    }
+
+    return -1;
+}
+
+static int
 doca_translate_vxlan_encap(const struct rte_flow_action *action,
                            struct doca_flow_actions *dacts)
 {
@@ -829,6 +919,10 @@ doca_translate_actions(struct netdev *netdev OVS_UNUSED,
             flow_res->next_group = jump->group;
         } else if (act_type == RTE_FLOW_ACTION_TYPE_VXLAN_ENCAP) {
             if (doca_translate_vxlan_encap(actions, dacts)) {
+                return -1;
+            }
+        } else if (act_type == RTE_FLOW_ACTION_TYPE_RAW_ENCAP) {
+            if (doca_translate_raw_encap(actions, dacts)) {
                 return -1;
             }
         } else if (act_type == OVS_RTE_FLOW_ACTION_TYPE(FLOW_INFO)) {
