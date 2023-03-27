@@ -469,6 +469,27 @@ doca_translate_gre_item(const struct rte_flow_item *item,
 }
 
 static void
+doca_translate_geneve_item(const struct rte_flow_item *item,
+                           struct doca_flow_match *doca_spec,
+                           struct doca_flow_match *doca_mask)
+{
+    const struct rte_flow_item_geneve *gnv_spec = item->spec;
+    const struct rte_flow_item_geneve *gnv_mask = item->mask;
+
+    if (!item->spec || !item->mask) {
+        return;
+    }
+
+    doca_spec->tun.type = DOCA_FLOW_TUN_GENEVE;
+    doca_spec->tun.geneve.vni =
+        get_unaligned_be32(ALIGNED_CAST(ovs_be32 *, gnv_spec->vni));
+
+    doca_mask->tun.type = DOCA_FLOW_TUN_GENEVE;
+    doca_mask->tun.geneve.vni =
+        get_unaligned_be32(ALIGNED_CAST(ovs_be32 *, gnv_mask->vni));
+}
+
+static void
 doca_translate_vxlan_item(const struct rte_flow_item *item,
                           struct doca_flow_match *doca_spec,
                           struct doca_flow_match *doca_mask)
@@ -647,6 +668,11 @@ doca_translate_items(struct netdev *netdev OVS_UNUSED,
 
             doca_hdr_spec = &doca_spec->inner;
             doca_hdr_mask = &doca_mask->inner;
+        } else if (item_type == RTE_FLOW_ITEM_TYPE_GENEVE) {
+            doca_translate_geneve_item(items, doca_spec, doca_mask);
+
+            doca_hdr_spec = &doca_spec->inner;
+            doca_hdr_mask = &doca_mask->inner;
         } else if (item_type == RTE_FLOW_ITEM_TYPE_ICMP) {
             const struct rte_flow_item_icmp *spec = items->spec;
             const struct rte_flow_item_icmp *mask = items->mask;
@@ -692,6 +718,25 @@ doca_translate_items(struct netdev *netdev OVS_UNUSED,
 }
 
 static int
+doca_translate_geneve_encap(const struct genevehdr *geneve,
+                            struct doca_flow_actions *dacts)
+{
+    struct doca_flow_encap_action *encap = &dacts->encap;
+
+    encap->tun.type = DOCA_FLOW_TUN_GENEVE;
+    encap->tun.geneve.ver_opt_len = geneve->opt_len;
+    encap->tun.geneve.ver_opt_len |= geneve->ver << 6;
+    encap->tun.geneve.o_c = geneve->critical << 6;
+    encap->tun.geneve.o_c |= geneve->oam << 7;
+    encap->tun.geneve.next_proto = geneve->proto_type;
+    encap->tun.geneve.vni = get_16aligned_be32(&geneve->vni);
+
+    dacts->has_encap = true;
+
+    return 0;
+}
+
+static int
 doca_translate_gre_encap(const struct gre_base_hdr *gre,
                          struct doca_flow_actions *dacts)
 {
@@ -722,6 +767,7 @@ doca_translate_raw_encap(const struct rte_flow_action *action,
     const struct raw_encap_data *data = action->conf;
     struct ovs_16aligned_ip6_hdr *ip6;
     struct vlan_header *vlan;
+    struct udp_header *udp;
     struct eth_header *eth;
     struct ip_header *ip;
     uint16_t proto;
@@ -776,6 +822,11 @@ doca_translate_raw_encap(const struct rte_flow_action *action,
     /* Tunnel */
     if (data->tnl_type == OVS_VPORT_TYPE_GRE) {
         return doca_translate_gre_encap(l4, dacts);
+    }
+
+    udp = l4;
+    if (data->tnl_type == OVS_VPORT_TYPE_GENEVE) {
+        return doca_translate_geneve_encap((void *) (udp + 1), dacts);
     }
 
     return -1;
@@ -899,8 +950,9 @@ doca_translate_actions(struct netdev *netdev OVS_UNUSED,
             fwd->type = DOCA_FLOW_FWD_PORT;
             fwd->port_id = port_id->id;
         } else if ((act_type == RTE_FLOW_ACTION_TYPE_NVGRE_DECAP) ||
-                   (act_type == RTE_FLOW_ACTION_TYPE_VXLAN_DECAP)) {
-            /* VXLAN and GRE supported natively */
+                   (act_type == RTE_FLOW_ACTION_TYPE_VXLAN_DECAP) ||
+                   (act_type == RTE_FLOW_ACTION_TYPE_RAW_DECAP)) {
+            /* VXLAN, GRE and GENEVE are supported natively */
             dacts->decap = true;
         } else if (act_type == RTE_FLOW_ACTION_TYPE_COUNT) {
             monitor->flags |= DOCA_FLOW_MONITOR_COUNT;
