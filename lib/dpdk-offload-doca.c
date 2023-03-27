@@ -1036,7 +1036,7 @@ doca_ct_zones_uninit(unsigned int tid,
 
 static void *
 doca_create_ct_zone_revisit_rule(struct netdev *netdev, uint32_t group,
-                                 uint32_t zone, int nat)
+                                 uint16_t zone, int nat)
 {
     struct doca_flow_handle_resources flow_res;
     struct doca_ctl_pipe_ctx *next_pipe_ctx;
@@ -1088,7 +1088,7 @@ doca_create_ct_zone_revisit_rule(struct netdev *netdev, uint32_t group,
 
 static void *
 doca_create_ct_zone_uphold_rule(struct netdev *netdev, uint32_t group,
-                                uint32_t zone, int nat)
+                                uint16_t zone, int nat)
 {
     struct doca_flow_handle_resources flow_res;
     struct doca_flow_action_descs dacts_descs;
