@@ -106,6 +106,7 @@
  * The diagram was drawn with https://asciiflow.com/ and edited in VIM.
  */
 
+#define OVS_DOCA_ENTRY_PROCESS_TIMEOUT_MS 1000
 #define NUM_ZONE_FLOWS 4
 
 VLOG_DEFINE_THIS_MODULE(dpdk_offload_doca);
@@ -158,7 +159,6 @@ struct doca_basic_pipe_ctx {
 
 OVS_ASSERT_PACKED(struct doca_eswitch_ctx,
     struct doca_flow_port *esw_port;
-    struct fixed_rule ct_nat_miss;
     struct doca_basic_pipe_ctx ct_pipes[NUM_CT_NW][NUM_CT_TP][NUM_CT_ACTIONS];
     struct fixed_rule zone_flows[2][NUM_ZONE_FLOWS][MAX_ZONE_ID + 1];
 );
@@ -188,6 +188,54 @@ struct doca_ctl_pipe_arg {
     struct netdev *netdev;
     struct doca_flow_pipe_cfg cfg;
 };
+
+static struct doca_eswitch_ctx *
+doca_eswitch_ctx_get(struct netdev *netdev);
+
+static inline enum ct_nw_type
+l3_to_nw_type(enum doca_flow_l3_type l3_type)
+{
+    switch (l3_type) {
+    case DOCA_FLOW_L3_TYPE_IP4: return CT_NW_IP4;
+    case DOCA_FLOW_L3_TYPE_IP6:
+    case DOCA_FLOW_L3_TYPE_NONE: return NUM_CT_NW;
+    };
+    return NUM_CT_NW;
+}
+
+static inline enum ct_tp_type
+l4_to_tp_type(enum doca_flow_l4_type_ext l4_type)
+{
+    switch (l4_type) {
+    case DOCA_FLOW_L4_TYPE_EXT_TCP: return CT_TP_TCP;
+    case DOCA_FLOW_L4_TYPE_EXT_UDP: return CT_TP_UDP;
+    case DOCA_FLOW_L4_TYPE_EXT_ICMP:
+    case DOCA_FLOW_L4_TYPE_EXT_ICMP6:
+    case DOCA_FLOW_L4_TYPE_EXT_NONE: return NUM_CT_TP;
+    }
+    return NUM_CT_TP;
+}
+
+static inline enum ct_action_type
+group_to_ct_type(uint32_t group)
+{
+    switch (group) {
+    case CT_TABLE_ID:
+        return CT_ACTION_PLAIN;
+    case CTNAT_TABLE_ID:
+        /* Get the 'first' action of the CT chain. */
+        return ct_action_next[CT_ACTION_NULL];
+    default:
+        return CT_ACTION_NULL;
+    }
+    OVS_NOT_REACHED();
+}
+
+static inline bool
+is_ct_group(uint32_t group)
+{
+    return group == CT_TABLE_ID || group == CTNAT_TABLE_ID;
+}
 
 static inline enum ct_action_type
 ct_action_prev(enum ct_action_type cur)
@@ -827,17 +875,58 @@ doca_translate_actions(struct netdev *netdev OVS_UNUSED,
     return 0;
 }
 
+static int
+create_doca_basic_flow_entry(struct netdev *netdev,
+                             struct doca_flow_pipe *pipe,
+                             struct doca_flow_match *spec,
+                             struct doca_flow_actions *actions,
+                             struct doca_flow_monitor *monitor,
+                             struct doca_flow_fwd *fwd,
+                             struct doca_flow_handle *hndl,
+                             struct rte_flow_error *error)
+{
+    unsigned int tid = netdev_offload_thread_id();
+    struct doca_flow_pipe_entry *entry;
+    struct doca_eswitch_ctx *esw_ctx;
+    doca_error_t err;
+
+    err = doca_flow_pipe_add_entry(tid, pipe, spec, actions, monitor, fwd,
+                                   DOCA_FLOW_NO_WAIT, hndl, &entry);
+    if (err) {
+        VLOG_WARN_RL(&rl, "%s: Failed to create basic pipe entry. Error: %d (%s)",
+                     netdev_get_name(netdev), err, doca_get_error_string(err));
+        error->type = RTE_FLOW_ERROR_TYPE_HANDLE;
+        error->message = doca_get_error_string(err);
+        return -1;
+    }
+
+    esw_ctx = doca_eswitch_ctx_get(netdev);
+    err = doca_flow_entries_process(esw_ctx->esw_port, tid,
+                                    OVS_DOCA_ENTRY_PROCESS_TIMEOUT_MS, 1);
+    if (err) {
+        VLOG_WARN_RL(&rl, "%s: Failed to poll completion of pipe entry insertion. Error: %d (%s)",
+                     netdev_get_name(netdev), err, doca_get_error_string(err));
+        error->type = RTE_FLOW_ERROR_TYPE_HANDLE;
+        error->message = doca_get_error_string(err);
+        return -1;
+    }
+
+    hndl->flow = entry;
+
+    return 0;
+}
+
 static struct doca_flow_pipe_entry *
-create_doca_flow_entry(struct netdev *netdev,
-                       struct doca_ctl_pipe_ctx *self_pipe,
-                       uint32_t prio,
-                       struct doca_flow_match *spec,
-                       struct doca_flow_match *mask,
-                       struct doca_flow_actions *actions,
-                       struct doca_flow_action_descs *action_descs,
-                       struct doca_flow_monitor *monitor,
-                       struct doca_flow_fwd *fwd,
-                       struct rte_flow_error *error)
+create_doca_ctl_flow_entry(struct netdev *netdev,
+                           struct doca_ctl_pipe_ctx *self_pipe,
+                           uint32_t prio,
+                           struct doca_flow_match *spec,
+                           struct doca_flow_match *mask,
+                           struct doca_flow_actions *actions,
+                           struct doca_flow_action_descs *action_descs,
+                           struct doca_flow_monitor *monitor,
+                           struct doca_flow_fwd *fwd,
+                           struct rte_flow_error *error)
 {
     unsigned int tid = netdev_offload_thread_id();
     struct doca_flow_pipe *pipe = self_pipe->pipe;
@@ -856,6 +945,36 @@ create_doca_flow_entry(struct netdev *netdev,
 
     return entry;
 }
+
+static struct doca_flow_pipe *
+doca_get_ct_pipe(struct netdev *netdev, uint32_t group,
+                 struct doca_flow_match *spec)
+{
+    struct doca_eswitch_ctx *ctx;
+    enum ct_action_type ct_type;
+    enum ct_nw_type nw_type;
+    enum ct_tp_type tp_type;
+
+    ct_type = group_to_ct_type(group);
+
+    nw_type = l3_to_nw_type(spec->outer.l3_type);
+    if (nw_type >= NUM_CT_NW) {
+        VLOG_DBG_RL(&rl, "%s: Unsupported CT network type.",
+                    netdev_get_name(netdev));
+        return NULL;
+    }
+
+    tp_type = l4_to_tp_type(spec->outer.l4_type_ext);
+    if (tp_type >= NUM_CT_TP) {
+        VLOG_DBG_RL(&rl, "%s: Unsupported CT protocol type.",
+                    netdev_get_name(netdev));
+        return NULL;
+    }
+
+    ctx = doca_eswitch_ctx_get(netdev);
+    return ctx->ct_pipes[nw_type][tp_type][ct_type].pipe;
+}
+
 static struct doca_flow_handle *
 create_doca_flow_handle(struct netdev *netdev,
                         uint32_t prio,
@@ -869,7 +988,7 @@ create_doca_flow_handle(struct netdev *netdev,
                         struct doca_flow_handle_resources *flow_res,
                         struct rte_flow_error *error)
 {
-    struct doca_ctl_pipe_ctx *pipe_ctx;
+    struct doca_ctl_pipe_ctx *pipe_ctx = NULL;
     struct doca_flow_handle *hndl;
 
     hndl = xzalloc(sizeof *hndl);
@@ -880,22 +999,37 @@ create_doca_flow_handle(struct netdev *netdev,
         return NULL;
     }
 
-    /* get self table pointer */
-    pipe_ctx = doca_ctl_pipe_ctx_ref(netdev, group);
-    if (!pipe_ctx) {
-        error->type = RTE_FLOW_ERROR_TYPE_UNSPECIFIED;
-        error->message = "Could not create table";
-        goto err_pipe;
-    }
+    if (is_ct_group(group)) {
+        struct doca_flow_pipe *pipe = doca_get_ct_pipe(netdev, group, spec);
 
-    /* insert rule */
-    hndl->flow = create_doca_flow_entry(netdev, pipe_ctx, prio, spec, mask,
-                                        actions, action_descs, monitor,
-                                        fwd, error);
-    if (!hndl->flow) {
-        error->type = RTE_FLOW_ERROR_TYPE_HANDLE;
-        error->message = "Could not insert rule";
-        goto err_insert;
+        if (pipe == NULL) {
+            error->type = RTE_FLOW_ERROR_TYPE_UNSPECIFIED;
+            error->message = "Unsupported CT type";
+            goto err_pipe;
+        }
+        if (create_doca_basic_flow_entry(netdev, pipe, spec, actions,
+                                         monitor, fwd, hndl, error)) {
+            error->type = RTE_FLOW_ERROR_TYPE_HANDLE;
+            error->message = "Failed to insert rule";
+            goto err_insert;
+        }
+    } else {
+        /* get self table pointer */
+        pipe_ctx = doca_ctl_pipe_ctx_ref(netdev, group);
+        if (!pipe_ctx) {
+            error->type = RTE_FLOW_ERROR_TYPE_UNSPECIFIED;
+            error->message = "Could not create table";
+            goto err_pipe;
+        }
+        /* insert rule */
+        hndl->flow = create_doca_ctl_flow_entry(netdev, pipe_ctx, prio, spec,
+                                                mask, actions, action_descs,
+                                                monitor, fwd, error);
+        if (!hndl->flow) {
+            error->type = RTE_FLOW_ERROR_TYPE_HANDLE;
+            error->message = "Could not insert rule";
+            goto err_insert;
+        }
     }
 
     memcpy(&hndl->flow_res, flow_res, sizeof *flow_res);
@@ -905,7 +1039,9 @@ create_doca_flow_handle(struct netdev *netdev,
     return hndl;
 
 err_insert:
-    doca_ctl_pipe_ctx_unref(pipe_ctx);
+    if (pipe_ctx) {
+        doca_ctl_pipe_ctx_unref(pipe_ctx);
+    }
 err_pipe:
     free(hndl);
 
@@ -1108,46 +1244,6 @@ doca_fixed_rule_uninit(unsigned int tid,
 }
 
 static void
-doca_ct_nat_miss_uninit(unsigned int tid,
-                        struct fixed_rule *fr)
-{
-    doca_fixed_rule_uninit(tid, fr);
-}
-
-static int
-doca_ct_nat_miss_init(struct netdev *netdev, unsigned int tid,
-                      struct fixed_rule *fr)
-{
-    struct doca_flow_handle_resources flow_res;
-    struct doca_ctl_pipe_ctx *next_pipe_ctx;
-    struct rte_flow_error error;
-    struct doca_flow_fwd fwd;
-
-    memset(&flow_res, 0x0, sizeof flow_res);
-    memset(&fwd, 0x0, sizeof fwd);
-
-    next_pipe_ctx = doca_ctl_pipe_ctx_ref(netdev, CT_TABLE_ID);
-    if (!next_pipe_ctx) {
-        return -1;
-    }
-
-    fwd.type = DOCA_FLOW_FWD_PIPE;
-    fwd.next_pipe = next_pipe_ctx->pipe;
-    flow_res.next_pipe = next_pipe_ctx;
-    flow_res.next_group = CT_TABLE_ID;
-
-    fr->flow = create_doca_flow_handle(netdev, 1, CTNAT_TABLE_ID,
-                                       NULL, NULL, NULL, NULL, NULL,
-                                       &fwd, &flow_res, &error);
-    fr->creation_tid = tid;
-
-    if (fr->flow == NULL) {
-        return -1;
-    }
-    return 0;
-}
-
-static void
 doca_ct_zones_uninit(unsigned int tid,
                      struct doca_eswitch_ctx *ctx)
 {
@@ -1228,7 +1324,6 @@ doca_create_ct_zone_uphold_rule(struct netdev *netdev, uint32_t group,
 {
     struct doca_flow_handle_resources flow_res;
     struct doca_flow_action_descs dacts_descs;
-    struct doca_ctl_pipe_ctx *next_pipe_ctx;
     struct doca_flow_actions dacts;
     struct doca_flow_match spec;
     struct doca_flow_match mask;
@@ -1263,14 +1358,10 @@ doca_create_ct_zone_uphold_rule(struct netdev *netdev, uint32_t group,
     dacts_descs.meta.u32[reg_field->index].type = DOCA_FLOW_ACTION_SET;
 
     next_group = nat ? CTNAT_TABLE_ID : CT_TABLE_ID;
-    next_pipe_ctx = doca_ctl_pipe_ctx_ref(netdev, next_group);
-    if (!next_pipe_ctx) {
-        return NULL;
-    }
 
     fwd.type = DOCA_FLOW_FWD_PIPE;
-    fwd.next_pipe = next_pipe_ctx->pipe;
-    flow_res.next_pipe = next_pipe_ctx;
+    fwd.next_pipe = doca_get_ct_pipe(netdev, next_group, &spec);
+    flow_res.next_pipe = NULL;
     flow_res.next_group = next_group;
 
     return create_doca_flow_handle(netdev, 1, group, &spec, &mask,
@@ -1670,7 +1761,6 @@ doca_eswitch_ctx_uninit(void *ctx_)
     unsigned int tid = netdev_offload_thread_id();
     struct doca_eswitch_ctx *ctx = ctx_;
 
-    doca_ct_nat_miss_uninit(tid, &ctx->ct_nat_miss);
     doca_ct_zones_uninit(tid, ctx);
     doca_ct_pipes_destroy(ctx);
     ctx->esw_port = NULL;
@@ -1684,10 +1774,6 @@ doca_eswitch_ctx_init(void *ctx_, void *arg_, uint32_t id OVS_UNUSED)
     struct doca_eswitch_ctx *ctx = ctx_;
 
     if (doca_ct_pipes_init(netdev, ctx)) {
-        goto error;
-    }
-
-    if (doca_ct_nat_miss_init(netdev, tid, &ctx->ct_nat_miss)) {
         goto error;
     }
 
@@ -1714,8 +1800,8 @@ dump_doca_eswitch(struct ds *s, void *key_, void *ctx_, void *arg_ OVS_UNUSED)
     struct doca_eswitch_ctx *ctx = ctx_;
 
     if (ctx) {
-        ds_put_format(s, "ct_nat_miss_rule=%p, ct_zone_rules_array=%p",
-                      &ctx->ct_nat_miss, ctx->zone_flows);
+        ds_put_format(s, "ct_zone_rules_array=%p",
+                      ctx->zone_flows);
     }
     ds_put_format(s, "esw_port=%p, ", esw_port);
 
@@ -1743,6 +1829,20 @@ doca_eswitch_init(void)
     }
 }
 
+/* Get the current eswitch context for this netdev,
+ * /!\ without taking a reference, and without creating it!
+ * The eswitch context must have been initialized once
+ * beforehand using 'doca_eswitch_ctx_ref()' for this netdev.
+ */
+static struct doca_eswitch_ctx *
+doca_eswitch_ctx_get(struct netdev *netdev)
+{
+    struct netdev_offload_dpdk_data *data;
+
+    data = (struct netdev_offload_dpdk_data *)
+        ovsrcu_get(void *, &netdev->hw_info.offload_data);
+    return data->eswitch_ctx;
+}
 
 static struct doca_eswitch_ctx *
 doca_eswitch_ctx_ref(struct netdev *netdev)
