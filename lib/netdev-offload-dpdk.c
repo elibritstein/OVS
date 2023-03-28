@@ -2497,13 +2497,7 @@ create_rte_flow(struct netdev *netdev,
     rv = offload->create(netdev, attr, items, actions, doh, error);
     flow = doh->rte_flow;
     if (flow) {
-        struct netdev_offload_dpdk_data *data;
-        unsigned int tid = netdev_offload_thread_id();
-
-        data = (struct netdev_offload_dpdk_data *)
-            ovsrcu_get(void *, &netdev->hw_info.offload_data);
-        data->offload_counters[tid]++;
-
+        dpdk_offload_counter_inc(netdev);
         if (!VLOG_DROP_DBG(&rl)) {
             dump_flow(&s, &s_extra, attr, flow_patterns, flow_actions);
             extra_str = ds_cstr(&s_extra);
@@ -2784,13 +2778,7 @@ netdev_offload_dpdk_destroy_flow(struct netdev *netdev,
 
     ret = offload->destroy(netdev, doh, &error, is_esw);
     if (!ret) {
-        unsigned int tid = netdev_offload_thread_id();
-        struct netdev_offload_dpdk_data *data;
-
-        data = (struct netdev_offload_dpdk_data *)
-            ovsrcu_get(void *, &netdev->hw_info.offload_data);
-        data->offload_counters[tid]--;
-
+        dpdk_offload_counter_dec(netdev);
         VLOG_DBG_RL(&rl, "%s: flow destroy %d user_id rule 0x%"PRIxPTR" ufid "
                     UUID_FMT, netdev_get_name(netdev),
                     is_esw ? netdev_dpdk_get_esw_mgr_port_id(netdev)

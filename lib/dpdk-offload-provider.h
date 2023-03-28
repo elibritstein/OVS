@@ -196,4 +196,27 @@ dpdk_offload_get_reg_field(struct dp_packet *packet,
 void *
 find_raw_encap_spec(const struct raw_encap_data *raw_encap_data,
                     enum rte_flow_item_type type);
+
+static inline void
+dpdk_offload_counter_inc(struct netdev *netdev)
+{
+    unsigned int tid = netdev_offload_thread_id();
+    struct netdev_offload_dpdk_data *data;
+
+    data = (struct netdev_offload_dpdk_data *)
+        ovsrcu_get(void *, &netdev->hw_info.offload_data);
+    data->offload_counters[tid]++;
+}
+
+static inline void
+dpdk_offload_counter_dec(struct netdev *netdev)
+{
+    unsigned int tid = netdev_offload_thread_id();
+    struct netdev_offload_dpdk_data *data;
+
+    data = (struct netdev_offload_dpdk_data *)
+        ovsrcu_get(void *, &netdev->hw_info.offload_data);
+    data->offload_counters[tid]--;
+}
+
 #endif /* DPDK_OFFLOAD_PROVIDER_H */
