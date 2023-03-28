@@ -214,6 +214,8 @@ netdev_flow_flush(struct netdev *netdev)
     const struct netdev_flow_api *flow_api =
         ovsrcu_get(const struct netdev_flow_api *, &netdev->flow_api);
 
+    netdev_offload_upkeep(netdev, false);
+
     return (flow_api && flow_api->flow_flush)
            ? flow_api->flow_flush(netdev)
            : EOPNOTSUPP;
@@ -265,6 +267,8 @@ netdev_flow_put(struct netdev *netdev, struct match *match,
 {
     const struct netdev_flow_api *flow_api =
         ovsrcu_get(const struct netdev_flow_api *, &netdev->flow_api);
+
+    netdev_offload_upkeep(netdev, false);
 
     return (flow_api && flow_api->flow_put)
            ? flow_api->flow_put(netdev, match, actions, act_len, ufid,
@@ -326,6 +330,8 @@ netdev_flow_del(struct netdev *netdev, const ovs_u128 *ufid,
     const struct netdev_flow_api *flow_api =
         ovsrcu_get(const struct netdev_flow_api *, &netdev->flow_api);
 
+    netdev_offload_upkeep(netdev, false);
+
     return (flow_api && flow_api->flow_del)
            ? flow_api->flow_del(netdev, ufid, stats)
            : EOPNOTSUPP;
@@ -338,6 +344,8 @@ netdev_conn_add(struct netdev *netdev,
     const struct netdev_flow_api *flow_api =
         ovsrcu_get(const struct netdev_flow_api *, &netdev->flow_api);
 
+    netdev_offload_upkeep(netdev, false);
+
     return (flow_api && flow_api->conn_add)
            ? flow_api->conn_add(netdev, ct_offload)
            : EOPNOTSUPP;
@@ -349,6 +357,8 @@ netdev_conn_del(struct netdev *netdev,
 {
     const struct netdev_flow_api *flow_api =
         ovsrcu_get(const struct netdev_flow_api *, &netdev->flow_api);
+
+    netdev_offload_upkeep(netdev, false);
 
     return (flow_api && flow_api->conn_del)
            ? flow_api->conn_del(netdev, ct_offload)
@@ -368,6 +378,17 @@ netdev_conn_stats(struct netdev *netdev,
     return (flow_api && flow_api->conn_stats)
            ? flow_api->conn_stats(netdev, ct_offload, stats, attrs, now)
            : EOPNOTSUPP;
+}
+
+void
+netdev_offload_upkeep(struct netdev *netdev, bool quiescing)
+{
+    const struct netdev_flow_api *flow_api =
+        ovsrcu_get(const struct netdev_flow_api *, &netdev->flow_api);
+
+    if (flow_api && flow_api->upkeep) {
+        flow_api->upkeep(netdev, quiescing);
+    }
 }
 
 static struct ovs_list *mark_release_lists;
@@ -753,6 +774,18 @@ netdev_ports_flow_flush(const char *dpif_type)
         if (netdev_get_dpif_type(data->netdev) == dpif_type) {
             netdev_flow_flush(data->netdev);
         }
+    }
+    ovs_rwlock_unlock(&netdev_hmap_rwlock);
+}
+
+void
+netdev_ports_upkeep(bool quiescing)
+{
+    struct port_to_netdev_data *data;
+
+    ovs_rwlock_rdlock(&netdev_hmap_rwlock);
+    HMAP_FOR_EACH (data, portno_node, &port_to_netdev) {
+        netdev_offload_upkeep(data->netdev, quiescing);
     }
     ovs_rwlock_unlock(&netdev_hmap_rwlock);
 }

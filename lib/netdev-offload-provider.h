@@ -132,6 +132,13 @@ struct netdev_flow_api {
     int (*conn_stats)(struct netdev *, struct ct_flow_offload_item *ct_offload,
                       struct dpif_flow_stats *, struct dpif_flow_attrs *,
                       long long int);
+
+    /* This function must be called periodically to maintain internal
+     * netdev offload structures.
+     * If 'quiescing' is true, the caller signals to the provider that
+     * it might be the last upkeep before an arbitrary waiting period.
+     */
+    void (*upkeep)(struct netdev *netdev, bool quiescing);
 };
 
 int netdev_register_flow_api_provider(const struct netdev_flow_api *);

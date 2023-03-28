@@ -210,6 +210,15 @@ int netdev_conn_stats(struct netdev *, struct ct_flow_offload_item[1],
                       struct dpif_flow_stats *, struct dpif_flow_attrs *,
                       long long int);
 
+/* Upkeep a single netdev, if supported.
+ * If 'quiescing' is true, the calling thread is signaling
+ * that this is the last upkeep call before starting to wait
+ * on more work.
+ */
+void netdev_offload_upkeep(struct netdev *netdev, bool quiescing);
+/* Upkeep all netdev-offload ports. */
+void netdev_ports_upkeep(bool quiescing);
+
 struct dpif_port;
 int netdev_ports_insert(struct netdev *, struct dpif_port *);
 struct netdev *netdev_ports_get(odp_port_t port, const char *dpif_type);
