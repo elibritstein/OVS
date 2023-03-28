@@ -161,6 +161,7 @@ static uint32_t dp_netdev_e2e_cache_size = 0;
 #define E2E_CACHE_MAX_TRACE_Q_SIZE   (10000u)
 static uint32_t dp_netdev_e2e_cache_trace_q_size = E2E_CACHE_MAX_TRACE_Q_SIZE;
 #define INVALID_OFFLOAD_THREAD_NB (MAX_OFFLOAD_THREAD_NB + 1)
+static atomic_bool dump_packets_enabled = ATOMIC_VAR_INIT(false);
 
 
 /* Simple non-wildcarding single-priority classifier. */
@@ -1991,6 +1992,29 @@ dpif_netdev_bond_show(struct unixctl_conn *conn, int argc,
     ds_destroy(&reply);
 }
 
+static void
+dp_netdev_dump_packets_toggle(struct unixctl_conn *conn, int argc,
+                              const char *argv[], void *aux OVS_UNUSED)
+{
+    bool flag = false;
+
+    if (argc == 1) {
+        flag = true;
+    } else {
+        if (!strcmp(argv[1], "on")) {
+            flag = true;
+        } else if (!strcmp(argv[1], "off")) {
+            flag = false;
+        } else {
+            unixctl_command_reply_error(conn, "Invalid parameters");
+            return;
+        }
+    }
+
+    atomic_store_relaxed(&dump_packets_enabled, flag);
+    unixctl_command_reply(conn, flag ? "ON" : "OFF");
+}
+
 
 static void dpif_netdev_metrics_register(void);
 
@@ -2048,6 +2072,9 @@ dpif_netdev_init(void)
                              NULL);
     unixctl_command_register("dpif-netdev/miniflow-parser-get", "",
                              0, 0, dpif_miniflow_extract_impl_get,
+                             NULL);
+    unixctl_command_register("dpif-netdev/dump-packets", "[on/off]",
+                             0, 1, dp_netdev_dump_packets_toggle,
                              NULL);
 
     dpif_netdev_metrics_register();
@@ -11615,6 +11642,22 @@ dfc_processing_enqueue_classified_packet(struct dp_packet *packet,
 
 }
 
+#define PKT_DUMP_MAX_LEN    80
+
+static void
+dump_sw_packet(odp_port_t port_no, struct dp_packet *pkt)
+{
+    struct ds s;
+
+    ds_init(&s);
+
+    VLOG_INFO("port_no=%d: in_port=%d, recirc_id=%d, %s", port_no,
+              pkt->md.in_port.odp_port, pkt->md.recirc_id,
+              ds_cstr(dp_packet_ds_put_hex(&s, pkt, PKT_DUMP_MAX_LEN)));
+
+    ds_destroy(&s);
+}
+
 /* Try to process all ('cnt') the 'packets' using only the datapath flow cache
  * 'pmd->flow_cache'. If a flow is not found for a packet 'packets[i]', the
  * miniflow is copied into 'keys' and the packet pointer is moved at the
@@ -11690,12 +11733,18 @@ dfc_processing(struct dp_netdev_pmd_thread *pmd,
         }
 
         if (netdev_flow_api && recirc_depth == 0) {
+            bool flag;
+
             if (OVS_UNLIKELY(dp_netdev_hw_flow(pmd, packet, &flow,
                              &skip_actions))) {
                 /* Packet restoration failed and it was dropped, do not
                  * continue processing.
                  */
                 continue;
+            }
+            atomic_read_relaxed(&dump_packets_enabled, &flag);
+            if (OVS_UNLIKELY(flag)) {
+                dump_sw_packet(port_no, packet);
             }
             if (OVS_LIKELY(flow)) {
                 flow->skip_actions = skip_actions;
