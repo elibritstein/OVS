@@ -2464,24 +2464,11 @@ create_rte_flow(struct netdev *netdev,
     struct rte_flow_item *items = flow_patterns->items;
     struct ds s_extra = DS_EMPTY_INITIALIZER;
     struct ds s = DS_EMPTY_INITIALIZER;
-    struct rte_flow *flow;
     char *extra_str;
     int rv;
 
     rv = offload->create(netdev, attr, items, actions, doh, error);
-    flow = doh->rte_flow;
-    if (flow) {
-        if (!VLOG_DROP_DBG(&rl)) {
-            dump_flow(&s, &s_extra, attr, flow_patterns, flow_actions);
-            extra_str = ds_cstr(&s_extra);
-            VLOG_DBG_RL(&rl, "%s: %s  flow create %d user_id 0x%"PRIxPTR" %s",
-                        netdev_get_name(netdev), extra_str,
-                        attr->transfer
-                        ? netdev_dpdk_get_esw_mgr_port_id(netdev)
-                        : netdev_dpdk_get_port_id(netdev),
-                        (intptr_t) flow, ds_cstr(&s));
-        }
-    } else {
+    if (rv != 0) {
         enum vlog_level level = VLL_WARN;
 
         if (error->type == RTE_FLOW_ERROR_TYPE_ACTION) {
@@ -2498,7 +2485,20 @@ create_rte_flow(struct netdev *netdev,
                     ? netdev_dpdk_get_esw_mgr_port_id(netdev)
                     : netdev_dpdk_get_port_id(netdev), ds_cstr(&s));
         }
+    } else {
+        doh->valid = true;
+        if (!VLOG_DROP_DBG(&rl)) {
+            dump_flow(&s, &s_extra, attr, flow_patterns, flow_actions);
+            extra_str = ds_cstr(&s_extra);
+            VLOG_DBG_RL(&rl, "%s: %s  flow create %d user_id 0x%"PRIxPTR" %s",
+                        netdev_get_name(netdev), extra_str,
+                        attr->transfer
+                        ? netdev_dpdk_get_esw_mgr_port_id(netdev)
+                        : netdev_dpdk_get_port_id(netdev),
+                        (intptr_t) doh->rte_flow, ds_cstr(&s));
+        }
     }
+
     ds_destroy(&s);
     ds_destroy(&s_extra);
     return rv;
@@ -5586,7 +5586,7 @@ netdev_offload_dpdk_remove_flows(struct ufid_to_rte_flow_data *rte_flow_data)
     for (i = 0; i < NUM_HANDLE_PER_ITEM; i++) {
         doh = &rte_flow_data->flow_item.doh[i];
 
-        if (!doh->rte_flow) {
+        if (!doh->valid) {
             continue;
         }
 
@@ -5701,7 +5701,7 @@ netdev_offload_dpdk_flow_del(struct netdev *netdev OVS_UNUSED,
     struct ufid_to_rte_flow_data *rte_flow_data;
 
     rte_flow_data = ufid_to_rte_flow_data_find(netdev, ufid, true);
-    if (!rte_flow_data || !rte_flow_data->flow_item.doh[0].rte_flow) {
+    if (!rte_flow_data || !rte_flow_data->flow_item.doh[0].valid) {
         return -1;
     }
 
@@ -6838,7 +6838,7 @@ netdev_offload_dpdk_conn_del(struct netdev *netdev,
     const ovs_u128 *ufid = &ct_offload->ufid;
 
     rte_flow_data = ufid_to_rte_flow_data_find(netdev, ufid, true);
-    if (!rte_flow_data || !rte_flow_data->flow_item.doh[0].rte_flow) {
+    if (!rte_flow_data || !rte_flow_data->flow_item.doh[0].valid) {
         return ENODATA;
     }
 

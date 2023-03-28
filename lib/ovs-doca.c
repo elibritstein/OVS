@@ -31,6 +31,8 @@ static atomic_bool doca_initialized = ATOMIC_VAR_INIT(false);
 static FILE *log_stream = NULL;       /* Stream for DOCA log redirection */
 static struct doca_logger_backend *doca_logger = NULL;
 
+bool ovs_doca_async = true;
+
 /* Estimated maximum number of megaflows */
 #define OVS_DOCA_MAX_MEGAFLOWS_COUNTERS (1 << 16)
 /* For now, no shared counters, and we 2 counters are used per connection. */
@@ -180,6 +182,29 @@ ovs_doca_log_dump(FILE *stream)
     fprintf(stream, "DOCA log level is %s", ovs_doca_log_level_to_str(log_level));
 }
 
+static void
+ovs_doca_dynamic_config(const struct smap *config)
+{
+    bool req_doca_async;
+
+    if (!smap_get_bool(config, "doca-init", false)) {
+        return;
+    }
+
+    req_doca_async = smap_get_bool(config, "doca-async", true);
+    if (req_doca_async != ovs_doca_async) {
+        const char *mode_names[] = {
+            [0] = "synchronous",
+            [1] = "asynchronous",
+        };
+
+        VLOG_INFO("Changing DOCA insertion mode from %s to %s.",
+                  mode_names[!!ovs_doca_async], mode_names[!!req_doca_async]);
+
+        ovs_doca_async = req_doca_async;
+    }
+}
+
 int
 ovs_doca_init(const struct smap *ovs_other_config)
 {
@@ -188,6 +213,14 @@ ovs_doca_init(const struct smap *ovs_other_config)
     struct doca_flow_cfg cfg = {};
     static bool enabled = false;
     doca_error_t err;
+
+    /* Dynamic configuration:
+     * This section can be modified without restarting the process. */
+
+    ovs_doca_dynamic_config(ovs_other_config);
+
+    /* Static configuration:
+     * This section is set once, restart is required after a change. */
 
     if (!ovsthread_once_start(&once_enable)) {
         return 0;
@@ -231,7 +264,8 @@ ovs_doca_init(const struct smap *ovs_other_config)
         cfg.queues = smap_get_uint(ovs_other_config, "n-offload-threads", 1);
         cfg.resource.nb_counters = OVS_DOCA_MAX_COUNTERS;
         cfg.mode_args = "switch,hws,cpds";
-        cfg.queue_depth = 32;
+        cfg.queue_depth = OVS_DOCA_QUEUE_DEPTH;
+        cfg.cb = ovs_doca_entry_process_cb;
 
         VLOG_INFO("DOCA Enabled - initializing...");
         err = doca_flow_init(&cfg);

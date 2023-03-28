@@ -21,6 +21,8 @@
 #include <sys/types.h>
 
 #include "ovs-doca.h"
+
+#include "coverage.h"
 #include "dp-packet.h"
 #include "dpdk-offload-provider.h"
 #include "openvswitch/vlog.h"
@@ -106,9 +108,14 @@
  * The diagram was drawn with https://asciiflow.com/ and edited in VIM.
  */
 
+COVERAGE_DEFINE(doca_async_queue_full);
+COVERAGE_DEFINE(doca_async_queue_blocked);
+COVERAGE_DEFINE(doca_async_add_failed);
+
 #define ENTRY_PROCESS_TIMEOUT_MS 1000
 #define NUM_ZONE_FLOWS 4
 /* TBD until doca can support insertion from more than one queue */
+#define MAX_OFFLOAD_QUEUE_NB MAX_OFFLOAD_THREAD_NB
 #define AUX_QUEUE 0
 
 VLOG_DEFINE_THIS_MODULE(dpdk_offload_doca);
@@ -163,9 +170,23 @@ struct doca_ctl_pipe_ctx {
     struct doca_flow_pipe *pipe;
 };
 
+struct doca_async_entry {
+    struct netdev *netdev; /* If set, port that posted this entry. */
+    struct dpdk_offload_handle *doh; /* Corresponding handle for this entry. */
+    unsigned int index; /* Index of this entry within the aync_state array. */
+};
+
+struct doca_async_state {
+    PADDED_MEMBERS(CACHE_LINE_SIZE,
+        unsigned int n_entries;
+        struct doca_async_entry entries[OVS_DOCA_QUEUE_DEPTH];
+    );
+};
+
 OVS_ASSERT_PACKED(struct doca_eswitch_ctx,
     struct doca_flow_port *esw_port;
     struct doca_ctl_pipe_ctx *root_pipe_ctx;
+    struct doca_async_state async_state[MAX_OFFLOAD_QUEUE_NB];
     struct doca_basic_pipe_ctx ct_pipes[NUM_CT_NW][NUM_CT_TP][NUM_CT_ACTIONS];
     struct fixed_rule zone_flows[2][NUM_ZONE_FLOWS][MAX_ZONE_ID + 1];
 );
@@ -182,6 +203,22 @@ struct doca_ctl_pipe_arg {
 
 static struct doca_eswitch_ctx *
 doca_eswitch_ctx_get(struct netdev *netdev);
+
+/* From an async entry in the descriptor queue kept in an
+ * eswitch context, find back through pointer arithmetic the
+ * containing eswitch context. */
+static inline struct doca_eswitch_ctx *
+doca_eswitch_ctx_from_async_entry(struct doca_async_entry *dae,
+                                  unsigned int qid)
+{
+    struct doca_async_state *das, *async_state;
+    struct doca_async_entry *entries;
+
+    entries = dae - dae->index;
+    das = CONTAINER_OF(entries, struct doca_async_state, entries);
+    async_state = das - qid;
+    return CONTAINER_OF(async_state, struct doca_eswitch_ctx, async_state);
+}
 
 static inline enum ct_nw_type
 l3_to_nw_type(enum doca_flow_l3_type l3_type)
@@ -1117,6 +1154,158 @@ doca_translate_actions(struct netdev *netdev OVS_UNUSED,
     return 0;
 }
 
+static void
+dpdk_offload_doca_upkeep_queue(struct netdev *netdev, bool quiescing,
+                               unsigned int qid)
+{
+    struct doca_eswitch_ctx *esw_ctx;
+    doca_error_t err;
+
+    if (netdev == NULL) {
+        return;
+    }
+
+    esw_ctx = doca_eswitch_ctx_get(netdev);
+    /* vports won't take an esw_ctx ref. */
+    if (esw_ctx == NULL) {
+        return;
+    }
+
+    if (!quiescing &&
+        esw_ctx->async_state[qid].n_entries < OVS_DOCA_QUEUE_DEPTH) {
+        /* Early bail-out if the queue is not full and
+         * we are not preparing for a long sleep. */
+        return;
+    }
+
+    /* Use 'max_processed_entries' == 0 to always attempt processing
+     * the full length of the queue. */
+    err = doca_flow_entries_process(esw_ctx->esw_port, qid,
+                                    ENTRY_PROCESS_TIMEOUT_MS, 0);
+    if (err) {
+        VLOG_WARN_RL(&rl, "%s: Failed to process entries in queue %u. "
+                     "Error: %d (%s)", netdev_get_name(netdev), qid,
+                     err, doca_get_error_string(err));
+    }
+}
+
+static void
+dpdk_offload_doca_upkeep(struct netdev *netdev, bool quiescing)
+{
+    dpdk_offload_doca_upkeep_queue(netdev, quiescing,
+                                   netdev_offload_thread_id());
+}
+
+void
+ovs_doca_entry_process_cb(struct doca_flow_pipe_entry *entry, uint16_t qid,
+                          enum doca_flow_entry_status status,
+                          enum doca_flow_entry_op op, void *aux)
+{
+    struct doca_eswitch_ctx *esw;
+    struct doca_async_entry *dae;
+    struct doca_flow_handle *dfh;
+    struct netdev *netdev;
+
+    if (aux == NULL) {
+        /* 'aux' is NULL if the operation is synchronous. This is the
+         * case for all control pipe changes, as well as CT if the user
+         * requested it.
+         * In this case, everything is handled in the calling function,
+         * nothing to do. */
+        return;
+    }
+
+    switch (op) {
+    case DOCA_FLOW_ENTRY_OP_ADD:
+        dae = aux;
+        if (dae->doh == NULL) {
+            /* Previous queue completion might have finished
+             * before completing the whole queue due to timeout.
+             * In that case, some 'dae' might have already been
+             * processed and have their handle set to NULL.
+             * Skip them. */
+            return;
+        }
+        dfh = &dae->doh->dfh;
+        netdev = dae->netdev;
+        esw = doca_eswitch_ctx_from_async_entry(dae, qid);
+        if (status == DOCA_FLOW_ENTRY_STATUS_SUCCESS) {
+            dpdk_offload_counter_inc(netdev);
+            dfh->flow = entry;
+        } else if (status == DOCA_FLOW_ENTRY_STATUS_ERROR) {
+            /* dfh->flow remains NULL. */
+            COVERAGE_INC(doca_async_add_failed);
+            VLOG_WARN_RL(&rl, "%s: Insertion failed for handle %p",
+                         netdev_get_name(netdev), dfh);
+        }
+        dae->netdev = NULL;
+        dae->doh = NULL;
+        esw->async_state[qid].n_entries--;
+        break;
+    case DOCA_FLOW_ENTRY_OP_DEL:
+        /* Deletion is always synchronous. */
+        break;
+    case DOCA_FLOW_ENTRY_OP_AGED:
+    case DOCA_FLOW_ENTRY_OP_UPD:
+        /* Not used by this implementation. */
+        OVS_NOT_REACHED();
+        break;
+    }
+}
+
+static struct doca_async_entry *
+doca_async_entry_find(struct netdev *netdev,
+                      struct doca_eswitch_ctx *esw,
+                      unsigned int qid)
+{
+    struct doca_async_entry *dae = NULL;
+    unsigned int *n_entries;
+
+    n_entries = &esw->async_state[qid].n_entries;
+
+    /* If the queue is currently full, do not try to
+     * take a pointer to an entry. Trigger the linear scan,
+     * and if really full, process it before attempting again. */
+    if ((*n_entries) != OVS_DOCA_QUEUE_DEPTH) {
+        dae = &esw->async_state[qid].entries[(*n_entries)];
+    }
+
+    /* The queue is not completed in any guaranteed order, meaning
+     * that n_entries might not always point to a 'free' entry.
+     * When it happens, linearly scan for an available descriptor. */
+    if (dae == NULL || dae->doh != NULL) {
+        unsigned int retry_count = 0;
+
+        dae = NULL;
+        while (dae == NULL) {
+            int i;
+
+            if (retry_count++ > 10) {
+                COVERAGE_INC(doca_async_queue_blocked);
+                return NULL;
+            }
+            for (i = 0; i < OVS_DOCA_QUEUE_DEPTH; i++) {
+                if (esw->async_state[qid].entries[i].doh == NULL) {
+                    dae = &esw->async_state[qid].entries[i];
+                    break;
+                }
+            }
+            if (i == OVS_DOCA_QUEUE_DEPTH) {
+                COVERAGE_INC(doca_async_queue_full);
+                if (netdev == NULL) {
+                    /* We cannot hope to flush that netdev queue
+                     * if it's NULL, report that we didn't find an entry. */
+                    return NULL;
+                }
+                dpdk_offload_doca_upkeep_queue(netdev, true, qid);
+            }
+        }
+    }
+
+    (*n_entries)++;
+    return dae;
+}
+
 static int
 create_doca_basic_flow_entry(struct netdev *netdev,
                              unsigned int queue_id,
@@ -1128,12 +1317,38 @@ create_doca_basic_flow_entry(struct netdev *netdev,
                              struct dpdk_offload_handle *doh,
                              struct rte_flow_error *error)
 {
+    enum doca_flow_flags_type doca_flags;
     struct doca_flow_pipe_entry *entry;
     struct doca_eswitch_ctx *esw_ctx;
+    struct doca_async_entry *dae;
     doca_error_t err;
 
+    doca_flags = DOCA_FLOW_NO_WAIT;
+    dae = NULL;
+
+    esw_ctx = doca_eswitch_ctx_get(netdev);
+    if (ovs_doca_async) {
+        dae = doca_async_entry_find(netdev, esw_ctx, queue_id);
+        if (dae != NULL) {
+            unsigned int n_entries;
+
+            /* No reference is taken on the netdev.
+             * When a netdev is removed from the datapath, a blocking
+             * 'flush' command is issued. This command should take care
+             * of emptying the offload queue, leaving no dangling netdev
+             * reference before removing that specific port.
+             */
+            dae->netdev = netdev;
+            dae->doh = doh;
+            n_entries = esw_ctx->async_state[queue_id].n_entries;
+            if (n_entries < OVS_DOCA_QUEUE_DEPTH) {
+                doca_flags = DOCA_FLOW_WAIT_FOR_BATCH;
+            }
+        }
+    }
+
     err = doca_flow_pipe_add_entry(queue_id, pipe, spec, actions, monitor, fwd,
-                                   DOCA_FLOW_NO_WAIT, doh, &entry);
+                                   doca_flags, dae, &entry);
     if (err) {
         VLOG_WARN_RL(&rl, "%s: Failed to create basic pipe entry. Error: %d (%s)",
                      netdev_get_name(netdev), err, doca_get_error_string(err));
@@ -1142,18 +1357,20 @@ create_doca_basic_flow_entry(struct netdev *netdev,
         return -1;
     }
 
-    esw_ctx = doca_eswitch_ctx_get(netdev);
-    err = doca_flow_entries_process(esw_ctx->esw_port, queue_id,
-                                    ENTRY_PROCESS_TIMEOUT_MS, 1);
-    if (err) {
-        VLOG_WARN_RL(&rl, "%s: Failed to poll completion of pipe entry insertion. Error: %d (%s)",
-                     netdev_get_name(netdev), err, doca_get_error_string(err));
-        error->type = RTE_FLOW_ERROR_TYPE_HANDLE;
-        error->message = doca_get_error_string(err);
-        return -1;
+    if (dae == NULL) {
+        err = doca_flow_entries_process(esw_ctx->esw_port, queue_id,
+                                        ENTRY_PROCESS_TIMEOUT_MS, 0);
+        if (err) {
+            VLOG_WARN_RL(&rl, "%s: Failed to poll completion of pipe queue %u."
+                         " Error: %d (%s)", netdev_get_name(netdev), queue_id,
+                         err, doca_get_error_string(err));
+            error->type = RTE_FLOW_ERROR_TYPE_HANDLE;
+            error->message = doca_get_error_string(err);
+            return -1;
+        }
+        dpdk_offload_counter_inc(netdev);
+        doh->dfh.flow = entry;
     }
-
-    doh->dfh.flow = entry;
 
     return 0;
 }
@@ -1185,6 +1402,8 @@ create_doca_ctl_flow_entry(struct netdev *netdev,
         error->message = doca_get_error_string(err);
         return NULL;
     }
+
+    dpdk_offload_counter_inc(netdev);
 
     return entry;
 }
@@ -1259,7 +1478,7 @@ create_doca_flow_handle(struct netdev *netdev,
         if (create_doca_basic_flow_entry(netdev, queue_id, pipe, spec, actions,
                                          monitor, fwd, doh, error)) {
             error->type = RTE_FLOW_ERROR_TYPE_HANDLE;
-            error->message = "Failed to insert rule";
+            error->message = "Failed to post rule insertion request";
             goto err_insert;
         }
     } else {
@@ -1285,8 +1504,6 @@ create_doca_flow_handle(struct netdev *netdev,
     memcpy(&hndl->flow_res, flow_res, sizeof *flow_res);
     hndl->flow_res.self_pipe_ctx = pipe_ctx;
     hndl->flow_res.group = group;
-
-    dpdk_offload_counter_inc(netdev);
 
     return hndl;
 
@@ -1362,7 +1579,24 @@ destroy_dpdk_offload_handle(struct netdev *netdev,
                             unsigned int queue_id,
                             struct rte_flow_error *error)
 {
+    int upkeep_retries = 10;
     doca_error_t err;
+
+    while (doh->dfh.flow == NULL && upkeep_retries-- > 0) {
+        /* Force polling completions, this handle
+         * was not yet completed. */
+        dpdk_offload_doca_upkeep_queue(netdev, true, queue_id);
+    }
+
+    /* It should have been completed by now, or something is wrong. */
+    if (doh->dfh.flow == NULL) {
+        if (error) {
+            error->type = RTE_FLOW_ERROR_TYPE_HANDLE;
+            error->message = "Failed to delete entry, "
+                             "async insertion never completed";
+        }
+        return -1;
+    }
 
     err = doca_flow_pipe_rm_entry(queue_id, DOCA_FLOW_NO_WAIT, doh->dfh.flow);
     if (err) {
@@ -1414,6 +1648,12 @@ dpdk_offload_doca_query_count(struct netdev *netdev,
 
     memset(query, 0, sizeof *query);
     memset(&stats, 0, sizeof stats);
+
+    if (doca_flow == NULL) {
+        /* The async entry has not yet been completed,
+         * it cannot have done anything yet. */
+        return 0;
+    }
 
     err = doca_flow_query_entry(doca_flow, &stats);
     if (err) {
@@ -2105,6 +2345,14 @@ doca_eswitch_ctx_init(void *ctx_, void *arg_, uint32_t id OVS_UNUSED)
     struct netdev *netdev = (struct netdev *) arg_;
     struct doca_eswitch_ctx *ctx = ctx_;
 
+    /* Write the constant offsets of each async entries of the eswitch,
+     * used to back reference this context from any entry. */
+    for (unsigned int qid = 0; qid < MAX_OFFLOAD_QUEUE_NB; qid++) {
+        for (unsigned int idx = 0; idx < OVS_DOCA_QUEUE_DEPTH; idx++) {
+            ctx->async_state[qid].entries[idx].index = idx;
+        }
+    }
+
     ctx->root_pipe_ctx = doca_ctl_pipe_ctx_ref(netdev, 0);
     if (ctx->root_pipe_ctx == NULL) {
         goto error;
@@ -2238,6 +2486,7 @@ dpdk_offload_doca_aux_tables_init(struct netdev *netdev)
 }
 
 struct dpdk_offload_api dpdk_offload_api_doca = {
+    .upkeep = dpdk_offload_doca_upkeep,
     .create = dpdk_offload_doca_create,
     .destroy = dpdk_offload_doca_destroy,
     .query_count = dpdk_offload_doca_query_count,

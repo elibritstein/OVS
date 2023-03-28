@@ -290,6 +290,18 @@
         </p>
       </column>
 
+      <column name="other_config" key="doca-async"
+              type='{"type": "boolean"}'>
+        <p>
+          Set this value to false to disable asynchronous offload insertion
+          in DOCA. This is a debugging feature.
+        </p>
+        <p>
+          Default to <code>true</code>, but only relevant if
+          <ref column="other_config" key="doca-init"/> is true.
+        </p>
+      </column>
+
       <column name="other_config" key="tc-policy"
               type='{"type": "string",
                      "enum": ["set", ["none", "skip_sw", "skip_hw"]]}'>

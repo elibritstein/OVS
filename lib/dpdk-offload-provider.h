@@ -66,6 +66,7 @@ struct dpdk_offload_handle {
         struct doca_flow_handle dfh;
     };
     bool has_count;
+    bool valid;
 };
 BUILD_ASSERT_DECL(offsetof(struct dpdk_offload_handle, rte_flow) ==
                   offsetof(struct dpdk_offload_handle, dfh.flow));

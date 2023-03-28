@@ -19,6 +19,9 @@
 #include "smap.h"
 #include "vswitch-idl.h"
 
+#if DOCA_OFFLOAD
+#include <doca_flow.h>
+
 #define OVS_DOCA_MAX_CT_CONNS 250000
 
 /* Connections are offloaded with one hardware rule per direction.
@@ -29,6 +32,15 @@
  * to handle the number of CT connections supported by ovs-doca.
  */
 #define OVS_DOCA_MAX_CT_RULES (OVS_DOCA_MAX_CT_CONNS * 2)
+#define OVS_DOCA_QUEUE_DEPTH 32
+
+extern bool ovs_doca_async;
+
+void
+ovs_doca_entry_process_cb(struct doca_flow_pipe_entry *entry, uint16_t qid,
+                          enum doca_flow_entry_status status,
+                          enum doca_flow_entry_op op, void *aux);
+#endif /* DOCA_OFFLOAD */
 
 bool
 ovs_doca_enabled(void);
