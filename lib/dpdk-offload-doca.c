@@ -164,15 +164,15 @@ OVS_ASSERT_PACKED(struct doca_eswitch_ctx,
 );
 
 struct doca_flow_handle_resources {
-     uint32_t group;
-     struct doca_ctl_pipe_ctx *self_pipe;
-     uint32_t next_group;
-     struct doca_ctl_pipe_ctx *next_pipe;
+    uint32_t group;
+    struct doca_ctl_pipe_ctx *self_pipe;
+    uint32_t next_group;
+    struct doca_ctl_pipe_ctx *next_pipe;
 };
 
 struct doca_flow_handle {
-     struct doca_flow_pipe_entry *flow;
-     struct doca_flow_handle_resources flow_res;
+    struct doca_flow_pipe_entry *flow;
+    struct doca_flow_handle_resources flow_res;
 };
 
 OVS_ASSERT_PACKED(struct doca_ctl_pipe_key,
