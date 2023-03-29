@@ -4030,6 +4030,12 @@ dp_offload_ct(struct dp_offload_thread_item *item)
 #define DP_NETDEV_OFFLOAD_BACKOFF_MAX 64
 #define DP_NETDEV_OFFLOAD_QUIESCE_INTERVAL_US (10 * 1000) /* 10 ms */
 
+#define DP_OFFLOAD_UPKEEP_PERIOD_MS (256)
+/* Number of max-backoff to roughly reach the upkeep period. */
+#define DP_OFFLOAD_UPKEEP_N_BACKOFF \
+    (DP_OFFLOAD_UPKEEP_PERIOD_MS / DP_NETDEV_OFFLOAD_BACKOFF_MAX)
+BUILD_ASSERT_DECL(IS_POW2(DP_OFFLOAD_UPKEEP_N_BACKOFF));
+
 static void
 dp_netdev_offload_poll_queues(struct dp_offload_thread *ofl_thread,
                               struct e2e_cache_ufid_msg **ufid_msg,
@@ -4040,6 +4046,7 @@ dp_netdev_offload_poll_queues(struct dp_offload_thread *ofl_thread,
                  ofl_thread->trace_queue.read_lock)
 {
     struct mpsc_queue_node *queue_node;
+    unsigned int n_backoff;
     uint64_t backoff;
 
     *ufid_msg = NULL;
@@ -4047,6 +4054,7 @@ dp_netdev_offload_poll_queues(struct dp_offload_thread *ofl_thread,
     *trace_msg = NULL;
 
     backoff = DP_NETDEV_OFFLOAD_BACKOFF_MIN;
+    n_backoff = 0;
 
     while (1) {
         queue_node = mpsc_queue_pop(&ofl_thread->ufid_queue);
@@ -4072,6 +4080,21 @@ dp_netdev_offload_poll_queues(struct dp_offload_thread *ofl_thread,
             atomic_count_dec(&ofl_thread->e2e_stats.queue_trcs);
             return;
         }
+
+        /* Execute upkeep if
+         *
+         *   + we are waiting for work for the first time
+         *     -> We have just stopped a streak of offloading,
+         *        some remaining things might need cleanup.
+         *
+         *   + we have waited roughly the amount of time
+         *     between upkeep period.
+         */
+        if ((n_backoff & (DP_OFFLOAD_UPKEEP_N_BACKOFF - 1)) == 0) {
+            /* Signal 'quiescing' only on the first backoff. */
+            netdev_ports_upkeep(n_backoff == 0);
+        }
+        n_backoff += 1;
 
         /* The thread is flagged as quiescent during xnanosleep(). */
         xnanosleep(backoff * 1E6);
