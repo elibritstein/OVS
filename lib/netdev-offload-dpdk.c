@@ -2475,6 +2475,9 @@ dpdk_offload_rte_create(struct netdev *netdev,
 
     doh->rte_flow = netdev_dpdk_rte_flow_create(netdev, attr, items, actions,
                                                 error);
+    if (doh->rte_flow != NULL) {
+        dpdk_offload_counter_inc(netdev);
+    }
     return doh->rte_flow == NULL ? -1 : 0;
 }
 
@@ -2497,7 +2500,6 @@ create_rte_flow(struct netdev *netdev,
     rv = offload->create(netdev, attr, items, actions, doh, error);
     flow = doh->rte_flow;
     if (flow) {
-        dpdk_offload_counter_inc(netdev);
         if (!VLOG_DROP_DBG(&rl)) {
             dump_flow(&s, &s_extra, attr, flow_patterns, flow_actions);
             extra_str = ds_cstr(&s_extra);
@@ -2778,7 +2780,6 @@ netdev_offload_dpdk_destroy_flow(struct netdev *netdev,
 
     ret = offload->destroy(netdev, doh, &error, is_esw);
     if (!ret) {
-        dpdk_offload_counter_dec(netdev);
         VLOG_DBG_RL(&rl, "%s: flow destroy %d user_id rule 0x%"PRIxPTR" ufid "
                     UUID_FMT, netdev_get_name(netdev),
                     is_esw ? netdev_dpdk_get_esw_mgr_port_id(netdev)
@@ -6950,8 +6951,15 @@ dpdk_offload_rte_destroy(struct netdev *netdev,
                          struct rte_flow_error *error,
                          bool esw_port_id)
 {
-    return netdev_dpdk_rte_flow_destroy(netdev, doh->rte_flow, error,
-                                        esw_port_id);
+    int ret;
+
+    ret = netdev_dpdk_rte_flow_destroy(netdev, doh->rte_flow, error,
+                                       esw_port_id);
+    if (ret == 0) {
+        dpdk_offload_counter_dec(netdev);
+    }
+
+    return ret;
 }
 
 static int

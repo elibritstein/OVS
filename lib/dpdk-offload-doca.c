@@ -1286,6 +1286,8 @@ create_doca_flow_handle(struct netdev *netdev,
     hndl->flow_res.self_pipe_ctx = pipe_ctx;
     hndl->flow_res.group = group;
 
+    dpdk_offload_counter_inc(netdev);
+
     return hndl;
 
 err_insert:
@@ -1362,7 +1364,8 @@ destroy_doca_flow_entry(struct doca_flow_pipe_entry *flow,
 }
 
 static int
-destroy_doca_flow_handle(struct doca_flow_handle *dfh,
+destroy_doca_flow_handle(struct netdev *netdev,
+                         struct doca_flow_handle *dfh,
                          unsigned int queue_id,
                          struct rte_flow_error *error)
 {
@@ -1377,6 +1380,11 @@ destroy_doca_flow_handle(struct doca_flow_handle *dfh,
         return -1;
     }
 
+    /* Netdev can only be NULL during aux tables uninit. */
+    if (netdev) {
+        dpdk_offload_counter_dec(netdev);
+    }
+
     if (dfh->flow_res.next_pipe_ctx) {
         doca_ctl_pipe_ctx_unref(dfh->flow_res.next_pipe_ctx);
     }
@@ -1387,7 +1395,7 @@ destroy_doca_flow_handle(struct doca_flow_handle *dfh,
 }
 
 static int
-dpdk_offload_doca_destroy(struct netdev *netdev OVS_UNUSED,
+dpdk_offload_doca_destroy(struct netdev *netdev,
                           struct dpdk_offload_handle *doh,
                           struct rte_flow_error *error,
                           bool esw_port_id OVS_UNUSED)
@@ -1395,7 +1403,7 @@ dpdk_offload_doca_destroy(struct netdev *netdev OVS_UNUSED,
     unsigned int tid = netdev_offload_thread_id();
     unsigned int queue_id = tid;
 
-    return destroy_doca_flow_handle(&doh->dfh, queue_id, error);
+    return destroy_doca_flow_handle(netdev, &doh->dfh, queue_id, error);
 }
 
 static int
@@ -1500,18 +1508,18 @@ dpdk_offload_doca_update_stats(struct dpif_flow_stats *stats,
 }
 
 static void
-doca_fixed_rule_uninit(struct fixed_rule *fr)
+doca_fixed_rule_uninit(struct netdev *netdev, struct fixed_rule *fr)
 {
     if (!fr->doh.dfh.flow) {
         return;
     }
 
-    destroy_doca_flow_handle(&fr->doh.dfh, AUX_QUEUE, NULL);
+    destroy_doca_flow_handle(netdev, &fr->doh.dfh, AUX_QUEUE, NULL);
     fr->doh.dfh.flow = NULL;
 }
 
 static void
-doca_ct_zones_uninit(struct doca_eswitch_ctx *ctx)
+doca_ct_zones_uninit(struct netdev *netdev, struct doca_eswitch_ctx *ctx)
 {
     struct fixed_rule *fr;
     uint32_t zone_id;
@@ -1525,7 +1533,7 @@ doca_ct_zones_uninit(struct doca_eswitch_ctx *ctx)
         for (i = 0; i < NUM_ZONE_FLOWS; i++) {
             for (zone_id = MIN_ZONE_ID; zone_id <= MAX_ZONE_ID; zone_id++) {
                 fr = &ctx->zone_flows[nat][i][zone_id];
-                doca_fixed_rule_uninit(fr);
+                doca_fixed_rule_uninit(netdev, fr);
             }
         }
     }
@@ -1736,7 +1744,7 @@ doca_ct_zones_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx)
     return 0;
 
 err:
-    doca_ct_zones_uninit(ctx);
+    doca_ct_zones_uninit(netdev, ctx);
     return -1;
 }
 
@@ -2076,7 +2084,21 @@ doca_eswitch_ctx_uninit(void *ctx_)
 {
     struct doca_eswitch_ctx *ctx = ctx_;
 
-    doca_ct_zones_uninit(ctx);
+    /* The fixed rule insertions were counted in the counters of
+     * the netdev that issued the eswitch context init.
+     *
+     * Destroying the fixed rule is done only when the last netdev
+     * using this eswitch context is being removed.
+     *
+     * We cannot keep track of the original init netdev without inducing
+     * a circular dependency.
+     *
+     * So remove the fixed rules without counting the deletions
+     * in the uninit netdev. As all netdevs related to this eswitch
+     * are meant to be removed after this, the original counts will
+     * have been removed once the uninit has finished.
+     */
+    doca_ct_zones_uninit(NULL, ctx);
     doca_ct_pipes_destroy(ctx);
     if (ctx->root_pipe_ctx != NULL) {
         doca_ctl_pipe_ctx_unref(ctx->root_pipe_ctx);
