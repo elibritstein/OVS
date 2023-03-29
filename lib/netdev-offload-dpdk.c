@@ -1491,12 +1491,12 @@ find_flow_miss_ctx(int flow_ctx_id, struct flow_miss_ctx *ctx)
 }
 
 static void
-netdev_offload_dpdk_upkeep(void)
+netdev_offload_dpdk_upkeep(struct netdev *netdev, bool quiescing)
 {
     unsigned int tid = netdev_offload_thread_id();
 
-    if (offload->per_thread_upkeep) {
-        offload->per_thread_upkeep(tid);
+    if (offload->upkeep) {
+        offload->upkeep(netdev, quiescing);
     }
 
     offload_metadata_upkeep(label_id_md, tid);
@@ -5675,8 +5675,6 @@ netdev_offload_dpdk_flow_put(struct netdev *netdev, struct match *match,
     bool modification = false;
     int ret;
 
-    netdev_offload_dpdk_upkeep();
-
     /*
      * If an old rte_flow exists, it means it's a flow modification.
      * Here destroy the old rte flow first before adding a new one.
@@ -5725,8 +5723,6 @@ netdev_offload_dpdk_flow_del(struct netdev *netdev OVS_UNUSED,
                              struct dpif_flow_stats *stats)
 {
     struct ufid_to_rte_flow_data *rte_flow_data;
-
-    netdev_offload_dpdk_upkeep();
 
     rte_flow_data = ufid_to_rte_flow_data_find(netdev, ufid, true);
     if (!rte_flow_data || !rte_flow_data->flow_item.doh[0].rte_flow) {
@@ -6832,8 +6828,6 @@ netdev_offload_dpdk_conn_add(struct netdev *netdev,
     const ovs_u128 *ufid = &ct_offload->ufid;
     struct flow_item flow_item;
 
-    netdev_offload_dpdk_upkeep();
-
     rte_flow_data = ufid_to_rte_flow_data_find(netdev, ufid, false);
     if (rte_flow_data && rte_flow_data->flow_item.doh[0].rte_flow) {
         /* Conn offload modification is not supported. */
@@ -6862,8 +6856,6 @@ netdev_offload_dpdk_conn_del(struct netdev *netdev,
 {
     struct ufid_to_rte_flow_data *rte_flow_data;
     const ovs_u128 *ufid = &ct_offload->ufid;
-
-    netdev_offload_dpdk_upkeep();
 
     rte_flow_data = ufid_to_rte_flow_data_find(netdev, ufid, true);
     if (!rte_flow_data || !rte_flow_data->flow_item.doh[0].rte_flow) {
@@ -7003,4 +6995,5 @@ const struct netdev_flow_api netdev_offload_dpdk = {
     .conn_add = netdev_offload_dpdk_conn_add,
     .conn_del = netdev_offload_dpdk_conn_del,
     .conn_stats = netdev_offload_dpdk_conn_stats,
+    .upkeep = netdev_offload_dpdk_upkeep,
 };

@@ -141,8 +141,7 @@ struct reg_field {
 #define REG_TAG_INDEX_NUM 3
 
 struct dpdk_offload_api {
-    /* Per-threads API. */
-    void (*per_thread_upkeep)(unsigned int tid);
+    void (*upkeep)(struct netdev *netdev, bool quiescing);
 
     /* Offload insertion / deletion */
     int (*create)(struct netdev *netdev,
