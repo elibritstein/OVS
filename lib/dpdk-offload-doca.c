@@ -297,14 +297,14 @@ doca_translate_vxlan_item(const struct rte_flow_item *item,
     if (item->spec) {
         spec_vni = get_unaligned_be32(ALIGNED_CAST(ovs_be32 *,
                     vxlan_spec->vni));
-        doca_spec->tun.vxlan_tun_id = htonl(ntohll(spec_vni) << 8);
+        doca_spec->tun.vxlan_tun_id = spec_vni;
     }
 
     doca_mask->tun.type = DOCA_FLOW_TUN_VXLAN;
     if (item->mask) {
         mask_vni = get_unaligned_be32(ALIGNED_CAST(ovs_be32 *,
                     vxlan_mask->vni));
-        doca_mask->tun.vxlan_tun_id = htonl(ntohll(mask_vni) << 8);
+        doca_mask->tun.vxlan_tun_id = mask_vni;
     }
 }
 
