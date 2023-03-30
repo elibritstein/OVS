@@ -482,9 +482,10 @@ del_filter_sgid_ufid_mapping(struct tcf_id *id, const ovs_u128 *ufid,
         }
     }
 
-   err = del_filter_and_sgid(id);
-    if (!err) {
+    err = del_filter_and_sgid(id);
+    if (!err || err == ENODEV) {
         del_ufid_tc_mapping(ufid);
+        return 0;
     }
     return err;
 }
