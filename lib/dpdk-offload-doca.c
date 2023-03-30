@@ -1743,6 +1743,7 @@ doca_ct_pipe_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx,
     struct doca_basic_pipe_ctx *pipe_ctx;
     struct doca_flow_match match_mask;
     struct doca_flow_pipe *miss_pipe;
+    struct doca_flow_monitor monitor;
     struct doca_flow_pipe_cfg cfg;
     enum ct_action_type next_ct;
     struct doca_flow_fwd miss;
@@ -1774,6 +1775,7 @@ doca_ct_pipe_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx,
     memset(&fwd, 0, sizeof fwd);
     memset(&miss, 0, sizeof miss);
     memset(actions, 0, sizeof actions);
+    memset(&monitor, 0, sizeof monitor);
 
     ds_init(&pipe_name);
     doca_basic_pipe_name(&pipe_name, netdev, nw_type, tp_type, ct_type);
@@ -1838,6 +1840,8 @@ doca_ct_pipe_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx,
     /* The mask is identical to the match itself. */
     match_mask = ct_matches[nw_type][tp_type];
 
+    monitor.flags = DOCA_FLOW_MONITOR_COUNT;
+
     cfg.attr.name = ds_cstr(&pipe_name);
     cfg.attr.type = DOCA_FLOW_PIPE_BASIC;
     cfg.attr.is_root = false;
@@ -1847,6 +1851,7 @@ doca_ct_pipe_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx,
     cfg.match = &ct_matches[nw_type][tp_type];
     cfg.match_mask = &match_mask;
     cfg.actions = &actions_list;
+    cfg.monitor = &monitor;
 
     fwd_pipe_ctx = doca_ctl_pipe_ctx_ref(netdev, POSTCT_TABLE_ID);
     if (fwd_pipe_ctx == NULL) {
