@@ -350,7 +350,7 @@ doca_ctl_pipe_ctx_ref(struct netdev *netdev,
     } else if (group_id == MISS_TABLE_ID) {
         arg.cfg.attr.nb_flows = 1;
     } else if (group_id == CT_TABLE_ID || group_id == CTNAT_TABLE_ID) {
-        arg.cfg.attr.nb_flows = DOCA_OFFLOAD_MAX_CT_CONNS;
+        arg.cfg.attr.nb_flows = OVS_DOCA_MAX_CT_CONNS;
     }
 
     doca_ctl_pipe_md_init();
@@ -1826,7 +1826,7 @@ doca_ct_pipe_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx,
     cfg.attr.type = DOCA_FLOW_PIPE_BASIC;
     cfg.attr.is_root = false;
     cfg.attr.nb_actions = nb_actions,
-    cfg.attr.nb_flows = DOCA_OFFLOAD_MAX_CT_CONNS;
+    cfg.attr.nb_flows = OVS_DOCA_MAX_CT_CONNS;
     cfg.port = doca_flow_port_switch_get();
     cfg.match = &ct_matches[nw_type][tp_type];
     cfg.match_mask = &match_mask;
