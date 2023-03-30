@@ -1093,10 +1093,10 @@ create_doca_ctl_flow_entry(struct netdev *netdev,
 }
 
 static struct doca_flow_pipe *
-doca_get_ct_pipe(struct netdev *netdev, uint32_t group,
+doca_get_ct_pipe(struct doca_eswitch_ctx *ctx,
+                 uint32_t group,
                  struct doca_flow_match *spec)
 {
-    struct doca_eswitch_ctx *ctx;
     enum ct_action_type ct_type;
     enum ct_nw_type nw_type;
     enum ct_tp_type tp_type;
@@ -1105,19 +1105,16 @@ doca_get_ct_pipe(struct netdev *netdev, uint32_t group,
 
     nw_type = l3_to_nw_type(spec->outer.l3_type);
     if (nw_type >= NUM_CT_NW) {
-        VLOG_DBG_RL(&rl, "%s: Unsupported CT network type.",
-                    netdev_get_name(netdev));
+        VLOG_DBG_RL(&rl, "Unsupported CT network type.");
         return NULL;
     }
 
     tp_type = l4_to_tp_type(spec->outer.l4_type_ext);
     if (tp_type >= NUM_CT_TP) {
-        VLOG_DBG_RL(&rl, "%s: Unsupported CT protocol type.",
-                    netdev_get_name(netdev));
+        VLOG_DBG_RL(&rl, "Unsupported CT protocol type.");
         return NULL;
     }
 
-    ctx = doca_eswitch_ctx_get(netdev);
     return ctx->ct_pipes[nw_type][tp_type][ct_type].pipe;
 }
 
@@ -1146,7 +1143,8 @@ create_doca_flow_handle(struct netdev *netdev,
     }
 
     if (is_ct_group(group)) {
-        struct doca_flow_pipe *pipe = doca_get_ct_pipe(netdev, group, spec);
+        struct doca_eswitch_ctx *ctx = doca_eswitch_ctx_get(netdev);
+        struct doca_flow_pipe *pipe = doca_get_ct_pipe(ctx, group, spec);
 
         if (pipe == NULL) {
             error->type = RTE_FLOW_ERROR_TYPE_UNSPECIFIED;
@@ -1465,7 +1463,8 @@ doca_create_ct_zone_revisit_rule(struct netdev *netdev, uint32_t group,
 }
 
 static void *
-doca_create_ct_zone_uphold_rule(struct netdev *netdev, uint32_t group,
+doca_create_ct_zone_uphold_rule(struct netdev *netdev,
+                                struct doca_eswitch_ctx *ctx, uint32_t group,
                                 uint16_t zone, int nat, bool match_tcp)
 {
     struct doca_flow_handle_resources flow_res;
@@ -1506,7 +1505,7 @@ doca_create_ct_zone_uphold_rule(struct netdev *netdev, uint32_t group,
     next_group = nat ? CTNAT_TABLE_ID : CT_TABLE_ID;
 
     fwd.type = DOCA_FLOW_FWD_PIPE;
-    fwd.next_pipe = doca_get_ct_pipe(netdev, next_group, &spec);
+    fwd.next_pipe = doca_get_ct_pipe(ctx, next_group, &spec);
     flow_res.next_pipe = NULL;
     flow_res.next_group = next_group;
 
@@ -1576,7 +1575,7 @@ doca_ct_zones_init(struct netdev *netdev, unsigned int tid,
             /* Otherwise, set the zone and go to CT/CT-NAT. */
 
             fr = &ctx->zone_flows[nat][1][zone_id];
-            fr->flow = doca_create_ct_zone_uphold_rule(netdev,
+            fr->flow = doca_create_ct_zone_uphold_rule(netdev, ctx,
                                                        base_group + zone_id,
                                                        zone_id, nat, false);
             fr->creation_tid = tid;
@@ -1585,7 +1584,7 @@ doca_ct_zones_init(struct netdev *netdev, unsigned int tid,
             }
 
             fr = &ctx->zone_flows[nat][2][zone_id];
-            fr->flow = doca_create_ct_zone_uphold_rule(netdev,
+            fr->flow = doca_create_ct_zone_uphold_rule(netdev, ctx,
                                                        base_group + zone_id,
                                                        zone_id, nat, true);
             fr->creation_tid = tid;
