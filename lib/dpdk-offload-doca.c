@@ -1302,9 +1302,9 @@ dpdk_offload_doca_query_count(struct netdev *netdev,
 
     err = doca_flow_query_entry(doca_flow, &stats);
     if (err) {
-        VLOG_DBG_RL(&rl, "%s: Failed to query doca_flow: %p. Error %d (%s)",
-                    netdev_get_name(netdev), doca_flow, err,
-                    doca_get_error_string(err));
+        VLOG_WARN_RL(&rl, "%s: Failed to query doca_flow: %p. Error %d (%s)",
+                     netdev_get_name(netdev), doca_flow, err,
+                     doca_get_error_string(err));
         error->type = RTE_FLOW_ERROR_TYPE_UNSPECIFIED;
         error->message = doca_get_error_string(err);
         return -1;
