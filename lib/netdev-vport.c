@@ -1153,7 +1153,7 @@ netdev_vport_get_ifindex(const struct netdev *netdev_)
     const char *name = netdev_vport_get_dpif_port(netdev_, buf, sizeof(buf));
     const char *dpif_type = netdev_get_dpif_type(netdev_);
 
-    if (dpif_type && strcmp(dpif_type, "system")) {
+    if (dpif_type == NULL || strcmp(dpif_type, "system")) {
         /* Not a system device. */
         return -ENODEV;
     }
