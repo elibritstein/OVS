@@ -879,6 +879,7 @@ doca_translate_vxlan_encap(const struct rte_flow_action *action,
 
 static int
 doca_translate_actions(struct netdev *netdev OVS_UNUSED,
+                       struct doca_flow_match *spec,
                        const struct rte_flow_action *actions,
                        struct doca_flow_actions *dacts,
                        struct doca_flow_action_descs *acts_descs OVS_UNUSED,
@@ -931,11 +932,27 @@ doca_translate_actions(struct netdev *netdev OVS_UNUSED,
             outer->l3_type = DOCA_FLOW_L3_TYPE_IP6;
             memcpy(&outer->ip6.dst_ip, actions->conf, sizeof outer->ip6.dst_ip);
         } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_TP_SRC) {
-            outer->l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_TCP;
-            outer->tcp.l4_port.src_port = *(__u16 *) actions->conf;
+            doca_be16_t src_port = *(doca_be16_t *) actions->conf;
+
+            outer->l4_type_ext = spec->outer.l4_type_ext;
+            if (spec->outer.l4_type_ext == DOCA_FLOW_L4_TYPE_EXT_TCP) {
+                outer->tcp.l4_port.src_port = src_port;
+            } else if (spec->outer.l4_type_ext == DOCA_FLOW_L4_TYPE_EXT_UDP) {
+                outer->udp.l4_port.src_port = src_port;
+            } else {
+                OVS_NOT_REACHED();
+            }
         } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_TP_DST) {
-            outer->l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_TCP;
-            outer->tcp.l4_port.dst_port = *(__u16 *) actions->conf;
+            doca_be16_t dst_port = *(doca_be16_t *) actions->conf;
+
+            outer->l4_type_ext = spec->outer.l4_type_ext;
+            if (spec->outer.l4_type_ext == DOCA_FLOW_L4_TYPE_EXT_TCP) {
+                outer->tcp.l4_port.dst_port = dst_port;
+            } else if (spec->outer.l4_type_ext == DOCA_FLOW_L4_TYPE_EXT_UDP) {
+                outer->udp.l4_port.dst_port = dst_port;
+            } else {
+                OVS_NOT_REACHED();
+            }
         } else if (act_type == RTE_FLOW_ACTION_TYPE_PORT_ID) {
             const struct rte_flow_action_port_id *port_id = actions->conf;
 
@@ -1232,7 +1249,7 @@ dpdk_offload_doca_create(struct netdev *netdev,
     }
 
     /* parse actions */
-    if (doca_translate_actions(netdev, actions, &dacts, &dacts_descs,
+    if (doca_translate_actions(netdev, &spec, actions, &dacts, &dacts_descs,
                                &fwd, &monitor, &flow_res)) {
         error->type = RTE_FLOW_ERROR_TYPE_ACTION;
         error->message = "Could not create actions";
