@@ -1162,7 +1162,8 @@ dpctl_dump_flows(int argc, const char *argv[], struct dpctl_params *dpctl_p)
     struct dpif_flow_dump *flow_dump;
     struct dpif_flow f;
     struct skiplist *sorted_flows = NULL;
-    char *sort_list = NULL;
+    char *default_sort_list = "in_port,recirc_id";
+    char *sort_list = default_sort_list;
     int pmd_id = PMD_ID_NULL;
     bool pmd_id_filter = false;
     int lastargc = 0;
@@ -1238,9 +1239,7 @@ dpctl_dump_flows(int argc, const char *argv[], struct dpctl_params *dpctl_p)
         }
     }
 
-    if (sort_list) {
-        sorted_flows = skiplist_create(dpctl_sorted_flow_cmp, NULL, true);
-    }
+    sorted_flows = skiplist_create(dpctl_sorted_flow_cmp, NULL, true);
 
     memset(&dump_types, 0, sizeof dump_types);
     error = populate_dump_types(types_list, &dump_types, dpctl_p);
@@ -1348,7 +1347,9 @@ out_dpifclose:
 out_free:
     free(filter);
     free(types_list);
-    free(sort_list);
+    if (sort_list != default_sort_list) {
+        free(sort_list);
+    }
     return error;
 }
 
