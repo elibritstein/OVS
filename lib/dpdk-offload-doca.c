@@ -1736,26 +1736,9 @@ doca_ct_pipe_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx,
                   enum ct_nw_type nw_type, enum ct_tp_type tp_type,
                   enum ct_action_type ct_type)
 {
-    struct reg_field *ct_zone_reg = &reg_fields[REG_FIELD_CT_ZONE];
-    uint32_t reg_mask = ct_zone_reg->mask << ct_zone_reg->offset;
     struct doca_ctl_pipe_ctx *miss_pipe_ctx = NULL;
     struct doca_ctl_pipe_ctx *fwd_pipe_ctx = NULL;
-    struct doca_flow_actions actions[] = {
-        {
-            .meta.u32 = {
-                [0] = UINT32_MAX,
-                [1] = UINT32_MAX,
-                [2] = UINT32_MAX,
-            },
-        },
-        {
-            .meta.u32 = {
-                [0] = UINT32_MAX,
-                [1] = UINT32_MAX,
-                [2] = UINT32_MAX,
-            },
-        },
-    };
+    struct doca_flow_actions actions[2];
     struct doca_flow_actions *actions_list = actions;
     struct doca_basic_pipe_ctx *pipe_ctx;
     struct doca_flow_match match_mask;
@@ -1764,9 +1747,11 @@ doca_ct_pipe_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx,
     enum ct_action_type next_ct;
     struct doca_flow_fwd miss;
     struct doca_flow_fwd fwd;
+    struct reg_field *ct_reg;
     struct ds pipe_name;
+    uint32_t reg_mask;
     int nb_actions;
-    int ret;
+    int ret, i;
 
     pipe_ctx = &ctx->ct_pipes[nw_type][tp_type][ct_type];
 
@@ -1788,6 +1773,7 @@ doca_ct_pipe_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx,
     memset(&cfg, 0, sizeof cfg);
     memset(&fwd, 0, sizeof fwd);
     memset(&miss, 0, sizeof miss);
+    memset(actions, 0, sizeof actions);
 
     ds_init(&pipe_name);
     doca_basic_pipe_name(&pipe_name, netdev, nw_type, tp_type, ct_type);
@@ -1826,9 +1812,29 @@ doca_ct_pipe_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx,
         OVS_NOT_REACHED();
     }
 
+    for (i = 0; i < ARRAY_SIZE(actions); i++) {
+        enum dpdk_reg_id set_tags[] = {
+            REG_FIELD_CT_STATE,
+            REG_FIELD_CT_MARK,
+            REG_FIELD_CT_LABEL_ID,
+        };
+        int j;
+
+        ct_reg = &reg_fields[REG_FIELD_CT_CTX];
+        reg_mask = ct_reg->mask << ct_reg->offset;
+        actions[i].meta.pkt_meta = ct_reg->mask << ct_reg->offset;
+        for (j = 0; j < ARRAY_SIZE(set_tags); j++) {
+            ct_reg = &reg_fields[set_tags[j]];
+            reg_mask = ct_reg->mask << ct_reg->offset;
+            actions[i].meta.u32[ct_reg->index] |= reg_mask;
+        }
+    }
+
     /* Finalize the match templates. */
-    ct_matches[CT_NW_IP4][CT_TP_UDP].meta.u32[ct_zone_reg->index] = reg_mask;
-    ct_matches[CT_NW_IP4][CT_TP_TCP].meta.u32[ct_zone_reg->index] = reg_mask;
+    ct_reg = &reg_fields[REG_FIELD_CT_ZONE];
+    reg_mask = ct_reg->mask << ct_reg->offset;
+    ct_matches[CT_NW_IP4][CT_TP_UDP].meta.u32[ct_reg->index] = reg_mask;
+    ct_matches[CT_NW_IP4][CT_TP_TCP].meta.u32[ct_reg->index] = reg_mask;
     /* The mask is identical to the match itself. */
     match_mask = ct_matches[nw_type][tp_type];
 
