@@ -1101,6 +1101,10 @@ doca_get_ct_pipe(struct doca_eswitch_ctx *ctx,
     enum ct_nw_type nw_type;
     enum ct_tp_type tp_type;
 
+    if (ctx == NULL) {
+        return NULL;
+    }
+
     ct_type = group_to_ct_type(group);
 
     nw_type = l3_to_nw_type(spec->outer.l3_type);
@@ -1144,8 +1148,15 @@ create_doca_flow_handle(struct netdev *netdev,
 
     if (is_ct_group(group)) {
         struct doca_eswitch_ctx *ctx = doca_eswitch_ctx_get(netdev);
-        struct doca_flow_pipe *pipe = doca_get_ct_pipe(ctx, group, spec);
+        struct doca_flow_pipe *pipe;
 
+        if (ctx == NULL) {
+            error->type = RTE_FLOW_ERROR_TYPE_UNSPECIFIED;
+            error->message = "CT offload is not initialized";
+            goto err_pipe;
+        }
+
+        pipe = doca_get_ct_pipe(ctx, group, spec);
         if (pipe == NULL) {
             error->type = RTE_FLOW_ERROR_TYPE_UNSPECIFIED;
             error->message = "Unsupported CT type";
