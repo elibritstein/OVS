@@ -106,7 +106,7 @@
  * The diagram was drawn with https://asciiflow.com/ and edited in VIM.
  */
 
-#define OVS_DOCA_ENTRY_PROCESS_TIMEOUT_MS 1000
+#define ENTRY_PROCESS_TIMEOUT_MS 1000
 #define NUM_ZONE_FLOWS 4
 
 VLOG_DEFINE_THIS_MODULE(dpdk_offload_doca);
@@ -1048,7 +1048,7 @@ create_doca_basic_flow_entry(struct netdev *netdev,
 
     esw_ctx = doca_eswitch_ctx_get(netdev);
     err = doca_flow_entries_process(esw_ctx->esw_port, tid,
-                                    OVS_DOCA_ENTRY_PROCESS_TIMEOUT_MS, 1);
+                                    ENTRY_PROCESS_TIMEOUT_MS, 1);
     if (err) {
         VLOG_WARN_RL(&rl, "%s: Failed to poll completion of pipe entry insertion. Error: %d (%s)",
                      netdev_get_name(netdev), err, doca_get_error_string(err));
