@@ -482,6 +482,25 @@ AC_DEFUN([OVS_CHECK_DOCA], [
     LDFLAGS="$ovs_save_LDFLAGS"
     OVS_CFLAGS="$OVS_CFLAGS $DOCA_INCLUDE -Wno-deprecated-declarations -DALLOW_EXPERIMENTAL_API"
 
+    # DOCA libraries are very specific in their ordering and inherit DPDK
+    # libraries which contain --whole-archive. Autotools will reorder
+    # them, breaking static links. Use the same solution as DPDK below.
+    # Transform the pkg-config output into a single linker parameter, separated
+    # by commas and wrapped by -Wl.
+    DOCA_LDFLAGS=$(echo "$DOCA_LIBS" | tr -s ' ' ',' | sed 's/-Wl,//g')
+    # Replace -pthread with -lpthread for LD and remove the last extra comma.
+    DOCA_LDFLAGS=$(echo "$DOCA_LDFLAGS"| sed 's/,$//' | sed 's/-pthread/-lpthread/g')
+    # Prepend "-Wl,".
+    DOCA_LDFLAGS="-Wl,$DOCA_LDFLAGS"
+
+    # The full DOCA linker parameters must be made available to every object trying
+    # to link against libopenvswitch. It means every binary generated will contain
+    # DOCA unfortunately.
+    OVS_LDFLAGS="$OVS_LDFLAGS $DOCA_LDFLAGS"
+
+    # Override the previous DPDK ldflags, as we get
+    # them instead from DOCA. Prevent any possible conflict.
+    DPDK_vswitchd_LDFLAGS=""
     AC_DEFINE([DOCA_OFFLOAD], [1], [System uses the DOCA module.])
   fi
 
