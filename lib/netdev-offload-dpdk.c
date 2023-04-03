@@ -6753,6 +6753,7 @@ conn_build_actions(struct netdev *netdev,
 
     /* CT ZONE */
     /* Nothing to do beside matching. */
+    miss_ctx.zone = ct_offload->ct_match.key.zone;
 
     /* CT STATE */
     miss_ctx.state = ct_offload->ct_state;
