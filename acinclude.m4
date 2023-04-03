@@ -1431,7 +1431,7 @@ dnl with or without modifications, as long as this notice is preserved.
 
 AC_DEFUN([_OVS_CHECK_CC_OPTION], [dnl
   m4_define([ovs_cv_name], [ovs_cv_[]m4_translit([$1], [-= ], [__])])dnl
-  AC_CACHE_CHECK([whether $CC accepts $1], [ovs_cv_name], 
+  AC_CACHE_CHECK([whether $CC accepts $1], [ovs_cv_name],
     [ovs_save_CFLAGS="$CFLAGS"
      dnl Include -Werror in the compiler options, because without -Werror
      dnl clang's GCC-compatible compiler driver does not return a failure
@@ -1486,7 +1486,7 @@ dnl OVS_ENABLE_OPTION([OPTION])
 dnl Check whether the given C compiler OPTION is accepted.
 dnl If so, add it to WARNING_FLAGS.
 dnl Example: OVS_ENABLE_OPTION([-Wdeclaration-after-statement])
-AC_DEFUN([OVS_ENABLE_OPTION], 
+AC_DEFUN([OVS_ENABLE_OPTION],
   [OVS_CHECK_CC_OPTION([$1], [WARNING_FLAGS="$WARNING_FLAGS $1"])
    AC_SUBST([WARNING_FLAGS])])
 
