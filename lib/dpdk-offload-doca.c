@@ -2027,7 +2027,7 @@ dpdk_offload_doca_query_count(struct netdev *netdev,
     return 0;
 }
 
-OVS_UNUSED static struct rte_flow_action_handle *
+static struct rte_flow_action_handle *
 dpdk_offload_doca_shared_create(struct netdev *netdev OVS_UNUSED,
                                 const struct rte_flow_action *action OVS_UNUSED,
                                 struct rte_flow_error *error OVS_UNUSED)
@@ -2035,7 +2035,7 @@ dpdk_offload_doca_shared_create(struct netdev *netdev OVS_UNUSED,
     return NULL;
 }
 
-OVS_UNUSED static int
+static int
 dpdk_offload_doca_shared_destroy(int port_id OVS_UNUSED,
                                  struct rte_flow_action_handle *act_hdl OVS_UNUSED,
                                  struct rte_flow_error *error OVS_UNUSED)
@@ -2043,7 +2043,7 @@ dpdk_offload_doca_shared_destroy(int port_id OVS_UNUSED,
     return -1;
 }
 
-OVS_UNUSED static int
+static int
 dpdk_offload_doca_shared_query(int port_id OVS_UNUSED,
                                struct rte_flow_action_handle *act_hdl OVS_UNUSED,
                                void *data OVS_UNUSED,
@@ -2858,7 +2858,7 @@ dpdk_offload_doca_insert_conn(struct netdev *netdev,
                               struct ct_flow_offload_item ct_offload[1],
                               uint32_t ct_match_zone_id,
                               uint32_t ct_action_label_id,
-                              struct rte_flow_action_handle *act_hdl OVS_UNUSED,
+                              struct indirect_ctx *shared_count_ctx OVS_UNUSED,
                               uint32_t ct_miss_ctx_id,
                               struct flow_item *fi)
 {
@@ -3001,4 +3001,7 @@ struct dpdk_offload_api dpdk_offload_api_doca = {
     .update_stats = dpdk_offload_doca_update_stats,
     .aux_tables_init = dpdk_offload_doca_aux_tables_init,
     .aux_tables_uninit = dpdk_offload_doca_aux_tables_uninit,
+    .shared_create = dpdk_offload_doca_shared_create,
+    .shared_destroy = dpdk_offload_doca_shared_destroy,
+    .shared_query = dpdk_offload_doca_shared_query,
 };

@@ -67,11 +67,6 @@ static struct dpdk_offload_api *offload;
  * A mapping from ufid to dpdk rte_flow.
  */
 
-struct indirect_ctx {
-    struct rte_flow_action_handle *act_hdl;
-    int port_id;
-};
-
 struct per_thread {
 PADDED_MEMBERS(CACHE_LINE_SIZE,
     char scratch[10000];
@@ -1265,17 +1260,12 @@ indirect_ctx_init(void *ctx_, void *arg_, uint32_t id OVS_UNUSED)
     struct indirect_ctx *ctx = ctx_;
     struct rte_flow_error error;
 
-    if (ctx->act_hdl != NULL) {
-        return 0;
-    }
-
-    ctx->act_hdl = offload->shared_create(arg->netdev,
-                                          arg->action,
-                                          &error);
-    if (ctx->act_hdl == NULL) {
+    if (offload->shared_create(arg->netdev, ctx, arg->action, &error)) {
         ctx->port_id = -1;
         return -1;
     }
+
+    ctx->netdev = arg->netdev;
     ctx->port_id = netdev_dpdk_get_esw_mgr_port_id(arg->netdev);
 
     return 0;
@@ -1287,12 +1277,11 @@ indirect_ctx_uninit(void *ctx_)
     struct indirect_ctx *ctx = ctx_;
     struct rte_flow_error error;
 
-    if (!ctx || !ctx->act_hdl) {
+    if (!ctx) {
         return;
     }
 
-    offload->shared_destroy(ctx->port_id, ctx->act_hdl, &error);
-    ctx->act_hdl = NULL;
+    offload->shared_destroy(ctx, &error);
     ctx->port_id = -1;
 }
 
@@ -3944,7 +3933,7 @@ add_count_action(struct netdev *netdev,
         act_resources->shared_count_ctx = ctx;
         add_flow_action(actions, RTE_FLOW_ACTION_TYPE_INDIRECT, ctx->act_hdl);
         actions->shared_count_action_pos = actions->cnt - 1;
-    } else if (act_vars->is_ct_conn && offload->shared_create) {
+    } else if (act_vars->is_ct_conn) {
         add_flow_action(actions, RTE_FLOW_ACTION_TYPE_INDIRECT, NULL);
         actions->shared_count_action_pos = actions->cnt - 1;
     } else {
@@ -4727,7 +4716,7 @@ parse_ct_actions(struct netdev *netdev,
                 ia = &actions->actions[actions->shared_count_action_pos];
                 ovs_assert(ia->type == RTE_FLOW_ACTION_TYPE_INDIRECT &&
                            ia->conf == NULL);
-                ia->conf = ctx->act_hdl;
+                ia->conf = ctx;
             }
 
             act_vars->ct_mode = CT_MODE_CT_CONN;
@@ -5932,8 +5921,7 @@ netdev_offload_dpdk_flow_get(struct netdev *netdev,
         }
     } else {
         ctx = rte_flow_data->act_resources.shared_count_ctx;
-        ret = offload->shared_query(ctx->port_id, ctx->act_hdl,
-                                    &query, &error);
+        ret = offload->shared_query(ctx, &query, &error);
         if (ret) {
             VLOG_DBG_RL(&rl, "port-id=%d: Failed to query ufid "UUID_FMT
                         " action %p. %d (%s)", ctx->port_id,
@@ -6736,21 +6724,15 @@ static int
 conn_build_actions(struct ct_flow_offload_item ct_offload[1],
                    struct flow_actions *actions,
                    uint32_t ct_action_label_id,
-                   struct rte_flow_action_handle *act_hdl,
+                   struct indirect_ctx *shared_count_ctx,
                    uint32_t ct_miss_ctx_id)
 {
     struct rte_flow_action_set_meta *set_meta;
     struct rte_flow_action *ia;
     size_t size;
 
-    if (offload->shared_create) {
-        add_flow_action(actions, RTE_FLOW_ACTION_TYPE_INDIRECT, NULL);
-        actions->shared_count_action_pos = actions->cnt - 1;
-    } else {
-        struct rte_flow_action_count *count = per_thread_xzalloc(sizeof *count);
-
-        add_flow_action(actions, RTE_FLOW_ACTION_TYPE_COUNT, count);
-    }
+    add_flow_action(actions, RTE_FLOW_ACTION_TYPE_INDIRECT, NULL);
+    actions->shared_count_action_pos = actions->cnt - 1;
 
     /* NAT */
     if (ct_offload->nat.mod_flags) {
@@ -6813,12 +6795,10 @@ conn_build_actions(struct ct_flow_offload_item ct_offload[1],
                              ct_offload->ct_state, 0xFF);
 
     /* Shared counter. */
-    if (offload->shared_create) {
-        ia = &actions->actions[actions->shared_count_action_pos];
-        ovs_assert(ia->type == RTE_FLOW_ACTION_TYPE_INDIRECT &&
-                ia->conf == NULL);
-        ia->conf = act_hdl;
-    }
+    ia = &actions->actions[actions->shared_count_action_pos];
+    ovs_assert(ia->type == RTE_FLOW_ACTION_TYPE_INDIRECT &&
+               ia->conf == NULL);
+    ia->conf = shared_count_ctx->act_hdl;
 
     set_meta = per_thread_xzalloc(sizeof *set_meta);
     set_meta->data = ct_miss_ctx_id;
@@ -6836,7 +6816,7 @@ dpdk_offload_insert_conn_rte(struct netdev *netdev,
                              struct ct_flow_offload_item ct_offload[1],
                              uint32_t ct_match_zone_id,
                              uint32_t ct_action_label_id,
-                             struct rte_flow_action_handle *act_hdl,
+                             struct indirect_ctx *shared_count_ctx,
                              uint32_t ct_miss_ctx_id,
                              struct flow_item *fi)
 {
@@ -6865,7 +6845,7 @@ dpdk_offload_insert_conn_rte(struct netdev *netdev,
     }
 
     ret = conn_build_actions(ct_offload, &actions, ct_action_label_id,
-                             act_hdl, ct_miss_ctx_id);
+                             shared_count_ctx, ct_miss_ctx_id);
     if (ret) {
         goto free_actions;
     }
@@ -6927,17 +6907,15 @@ conn_get_resources(struct netdev *netdev,
     }
 
     /* Shared counter. */
-    if (offload->shared_create) {
-        memset(&counter_id_key, 0, sizeof counter_id_key);
-        counter_id_key.ptr_key = ct_offload->ctid_key;
+    memset(&counter_id_key, 0, sizeof counter_id_key);
+    counter_id_key.ptr_key = ct_offload->ctid_key;
 
-        ctx = get_indirect_count_ctx(netdev, &counter_id_key, true);
-        if (!ctx) {
-            VLOG_ERR("Could not set CT shared count");
-            return -1;
-        }
-        act_resources->shared_count_ctx = ctx;
+    ctx = get_indirect_count_ctx(netdev, &counter_id_key, true);
+    if (!ctx) {
+        VLOG_ERR("Could not set CT shared count");
+        return -1;
     }
+    act_resources->shared_count_ctx = ctx;
 
     put_table_id(act_resources->self_table_id);
     act_resources->self_table_id = 0;
@@ -6953,7 +6931,6 @@ netdev_offload_dpdk_conn_add(struct netdev *netdev,
     unsigned int tid = netdev_offload_thread_id();
     struct ufid_to_rte_flow_data *rte_flow_data;
     const ovs_u128 *ufid = &ct_offload->ufid;
-    struct rte_flow_action_handle *act_hdl;
     struct netdev_offload_dpdk_data *data;
     uint32_t ct_action_label_id;
 
@@ -6969,11 +6946,6 @@ netdev_offload_dpdk_conn_add(struct netdev *netdev,
         return EINVAL;
     }
 
-    if (act_resources.shared_count_ctx) {
-        act_hdl = act_resources.shared_count_ctx->act_hdl;
-    } else {
-        act_hdl = NULL;
-    }
     if (netdev_offload_dpdk_ct_labels_mapping) {
         ct_action_label_id = act_resources.ct_action_label_id;
     } else {
@@ -6983,7 +6955,8 @@ netdev_offload_dpdk_conn_add(struct netdev *netdev,
     rte_flow_data = xzalloc(sizeof *rte_flow_data);
     if (offload->insert_conn(netdev, ct_offload,
                              act_resources.ct_match_zone_id,
-                             ct_action_label_id, act_hdl,
+                             ct_action_label_id,
+                             act_resources.shared_count_ctx,
                              act_resources.ct_miss_ctx_id,
                              &rte_flow_data->flow_item)) {
         free(rte_flow_data);
@@ -7064,8 +7037,7 @@ netdev_offload_dpdk_conn_stats(struct netdev *netdev,
         ret = offload->query_count(rte_flow_data->physdev, doh, &query, &error);
     } else {
         ctx = rte_flow_data->act_resources.shared_count_ctx;
-        ret = offload->shared_query(ctx->port_id, ctx->act_hdl,
-                                    &query, &error);
+        ret = offload->shared_query(ctx, &query, &error);
     }
     if (ret) {
         VLOG_DBG_RL(&rl, "%s: Failed to query ufid "UUID_FMT" flow: %p",
@@ -7119,13 +7091,59 @@ dpdk_offload_rte_query_count(struct netdev *netdev,
                                             error);
 }
 
+static int
+dpdk_offload_rte_shared_create(struct netdev *netdev,
+                               struct indirect_ctx *ctx,
+                               const struct rte_flow_action *action,
+                               struct rte_flow_error *error)
+{
+    ovs_assert(ctx->act_hdl == NULL);
+
+    ctx->act_hdl = netdev_dpdk_indirect_action_create(netdev, action, error);
+    if (!ctx->act_hdl) {
+        VLOG_DBG("%s: netdev_dpdk_indirect_action_create failed: %d (%s)",
+                 netdev_get_name(netdev), error->type, error->message);
+        return -1;
+    }
+
+    return 0;
+}
+
+static int
+dpdk_offload_rte_shared_destroy(struct indirect_ctx *ctx,
+                                struct rte_flow_error *error)
+{
+    int ret;
+
+    if (!ctx->act_hdl) {
+        return 0;
+    }
+
+    ret = netdev_dpdk_indirect_action_destroy(ctx->port_id, ctx->act_hdl, error);
+    if (ret) {
+        return ret;
+    }
+
+    ctx->act_hdl = NULL;
+
+    return 0;
+}
+
+static int
+dpdk_offload_rte_shared_query(struct indirect_ctx *ctx, void *data,
+                              struct rte_flow_error *error)
+{
+    return netdev_dpdk_indirect_action_query(ctx->port_id, ctx->act_hdl, data,
+                                             error);
+}
+
 struct dpdk_offload_api dpdk_offload_api_rte = {
     .create = dpdk_offload_rte_create,
     .destroy = dpdk_offload_rte_destroy,
     .query_count = dpdk_offload_rte_query_count,
-    .shared_create = netdev_dpdk_indirect_action_create,
-    .shared_destroy = netdev_dpdk_indirect_action_destroy,
-    .shared_query = netdev_dpdk_indirect_action_query,
+    .shared_create = dpdk_offload_rte_shared_create,
+    .shared_destroy = dpdk_offload_rte_shared_destroy,
+    .shared_query = dpdk_offload_rte_shared_query,
     .get_packet_recover_info = rte_get_packet_recovery_info,
     .insert_conn = dpdk_offload_insert_conn_rte,
     .reg_fields = rte_get_reg_fields,

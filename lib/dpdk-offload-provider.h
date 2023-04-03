@@ -40,6 +40,12 @@
 struct doca_ctl_pipe_ctx;
 struct doca_flow_pipe_entry;
 
+struct indirect_ctx {
+    struct rte_flow_action_handle *act_hdl;
+    struct netdev *netdev;
+    int port_id;
+};
+
 struct raw_encap_data {
     struct rte_flow_action_raw_encap conf;
     uint8_t headroom[8];
@@ -167,15 +173,13 @@ struct dpdk_offload_api {
                        struct dpdk_offload_handle *doh,
                        struct rte_flow_query_count *query,
                        struct rte_flow_error *error);
-
-    struct rte_flow_action_handle *(*shared_create)(struct netdev *netdev,
-                           const struct rte_flow_action *action,
-                           struct rte_flow_error *error);
-    int (*shared_destroy)(int port_id,
-                          struct rte_flow_action_handle *act_hdl,
+    int (*shared_create)(struct netdev *netdev,
+                         struct indirect_ctx *ctx,
+                         const struct rte_flow_action *action,
+                         struct rte_flow_error *error);
+    int (*shared_destroy)(struct indirect_ctx *ctx,
                           struct rte_flow_error *error);
-    int (*shared_query)(int port_id,
-                        struct rte_flow_action_handle *act_hdl,
+    int (*shared_query)(struct indirect_ctx *ctx,
                         void *data,
                         struct rte_flow_error *error);
 
@@ -186,7 +190,7 @@ struct dpdk_offload_api {
                        struct ct_flow_offload_item ct_offload[1],
                        uint32_t ct_match_zone_id,
                        uint32_t ct_action_label_id,
-                       struct rte_flow_action_handle *act_hdl,
+                       struct indirect_ctx *shared_count_ctx,
                        uint32_t ct_miss_ctx_id,
                        struct flow_item *fi);
 
