@@ -6196,8 +6196,6 @@ netdev_offload_dpdk_hw_miss_packet_recover(struct netdev *netdev,
         packet->md.ct_label = ct_miss_ctx.label;
     }
 
-    dp_packet_reset_offload(packet);
-
     return 0;
 }
 

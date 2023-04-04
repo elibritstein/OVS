@@ -11605,12 +11605,13 @@ dp_netdev_hw_flow(const struct dp_netdev_pmd_thread *pmd,
 #endif
 
     /* If no mark, no flow to find. */
-    if (!dp_packet_has_flow_mark(packet, &mark)) {
+    if (dp_packet_has_flow_mark(packet, &mark)) {
+        *flow = mark_to_flow_find(pmd, mark);
+    } else {
         *flow = NULL;
-        return 0;
     }
 
-    *flow = mark_to_flow_find(pmd, mark);
+    dp_packet_reset_offload(packet);
     return 0;
 }
 
