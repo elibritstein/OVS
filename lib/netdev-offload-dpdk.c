@@ -2369,6 +2369,11 @@ dump_flow_action(struct ds *s, struct ds *s_extra,
             ds_put_format(s, "index %d ", queue->index);
         }
         ds_put_cstr(s, "/ ");
+    } else if (actions->type == OVS_RTE_FLOW_ACTION_TYPE(PRE_CT_END)) {
+        /* This is only a dummy action used to split pre and post CT. It
+         * should never be actually used.
+         */
+        OVS_NOT_REACHED();
     } else {
         ds_put_format(s, "unknown rte flow action (%d)\n", actions->type);
     }
@@ -2412,8 +2417,6 @@ enum tnl_type {
 
 struct act_vars {
     enum ct_mode ct_mode;
-    bool pre_ct_tuple_rewrite;
-    struct nlattr *pre_ct_actions;
     uint8_t pre_ct_cnt;
     odp_port_t vport;
     uint32_t recirc_id;
@@ -2462,6 +2465,11 @@ dpdk_offload_rte_create(struct netdev *netdev,
             set_meta = CONST_CAST(struct rte_flow_action_set_meta *, a->conf);
             set_meta->data = (set_meta->data & reg_field->mask) << reg_field->offset;
             set_meta->mask = reg_field->mask << reg_field->offset;
+        } else if (act_type == OVS_RTE_FLOW_ACTION_TYPE(PRE_CT_END)) {
+            /* This is only a dummy action used to split pre and post CT. It
+             * should never be actually used.
+             */
+            OVS_NOT_REACHED();
         }
     }
 
@@ -4010,8 +4018,7 @@ add_output_action(struct netdev *netdev,
 static int
 add_set_flow_action__(struct flow_actions *actions,
                       const void *value, void *mask,
-                      const size_t size, const int attr,
-                      struct act_vars *act_vars)
+                      const size_t size, const int attr)
 {
     void *spec;
 
@@ -4036,37 +4043,19 @@ add_set_flow_action__(struct flow_actions *actions,
     if (mask) {
         memset(mask, 0, size);
     }
-    if (attr == RTE_FLOW_ACTION_TYPE_SET_IPV4_SRC ||
-        attr == RTE_FLOW_ACTION_TYPE_SET_IPV4_DST ||
-        attr == RTE_FLOW_ACTION_TYPE_SET_IPV6_SRC ||
-        attr == RTE_FLOW_ACTION_TYPE_SET_IPV6_DST ||
-        attr == RTE_FLOW_ACTION_TYPE_SET_TP_SRC ||
-        attr == RTE_FLOW_ACTION_TYPE_SET_TP_DST) {
-        act_vars->pre_ct_tuple_rewrite |= act_vars->ct_mode == CT_MODE_NONE;
-    }
     return 0;
 }
 
 static void
 add_full_set_action(struct flow_actions *actions,
                     enum rte_flow_action_type type,
-                    const void *value, size_t size,
-                    struct act_vars *act_vars)
+                    const void *value, size_t size)
 {
     void *spec;
 
     spec = per_thread_xzalloc(size);
     memcpy(spec, value, size);
     add_flow_action(actions, type, spec);
-
-    if (type == RTE_FLOW_ACTION_TYPE_SET_IPV4_SRC ||
-        type == RTE_FLOW_ACTION_TYPE_SET_IPV4_DST ||
-        type == RTE_FLOW_ACTION_TYPE_SET_IPV6_SRC ||
-        type == RTE_FLOW_ACTION_TYPE_SET_IPV6_DST ||
-        type == RTE_FLOW_ACTION_TYPE_SET_TP_SRC ||
-        type == RTE_FLOW_ACTION_TYPE_SET_TP_DST) {
-        act_vars->pre_ct_tuple_rewrite |= act_vars->ct_mode == CT_MODE_NONE;
-    }
 }
 
 BUILD_ASSERT_DECL(sizeof(struct rte_flow_action_set_mac) ==
@@ -4098,8 +4087,7 @@ static int
 parse_set_actions(struct flow_actions *actions,
                   const struct nlattr *set_actions,
                   const size_t set_actions_len,
-                  bool masked,
-                  struct act_vars *act_vars)
+                  bool masked)
 {
     const struct nlattr *sa;
     unsigned int sleft;
@@ -4107,7 +4095,7 @@ parse_set_actions(struct flow_actions *actions,
 #define add_set_flow_action(field, type)                                      \
     if (add_set_flow_action__(actions, &key->field,                           \
                               mask ? CONST_CAST(void *, &mask->field) : NULL, \
-                              sizeof key->field, type, act_vars)) {           \
+                              sizeof key->field, type)) {                     \
         return -1;                                                            \
     }
 
@@ -4712,7 +4700,6 @@ parse_ct_actions(struct netdev *netdev,
             }
 
             act_vars->ct_mode = CT_MODE_CT_CONN;
-            act_vars->pre_ct_tuple_rewrite = false;
             if (get_ct_ctx_id(&ct_miss_ctx, &act_resources->ct_miss_ctx_id)) {
                 return -1;
             }
@@ -4902,17 +4889,15 @@ split_pre_post_ct_actions(const struct rte_flow_action *actions,
                           struct flow_actions *pre_ct_actions,
                           struct flow_actions *post_ct_actions)
 {
+    struct flow_actions *split = pre_ct_actions;
+
     while (actions && actions->type != RTE_FLOW_ACTION_TYPE_END) {
-        if (actions->type == RTE_FLOW_ACTION_TYPE_VXLAN_DECAP ||
-            actions->type == RTE_FLOW_ACTION_TYPE_NVGRE_DECAP ||
-            actions->type == RTE_FLOW_ACTION_TYPE_SET_TAG ||
-            actions->type == RTE_FLOW_ACTION_TYPE_SET_META ||
-            actions->type == RTE_FLOW_ACTION_TYPE_RAW_DECAP ||
-            actions->type == RTE_FLOW_ACTION_TYPE_SAMPLE ||
-            actions->type == RTE_FLOW_ACTION_TYPE_METER) {
-            add_flow_action(pre_ct_actions, actions->type, actions->conf);
-        } else {
+        if (actions->type == RTE_FLOW_ACTION_TYPE_COUNT) {
             add_flow_action(post_ct_actions, actions->type, actions->conf);
+        } else if (actions->type == OVS_RTE_FLOW_ACTION_TYPE(PRE_CT_END)) {
+            split = post_ct_actions;
+        } else {
+            add_flow_action(split, actions->type, actions->conf);
         }
         actions++;
     }
@@ -5305,8 +5290,6 @@ parse_flow_actions(struct netdev *flowdev,
                                                nest_level)) {
                     return -1;
                 }
-                act_vars->pre_ct_cnt++;
-                act_vars->pre_ct_actions = nla;
             }
         } else if (nl_attr_type(nla) == OVS_ACTION_ATTR_DROP) {
             add_flow_action(actions, RTE_FLOW_ACTION_TYPE_DROP, NULL);
@@ -5324,7 +5307,7 @@ parse_flow_actions(struct netdev *flowdev,
                 }
             }
             if (parse_set_actions(actions, set_actions, set_actions_len,
-                                  masked, act_vars)) {
+                                  masked)) {
                 return -1;
             }
         } else if (nl_attr_type(nla) == OVS_ACTION_ATTR_PUSH_VLAN) {
@@ -5401,8 +5384,6 @@ parse_flow_actions(struct netdev *flowdev,
                                                nest_level)) {
                     return -1;
                 }
-                act_vars->pre_ct_cnt++;
-                act_vars->pre_ct_actions = nla;
             }
 #ifdef ALLOW_EXPERIMENTAL_API /* Packet restoration API required. */
         } else if (nl_attr_type(nla) == OVS_ACTION_ATTR_TUNNEL_POP) {
@@ -5420,16 +5401,11 @@ parse_flow_actions(struct netdev *flowdev,
             const struct nlattr *ct_actions = nl_attr_get(nla);
             size_t ct_actions_len = nl_attr_get_size(nla);
 
-            /* Check that the mirror is the first action of the flow */
-            if (act_vars->pre_ct_actions &&
-                act_vars->pre_ct_actions != nl_actions) {
-                VLOG_DBG_RL(&rl, "Mirror should be the first action");
-                return -1;
-            }
             if (parse_ct_actions(netdev, actions, ct_actions, ct_actions_len,
                                  act_resources, act_vars)) {
                 return -1;
             }
+            add_flow_action(actions, OVS_RTE_FLOW_ACTION_TYPE(PRE_CT_END), NULL);
         } else if (nl_attr_type(nla) == OVS_ACTION_ATTR_SAMPLE) {
             struct dpif_sflow_attr sflow_attr;
 
@@ -5483,11 +5459,13 @@ parse_flow_actions(struct netdev *flowdev,
             VLOG_DBG_RL(&rl, "Unsupported action type %d", nl_attr_type(nla));
             return -1;
         }
+        if (act_vars->ct_mode == CT_MODE_NONE) {
+            act_vars->pre_ct_cnt++;
+        }
     }
 
-    if (act_vars->pre_ct_tuple_rewrite && act_vars->ct_mode != CT_MODE_NONE) {
-        VLOG_DBG_RL(&rl, "Unsupported tuple rewrite before ct action");
-        return -1;
+    if (act_vars->ct_mode == CT_MODE_NONE) {
+        act_vars->pre_ct_cnt = 0;
     }
 
     if (nl_actions_len == 0) {
@@ -6694,12 +6672,12 @@ conn_build_actions(struct netdev *netdev,
             if (ct_offload->nat.mod_flags & NAT_ACTION_SRC) {
                 add_full_set_action(actions,
                     RTE_FLOW_ACTION_TYPE_SET_IPV4_SRC,
-                    &ct_offload->nat.key.src.addr.ipv4, size, act_vars);
+                    &ct_offload->nat.key.src.addr.ipv4, size);
             }
             if (ct_offload->nat.mod_flags & NAT_ACTION_DST) {
                 add_full_set_action(actions,
                     RTE_FLOW_ACTION_TYPE_SET_IPV4_DST,
-                    &ct_offload->nat.key.dst.addr.ipv4, size, act_vars);
+                    &ct_offload->nat.key.dst.addr.ipv4, size);
             }
         } else {
             /* IPv6 */
@@ -6707,12 +6685,12 @@ conn_build_actions(struct netdev *netdev,
             if (ct_offload->nat.mod_flags & NAT_ACTION_SRC) {
                 add_full_set_action(actions,
                     RTE_FLOW_ACTION_TYPE_SET_IPV6_SRC,
-                    &ct_offload->nat.key.src.addr.ipv6, size, act_vars);
+                    &ct_offload->nat.key.src.addr.ipv6, size);
             }
             if (ct_offload->nat.mod_flags & NAT_ACTION_DST) {
                 add_full_set_action(actions,
                     RTE_FLOW_ACTION_TYPE_SET_IPV6_DST,
-                    &ct_offload->nat.key.dst.addr.ipv6, size, act_vars);
+                    &ct_offload->nat.key.dst.addr.ipv6, size);
             }
         }
         /* TCP | UDP */
@@ -6722,12 +6700,12 @@ conn_build_actions(struct netdev *netdev,
             if (ct_offload->nat.mod_flags & NAT_ACTION_SRC_PORT) {
                 add_full_set_action(actions,
                     RTE_FLOW_ACTION_TYPE_SET_TP_SRC,
-                    &ct_offload->nat.key.src.port, size, act_vars);
+                    &ct_offload->nat.key.src.port, size);
             }
             if (ct_offload->nat.mod_flags & NAT_ACTION_DST_PORT) {
                 add_full_set_action(actions,
                     RTE_FLOW_ACTION_TYPE_SET_TP_DST,
-                    &ct_offload->nat.key.dst.port, size, act_vars);
+                    &ct_offload->nat.key.dst.port, size);
             }
         }
     }
@@ -6781,7 +6759,6 @@ conn_build_actions(struct netdev *netdev,
         ia->conf = ctx->act_hdl;
     }
 
-    act_vars->pre_ct_tuple_rewrite = false;
     if (get_ct_ctx_id(&miss_ctx, &act_resources->ct_miss_ctx_id)) {
         VLOG_ERR("Could not get a CT context ID");
         return -1;

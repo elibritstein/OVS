@@ -93,6 +93,7 @@ struct netdev_offload_dpdk_data {
 enum {
     OVS_RTE_FLOW_ACTION_TYPE_FLOW_INFO = INT_MIN,
     OVS_RTE_FLOW_ACTION_TYPE_CT_INFO,
+    OVS_RTE_FLOW_ACTION_TYPE_PRE_CT_END,
 };
 
 #define OVS_RTE_FLOW_ACTION_TYPE(TYPE) \
