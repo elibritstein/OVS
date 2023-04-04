@@ -1463,6 +1463,7 @@ dpdk_offload_doca_get_pkt_recover_info(struct dp_packet *p,
     memset(info, 0, sizeof *info);
     if (dpdk_offload_get_reg_field(p, REG_FIELD_FLOW_INFO,
                                    &info->flow_miss_id)) {
+        dp_packet_set_flow_mark(p, info->flow_miss_id);
         dpdk_offload_get_reg_field(p, REG_FIELD_CT_CTX,
                                    &info->ct_miss_id);
     }
