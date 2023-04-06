@@ -1,8 +1,11 @@
-v2.17.6 - xx xxx xxxx
+v2.17.6 - 06 Apr 2023
 ---------------------
    - ovs-appctl:
      * New optional "PERM" parameter to tnl/neigh/set to set this entry as
        permanent.
+   - Bug fixes
+   - Security:
+     * Fixed vulnerability CVE-2023-1668.
 
 v2.17.5 - 20 Dec 2022
 ---------------------
