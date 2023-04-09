@@ -184,10 +184,9 @@ struct act_resources {
     uint32_t meter_id;
 };
 
-#define NUM_RTE_FLOWS_PER_PORT 2
+#define NUM_HANDLE_PER_ITEM 2
 struct flow_item {
-    struct rte_flow *rte_flow[NUM_RTE_FLOWS_PER_PORT];
-    bool has_count[NUM_RTE_FLOWS_PER_PORT];
+    struct dpdk_offload_handle doh[NUM_HANDLE_PER_ITEM];
     bool flow_offload;
 };
 
@@ -383,7 +382,7 @@ ufid_to_rte_flow_associate(const ovs_u128 *ufid, struct netdev *netdev,
      */
     data_prev = ufid_to_rte_flow_data_find_protected(netdev, ufid);
     if (data_prev && !data_prev->dead) {
-        ovs_assert(data_prev->flow_item.rte_flow[0] == NULL);
+        ovs_assert(data_prev->flow_item.doh[0].rte_flow == NULL);
     }
 
     data->ufid = *ufid;
@@ -2433,11 +2432,12 @@ struct act_vars {
     uint8_t vlan_pcp;
 };
 
-static void *
+static int
 dpdk_offload_rte_create(struct netdev *netdev,
                         const struct rte_flow_attr *attr,
                         struct rte_flow_item *items,
                         struct rte_flow_action *actions,
+                        struct dpdk_offload_handle *doh,
                         struct rte_flow_error *error)
 {
     struct rte_flow_action *a;
@@ -2466,14 +2466,17 @@ dpdk_offload_rte_create(struct netdev *netdev,
         }
     }
 
-    return netdev_dpdk_rte_flow_create(netdev, attr, items, actions, error);
+    doh->rte_flow = netdev_dpdk_rte_flow_create(netdev, attr, items, actions,
+                                                error);
+    return doh->rte_flow == NULL ? -1 : 0;
 }
 
-static struct rte_flow *
+static int
 create_rte_flow(struct netdev *netdev,
                 const struct rte_flow_attr *attr,
                 struct flow_patterns *flow_patterns,
                 struct flow_actions *flow_actions,
+                struct dpdk_offload_handle *doh,
                 struct rte_flow_error *error)
 {
     struct rte_flow_action *actions = flow_actions->actions;
@@ -2482,8 +2485,10 @@ create_rte_flow(struct netdev *netdev,
     struct ds s = DS_EMPTY_INITIALIZER;
     struct rte_flow *flow;
     char *extra_str;
+    int rv;
 
-    flow = offload->create(netdev, attr, items, actions, error);
+    rv = offload->create(netdev, attr, items, actions, doh, error);
+    flow = doh->rte_flow;
     if (flow) {
         struct netdev_offload_dpdk_data *data;
         unsigned int tid = netdev_offload_thread_id();
@@ -2522,7 +2527,7 @@ create_rte_flow(struct netdev *netdev,
     }
     ds_destroy(&s);
     ds_destroy(&s_extra);
-    return flow;
+    return rv;
 }
 
 static void
@@ -4383,6 +4388,7 @@ add_miss_flow(struct netdev *netdev,
         },
         .cnt = 3,
     };
+    struct dpdk_offload_handle doh;
     struct rte_flow_error error;
 
     miss_attr.group = src_table_id;
@@ -4393,8 +4399,11 @@ add_miss_flow(struct netdev *netdev,
     }
 
     port_id.id = netdev_dpdk_get_port_id(netdev);
-    return create_rte_flow(netdev, &miss_attr, &miss_patterns, &miss_actions,
-                           &error);
+    if (!create_rte_flow(netdev, &miss_attr, &miss_patterns, &miss_actions,
+                         &doh, &error)) {
+        return doh.rte_flow;
+    }
+    return NULL;
 }
 
 static int OVS_UNUSED
@@ -4829,23 +4838,22 @@ create_ct_conn(struct netdev *netdev,
     int pos = 0;
     bool is_ct;
 
-    fi->rte_flow[0] = fi->rte_flow[1] = NULL;
-    fi->has_count[0] = fi->has_count[1] = false;
+    fi->doh[0].rte_flow = fi->doh[1].rte_flow = NULL;
+    fi->doh[0].has_count = fi->doh[1].has_count = false;
 
     split_ct_conn_actions(flow_actions->actions, &ct_actions, &nat_actions,
                           &ct_state, &ctnat_state);
     is_ct = ct_actions.cnt == nat_actions.cnt;
 
-    fi->has_count[0] = true;
+    fi->doh[0].has_count = true;
     put_table_id(act_resources->self_table_id);
     act_resources->self_table_id = 0;
     pos = netdev_offload_ct_on_ct_nat;
 
     if (netdev_offload_ct_on_ct_nat || !is_ct) {
         attr.group = CTNAT_TABLE_ID;
-        fi->rte_flow[pos] = create_rte_flow(netdev, &attr, flow_patterns,
-                                            &nat_actions, error);
-        ret = fi->rte_flow[pos] == NULL ? -1 : 0;
+        ret = create_rte_flow(netdev, &attr, flow_patterns, &nat_actions,
+                              &fi->doh[pos], error);
         if (ret) {
             goto out;
         }
@@ -4853,9 +4861,8 @@ create_ct_conn(struct netdev *netdev,
 
     if (netdev_offload_ct_on_ct_nat || is_ct) {
         attr.group = CT_TABLE_ID;
-        fi->rte_flow[0] = create_rte_flow(netdev, &attr, flow_patterns,
-                                          &ct_actions, error);
-        ret = fi->rte_flow[0] == NULL ? -1 : 0;
+        ret = create_rte_flow(netdev, &attr, flow_patterns, &ct_actions,
+                              &fi->doh[0], error);
         if (ret) {
             goto ct_err;
         }
@@ -4864,7 +4871,8 @@ create_ct_conn(struct netdev *netdev,
 
 ct_err:
     if (netdev_offload_ct_on_ct_nat) {
-        netdev_offload_dpdk_destroy_flow(netdev, fi->rte_flow[1], NULL, true);
+        netdev_offload_dpdk_destroy_flow(netdev, fi->doh[1].rte_flow, NULL,
+                                         true);
     }
 out:
     free_flow_actions(&ct_actions, false);
@@ -4931,10 +4939,9 @@ create_pre_post_ct(struct netdev *netdev,
     split_pre_post_ct_actions(flow_actions->actions, &pre_ct_actions,
                               &post_ct_actions);
     add_flow_action(&post_ct_actions, RTE_FLOW_ACTION_TYPE_END, NULL);
-    fi->rte_flow[1] = create_rte_flow(netdev, &post_ct_attr, &post_ct_patterns,
-                                      &post_ct_actions, error);
-    fi->has_count[1] = true;
-    ret = fi->rte_flow[1] == NULL ? -1 : 0;
+    ret = create_rte_flow(netdev, &post_ct_attr, &post_ct_patterns,
+                          &post_ct_actions, &fi->doh[1], error);
+    fi->doh[1].has_count = true;
     if (ret) {
         goto out;
     }
@@ -4969,16 +4976,15 @@ create_pre_post_ct(struct netdev *netdev,
     pre_ct_jump.group = ct_table_id;
     add_flow_action(&pre_ct_actions, RTE_FLOW_ACTION_TYPE_JUMP, &pre_ct_jump);
     add_flow_action(&pre_ct_actions, RTE_FLOW_ACTION_TYPE_END, NULL);
-    fi->rte_flow[0] = create_rte_flow(netdev, attr, flow_patterns,
-                                      &pre_ct_actions, error);
-    ret = fi->rte_flow[0] == NULL ? -1 : 0;
+    ret = create_rte_flow(netdev, attr, flow_patterns, &pre_ct_actions,
+                          &fi->doh[0], error);
     if (ret) {
         goto pre_ct_err;
     }
     goto out;
 
 pre_ct_err:
-    netdev_offload_dpdk_destroy_flow(netdev, fi->rte_flow[1], NULL, true);
+    netdev_offload_dpdk_destroy_flow(netdev, fi->doh[1].rte_flow, NULL, true);
 out:
     free_flow_actions(&pre_ct_actions, false);
     free_flow_actions(&post_ct_actions, false);
@@ -5001,10 +5007,9 @@ netdev_offload_dpdk_flow_create(struct netdev *netdev,
 
     switch (act_vars->ct_mode) {
     case CT_MODE_NONE:
-        fi->rte_flow[0] = create_rte_flow(netdev, attr, flow_patterns,
-                                          flow_actions, error);
-        fi->has_count[0] = true;
-        ret = fi->rte_flow[0] == NULL ? -1 : 0;
+        ret = create_rte_flow(netdev, attr, flow_patterns, flow_actions,
+                              &fi->doh[0], error);
+        fi->doh[0].has_count = true;
         break;
     case CT_MODE_CT:
         /* fallthrough */
@@ -5576,7 +5581,7 @@ netdev_offload_dpdk_add_flow(struct netdev *netdev,
                                             &flow_item, &act_resources);
     VLOG_DBG("%s/%s: installed flow %p/%p by ufid "UUID_FMT,
              netdev_get_name(netdev), netdev_get_name(patterns.physdev),
-             flow_item.rte_flow[0], flow_item.rte_flow[1],
+             flow_item.doh[0].rte_flow, flow_item.doh[1].rte_flow,
              UUID_ARGS((struct uuid *) ufid));
 
 out:
@@ -5618,8 +5623,8 @@ netdev_offload_dpdk_remove_flows(struct ufid_to_rte_flow_data *rte_flow_data)
 
     data = (struct netdev_offload_dpdk_data *)
         ovsrcu_get(void *, &netdev->hw_info.offload_data);
-    for (i = 0; i < NUM_RTE_FLOWS_PER_PORT; i++) {
-        rte_flow = rte_flow_data->flow_item.rte_flow[i];
+    for (i = 0; i < NUM_HANDLE_PER_ITEM; i++) {
+        rte_flow = rte_flow_data->flow_item.doh[i].rte_flow;
 
         if (!rte_flow) {
             continue;
@@ -5642,8 +5647,8 @@ netdev_offload_dpdk_remove_flows(struct ufid_to_rte_flow_data *rte_flow_data)
         VLOG_DBG_RL(&rl, "%s/%s: removed flows 0x%"PRIxPTR"/0x%"PRIxPTR
                     " associated with ufid " UUID_FMT,
                     netdev_get_name(netdev), netdev_get_name(physdev),
-                    (intptr_t) rte_flow_data->flow_item.rte_flow[0],
-                    (intptr_t) rte_flow_data->flow_item.rte_flow[1],
+                    (intptr_t) rte_flow_data->flow_item.doh[0].rte_flow,
+                    (intptr_t) rte_flow_data->flow_item.doh[1].rte_flow,
                     UUID_ARGS((struct uuid *) ufid));
     } else {
         VLOG_ERR("Failed flow destroy: %s/%s ufid " UUID_FMT,
@@ -5694,7 +5699,7 @@ netdev_offload_dpdk_flow_put(struct netdev *netdev, struct match *match,
      * Keep the stats for the newly created rule.
      */
     rte_flow_data = ufid_to_rte_flow_data_find(netdev, ufid, false);
-    if (rte_flow_data && rte_flow_data->flow_item.rte_flow[0]) {
+    if (rte_flow_data && rte_flow_data->flow_item.doh[0].rte_flow) {
         struct get_netdev_odp_aux aux = {
             .netdev = rte_flow_data->physdev,
             .odp_port = ODPP_NONE,
@@ -5740,7 +5745,7 @@ netdev_offload_dpdk_flow_del(struct netdev *netdev OVS_UNUSED,
     netdev_offload_dpdk_upkeep();
 
     rte_flow_data = ufid_to_rte_flow_data_find(netdev, ufid, true);
-    if (!rte_flow_data || !rte_flow_data->flow_item.rte_flow[0]) {
+    if (!rte_flow_data || !rte_flow_data->flow_item.doh[0].rte_flow) {
         return -1;
     }
 
@@ -5830,7 +5835,7 @@ netdev_offload_dpdk_flow_get(struct netdev *netdev,
     attrs->dp_extra_info = NULL;
 
     rte_flow_data = ufid_to_rte_flow_data_find(netdev, ufid, false);
-    if (!rte_flow_data || !rte_flow_data->flow_item.rte_flow[0] ||
+    if (!rte_flow_data || !rte_flow_data->flow_item.doh[0].rte_flow ||
         rte_flow_data->dead || ovs_mutex_trylock(&rte_flow_data->lock)) {
         return -1;
     }
@@ -5845,9 +5850,9 @@ netdev_offload_dpdk_flow_get(struct netdev *netdev,
     }
 
     attrs->offloaded = true;
-    rte_flow = rte_flow_data->flow_item.rte_flow[1]
-        ? rte_flow_data->flow_item.rte_flow[1]
-        : rte_flow_data->flow_item.rte_flow[0];
+    rte_flow = rte_flow_data->flow_item.doh[1].rte_flow
+        ? rte_flow_data->flow_item.doh[1].rte_flow
+        : rte_flow_data->flow_item.doh[0].rte_flow;
 
     if (!rte_flow_data->act_resources.shared_count_ctx) {
         ret = offload->query_count(rte_flow_data->physdev,
@@ -6343,6 +6348,7 @@ ct_zones_init(struct netdev *netdev, unsigned int tid,
         },
         .cnt = 4,
     };
+    struct dpdk_offload_handle doh;
     struct flow_actions actions = {
         .actions = (struct rte_flow_action []) {
             { .type = RTE_FLOW_ACTION_TYPE_SET_TAG, .conf = &set_tag, },
@@ -6408,12 +6414,12 @@ ct_zones_init(struct netdev *netdev, unsigned int tid,
             patterns.items[2].type = RTE_FLOW_ITEM_TYPE_TAG;
             actions.actions[0].type = RTE_FLOW_ACTION_TYPE_VOID;
             jump.group = POSTCT_TABLE_ID;
-            fr->flow = create_rte_flow(netdev, &attr, &patterns, &actions,
-                                       &error);
-            fr->creation_tid = tid;
-            if (fr->flow == NULL) {
+            if (create_rte_flow(netdev, &attr, &patterns, &actions, &doh,
+                                &error)) {
                 goto err;
             }
+            fr->flow = doh.rte_flow;
+            fr->creation_tid = tid;
 
             fr = &data->zone_flows[nat][1][zone_id];
             attr.priority = 1;
@@ -6430,12 +6436,12 @@ ct_zones_init(struct netdev *netdev, unsigned int tid,
             set_tag.mask = reg_field->mask << reg_field->offset;
             actions.actions[0].type = RTE_FLOW_ACTION_TYPE_SET_TAG;
             jump.group = base_group;
-            fr->flow = create_rte_flow(netdev, &attr, &patterns, &actions,
-                                       &error);
-            fr->creation_tid = tid;
-            if (fr->flow == NULL) {
+            if (create_rte_flow(netdev, &attr, &patterns, &actions, &doh,
+                                &error)) {
                 goto err;
             }
+            fr->flow = doh.rte_flow;
+            fr->creation_tid = tid;
         }
     }
 
@@ -6467,6 +6473,7 @@ hairpin_init(struct netdev *netdev, unsigned int tid,
         .cnt = 2,
     };
     struct rte_flow_action_queue hp_queue;
+    struct dpdk_offload_handle doh;
     struct flow_actions actions = {
         .actions = (struct rte_flow_action []) {
             { .type = RTE_FLOW_ACTION_TYPE_QUEUE, .conf = &hp_queue, },
@@ -6479,12 +6486,11 @@ hairpin_init(struct netdev *netdev, unsigned int tid,
     hp_mark.id = HAIRPIN_FLOW_MARK;
     hp_queue.index = netdev->n_rxq;
 
-    fr->flow = create_rte_flow(netdev, &attr, &patterns, &actions, &error);
-    fr->creation_tid = tid;
-
-    if (fr->flow == NULL) {
+    if (create_rte_flow(netdev, &attr, &patterns, &actions, &doh, &error)) {
         return -1;
     }
+    fr->flow = doh.rte_flow;
+    fr->creation_tid = tid;
     return 0;
 }
 
@@ -6865,7 +6871,7 @@ netdev_offload_dpdk_conn_add(struct netdev *netdev,
     netdev_offload_dpdk_upkeep();
 
     rte_flow_data = ufid_to_rte_flow_data_find(netdev, ufid, false);
-    if (rte_flow_data && rte_flow_data->flow_item.rte_flow[0]) {
+    if (rte_flow_data && rte_flow_data->flow_item.doh[0].rte_flow) {
         /* Conn offload modification is not supported. */
         return EEXIST;
     }
@@ -6896,7 +6902,7 @@ netdev_offload_dpdk_conn_del(struct netdev *netdev,
     netdev_offload_dpdk_upkeep();
 
     rte_flow_data = ufid_to_rte_flow_data_find(netdev, ufid, true);
-    if (!rte_flow_data || !rte_flow_data->flow_item.rte_flow[0]) {
+    if (!rte_flow_data || !rte_flow_data->flow_item.doh[0].rte_flow) {
         return ENODATA;
     }
 
@@ -6919,7 +6925,7 @@ netdev_offload_dpdk_conn_stats(struct netdev *netdev,
     int ret = 0;
 
     rte_flow_data = ufid_to_rte_flow_data_find(netdev, ufid, false);
-    if (!rte_flow_data || !rte_flow_data->flow_item.rte_flow[0] ||
+    if (!rte_flow_data || !rte_flow_data->flow_item.doh[0].rte_flow ||
         rte_flow_data->dead || ovs_mutex_trylock(&rte_flow_data->lock)) {
         return ENODATA;
     }
@@ -6939,9 +6945,9 @@ netdev_offload_dpdk_conn_stats(struct netdev *netdev,
         attrs->dp_layer = "dpdk";
     }
 
-    rte_flow = rte_flow_data->flow_item.rte_flow[1]
-        ? rte_flow_data->flow_item.rte_flow[1]
-        : rte_flow_data->flow_item.rte_flow[0];
+    rte_flow = rte_flow_data->flow_item.doh[1].rte_flow
+        ? rte_flow_data->flow_item.doh[1].rte_flow
+        : rte_flow_data->flow_item.doh[0].rte_flow;
 
     if (!rte_flow_data->act_resources.shared_count_ctx) {
         ret = offload->query_count(rte_flow_data->physdev,

@@ -1203,11 +1203,12 @@ err_pipe:
     return NULL;
 }
 
-static void *
+static int
 dpdk_offload_doca_create(struct netdev *netdev,
                          const struct rte_flow_attr *attr,
                          struct rte_flow_item *items,
                          struct rte_flow_action *actions,
+                         struct dpdk_offload_handle *doh,
                          struct rte_flow_error *error)
 {
     struct doca_flow_handle_resources flow_res;
@@ -1231,7 +1232,8 @@ dpdk_offload_doca_create(struct netdev *netdev,
     if (doca_translate_items(netdev, attr, items, &spec, &mask)) {
         error->type = RTE_FLOW_ERROR_TYPE_ITEM;
         error->message = "Could not create items";
-        return NULL;
+        doh->rte_flow = NULL;
+        return -1;
     }
 
     /* parse actions */
@@ -1239,7 +1241,8 @@ dpdk_offload_doca_create(struct netdev *netdev,
                                &fwd, &monitor, &flow_res)) {
         error->type = RTE_FLOW_ERROR_TYPE_ACTION;
         error->message = "Could not create actions";
-        return NULL;
+        doh->rte_flow = NULL;
+        return -1;
     }
 
     prio = (flow_res.next_group == MISS_TABLE_ID);
@@ -1251,9 +1254,12 @@ dpdk_offload_doca_create(struct netdev *netdev,
         if (flow_res.next_pipe) {
             doca_ctl_pipe_ctx_unref(flow_res.next_pipe);
         }
+        doh->rte_flow = NULL;
+        return -1;
     }
 
-    return hndl;
+    doh->rte_flow = (struct rte_flow *) hndl;
+    return 0;
 }
 
 static doca_error_t

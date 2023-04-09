@@ -63,6 +63,11 @@ struct netdev_offload_dpdk_data {
     void *eswitch_ctx;
 };
 
+struct dpdk_offload_handle {
+    struct rte_flow *rte_flow;
+    bool has_count;
+};
+
 /* Proprietary rte-flow action enums. */
 enum {
     OVS_RTE_FLOW_ACTION_TYPE_FLOW_INFO = INT_MIN,
@@ -118,11 +123,12 @@ struct dpdk_offload_api {
     void (*per_thread_upkeep)(unsigned int tid);
 
     /* Offload insertion / deletion */
-    void *(*create)(struct netdev *netdev,
-                    const struct rte_flow_attr *attr,
-                    struct rte_flow_item *items,
-                    struct rte_flow_action *actions,
-                    struct rte_flow_error *error);
+    int (*create)(struct netdev *netdev,
+                  const struct rte_flow_attr *attr,
+                  struct rte_flow_item *items,
+                  struct rte_flow_action *actions,
+                  struct dpdk_offload_handle *doh,
+                  struct rte_flow_error *error);
     int (*destroy)(struct netdev *netdev,
                    struct rte_flow *rte_flow,
                    struct rte_flow_error *error,
