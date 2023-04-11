@@ -37,6 +37,9 @@
 #define MAX_ZONE_ID     0x00000008
 #define NUM_ZONE_ID     (MAX_ZONE_ID - MIN_ZONE_ID + 1)
 
+struct doca_ctl_pipe_ctx;
+struct doca_flow_pipe_entry;
+
 struct raw_encap_data {
     struct rte_flow_action_raw_encap conf;
     uint8_t headroom[8];
@@ -63,10 +66,29 @@ struct netdev_offload_dpdk_data {
     void *eswitch_ctx;
 };
 
+struct doca_flow_handle_resources {
+    uint32_t group;
+    struct doca_ctl_pipe_ctx *self_pipe;
+    uint32_t next_group;
+    struct doca_ctl_pipe_ctx *next_pipe;
+};
+
+struct doca_flow_handle {
+    struct doca_flow_pipe_entry *flow;
+    struct doca_flow_handle_resources flow_res;
+};
+
 struct dpdk_offload_handle {
-    struct rte_flow *rte_flow;
+    union {
+        struct rte_flow *rte_flow;
+        struct doca_flow_handle dfh;
+    };
     bool has_count;
 };
+BUILD_ASSERT_DECL(offsetof(struct dpdk_offload_handle, rte_flow) ==
+                  offsetof(struct dpdk_offload_handle, dfh.flow));
+BUILD_ASSERT_DECL(MEMBER_SIZEOF(struct dpdk_offload_handle, rte_flow) ==
+                  MEMBER_SIZEOF(struct dpdk_offload_handle, dfh.flow));
 
 /* Proprietary rte-flow action enums. */
 enum {

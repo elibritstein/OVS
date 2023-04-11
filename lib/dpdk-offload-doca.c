@@ -163,18 +163,6 @@ OVS_ASSERT_PACKED(struct doca_eswitch_ctx,
     struct fixed_rule zone_flows[2][NUM_ZONE_FLOWS][MAX_ZONE_ID + 1];
 );
 
-struct doca_flow_handle_resources {
-    uint32_t group;
-    struct doca_ctl_pipe_ctx *self_pipe;
-    uint32_t next_group;
-    struct doca_ctl_pipe_ctx *next_pipe;
-};
-
-struct doca_flow_handle {
-    struct doca_flow_pipe_entry *flow;
-    struct doca_flow_handle_resources flow_res;
-};
-
 OVS_ASSERT_PACKED(struct doca_ctl_pipe_key,
     uint32_t group_id;
     uint32_t esw_mgr_port_id;
@@ -1133,18 +1121,13 @@ create_doca_flow_handle(struct netdev *netdev,
                         struct doca_flow_monitor *monitor,
                         struct doca_flow_fwd *fwd,
                         struct doca_flow_handle_resources *flow_res,
+                        struct dpdk_offload_handle *doh,
                         struct rte_flow_error *error)
 {
     struct doca_ctl_pipe_ctx *pipe_ctx = NULL;
     struct doca_flow_handle *hndl;
 
-    hndl = xzalloc(sizeof *hndl);
-    if (!hndl) {
-        error->type = RTE_FLOW_ERROR_TYPE_UNSPECIFIED;
-        error->message = "Could not allocate doca flow handle";
-
-        return NULL;
-    }
+    hndl = &doh->dfh;
 
     if (is_ct_group(group)) {
         struct doca_eswitch_ctx *ctx = doca_eswitch_ctx_get(netdev);
@@ -1198,8 +1181,6 @@ err_insert:
         doca_ctl_pipe_ctx_unref(pipe_ctx);
     }
 err_pipe:
-    free(hndl);
-
     return NULL;
 }
 
@@ -1248,17 +1229,15 @@ dpdk_offload_doca_create(struct netdev *netdev,
     prio = (flow_res.next_group == MISS_TABLE_ID);
     hndl = create_doca_flow_handle(netdev, prio, attr->group, &spec, &mask,
                                    &dacts, &dacts_descs, &monitor, &fwd,
-                                   &flow_res, error);
+                                   &flow_res, doh, error);
     if (!hndl) {
         /* change to free doca flow resources function */
         if (flow_res.next_pipe) {
             doca_ctl_pipe_ctx_unref(flow_res.next_pipe);
         }
-        doh->rte_flow = NULL;
         return -1;
     }
 
-    doh->rte_flow = (struct rte_flow *) hndl;
     return 0;
 }
 
@@ -1293,7 +1272,6 @@ dpdk_offload_doca_destroy(struct netdev *netdev OVS_UNUSED,
     }
 
     doca_ctl_pipe_ctx_unref(hndl->flow_res.self_pipe);
-    free(hndl);
 
     return 0;
 }
@@ -1401,6 +1379,7 @@ doca_fixed_rule_uninit(unsigned int tid,
     }
 
     dpdk_offload_doca_destroy(NULL, fr->flow, NULL, true);
+    free(fr->flow);
     fr->flow = NULL;
 }
 
@@ -1435,6 +1414,8 @@ doca_create_ct_zone_revisit_rule(struct netdev *netdev, uint32_t group,
     struct doca_ctl_pipe_ctx *next_pipe_ctx;
     uint32_t ct_state_spec, ct_state_mask;
     uint32_t ct_zone_spec, ct_zone_mask;
+    struct dpdk_offload_handle *doh;
+    struct doca_flow_handle *hndl;
     struct rte_flow_error error;
     struct doca_flow_match mask;
     struct doca_flow_match spec;
@@ -1474,9 +1455,13 @@ doca_create_ct_zone_revisit_rule(struct netdev *netdev, uint32_t group,
     flow_res.next_pipe = next_pipe_ctx;
     flow_res.next_group = POSTCT_TABLE_ID;
 
-    return create_doca_flow_handle(netdev, 0, group, &spec, &mask,
-                                   NULL, NULL, NULL,
-                                   &fwd, &flow_res, &error);
+    doh = xzalloc(sizeof *doh);
+    hndl = create_doca_flow_handle(netdev, 0, group, &spec, &mask, NULL, NULL,
+                                   NULL, &fwd, &flow_res, doh, &error);
+    if (!hndl) {
+        free(doh);
+    }
+    return hndl;
 }
 
 static void *
@@ -1486,7 +1471,9 @@ doca_create_ct_zone_uphold_rule(struct netdev *netdev,
 {
     struct doca_flow_handle_resources flow_res;
     struct doca_flow_action_descs dacts_descs;
+    struct dpdk_offload_handle *doh;
     struct doca_flow_actions dacts;
+    struct doca_flow_handle *hndl;
     struct doca_flow_match spec;
     struct doca_flow_match mask;
     struct rte_flow_error error;
@@ -1526,9 +1513,14 @@ doca_create_ct_zone_uphold_rule(struct netdev *netdev,
     flow_res.next_pipe = NULL;
     flow_res.next_group = next_group;
 
-    return create_doca_flow_handle(netdev, 1, group, &spec, &mask,
-                                   &dacts, &dacts_descs, NULL,
-                                   &fwd, &flow_res, &error);
+    doh = xzalloc(sizeof *doh);
+    hndl = create_doca_flow_handle(netdev, 1, group, &spec, &mask, &dacts,
+                                   &dacts_descs, NULL, &fwd, &flow_res, doh,
+                                   &error);
+    if (hndl) {
+        free(doh);
+    }
+    return hndl;
 }
 
 static void *
@@ -1536,6 +1528,8 @@ doca_create_ct_zone_miss_rule(struct netdev *netdev, uint32_t group)
 {
     struct doca_flow_handle_resources flow_res;
     struct doca_ctl_pipe_ctx *pipe_ctx;
+    struct dpdk_offload_handle *doh;
+    struct doca_flow_handle *hndl;
     struct rte_flow_error error;
     struct doca_flow_fwd fwd;
 
@@ -1552,9 +1546,13 @@ doca_create_ct_zone_miss_rule(struct netdev *netdev, uint32_t group)
     flow_res.next_pipe = pipe_ctx;
     flow_res.next_group = MISS_TABLE_ID;
 
-    return create_doca_flow_handle(netdev, 2, group,
-                                   NULL, NULL, NULL, NULL, NULL,
-                                   &fwd, &flow_res, &error);
+    doh = xzalloc(sizeof *doh);
+    hndl = create_doca_flow_handle(netdev, 2, group, NULL, NULL, NULL, NULL,
+                                   NULL, &fwd, &flow_res, doh, &error);
+    if (hndl) {
+        free(doh);
+    }
+    return hndl;
 }
 
 static int
