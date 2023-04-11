@@ -188,10 +188,10 @@ struct dpdk_offload_api {
 extern struct dpdk_offload_api dpdk_offload_api_rte;
 extern struct dpdk_offload_api dpdk_offload_api_doca;
 
-int
-get_packet_reg_field(struct dp_packet *packet,
-                     struct reg_field *reg_field,
-                     uint32_t *val);
+bool
+dpdk_offload_get_reg_field(struct dp_packet *packet,
+                           enum dpdk_reg_id reg_id,
+                           uint32_t *val);
 
 void *
 find_raw_encap_spec(const struct raw_encap_data *raw_encap_data,

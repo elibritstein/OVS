@@ -3151,17 +3151,18 @@ parse_flow_tnl_match(struct netdev *tnldev,
     return ret;
 }
 
-int
-get_packet_reg_field(struct dp_packet *packet,
-                     struct reg_field *reg_field,
-                     uint32_t *val)
+bool
+dpdk_offload_get_reg_field(struct dp_packet *packet,
+                           enum dpdk_reg_id reg_id,
+                           uint32_t *val)
 {
+    struct reg_field *reg_field = &offload->reg_fields()[reg_id];
     uint32_t mark = 0;
     uint32_t meta;
 
     if (reg_field->type == REG_TYPE_META) {
         if (!dp_packet_get_meta(packet, &meta)) {
-            return -1;
+            return false;
         }
 
         /* An error should be returned above if meta is 0.
@@ -3173,22 +3174,22 @@ get_packet_reg_field(struct dp_packet *packet,
             VLOG_ERR_RL(&rl, "port %d, recirc=%d, mark=%d, has meta 0",
                         packet->md.in_port.odp_port, packet->md.recirc_id,
                         mark);
-            return -1;
+            return false;
         }
 
         meta >>= reg_field->offset;
         meta &= reg_field->mask;
 
         *val = meta;
-        return 0;
+        return true;
     }
 
     if (reg_field->type == REG_TYPE_MARK) {
         if (dp_packet_has_flow_mark(packet, &mark)) {
             *val = mark;
-            return 0;
+            return true;
         }
-        return -1;
+        return false;
     }
 
     OVS_NOT_REACHED();
@@ -6083,13 +6084,13 @@ rte_get_packet_recovery_info(struct dp_packet *packet,
                              struct dpdk_offload_recovery_info *info)
 {
     memset(info, 0, sizeof *info);
-    if (!get_packet_reg_field(packet, &reg_fields[REG_FIELD_FLOW_INFO],
-                              &info->flow_miss_id)) {
-        get_packet_reg_field(packet, &reg_fields[REG_FIELD_CT_CTX],
-                             &info->ct_miss_id);
+    if (dpdk_offload_get_reg_field(packet, REG_FIELD_FLOW_INFO,
+                                   &info->flow_miss_id)) {
+        dpdk_offload_get_reg_field(packet, REG_FIELD_CT_CTX,
+                                   &info->ct_miss_id);
     } else {
-        get_packet_reg_field(packet, &reg_fields[REG_FIELD_SFLOW_CTX],
-                             &info->sflow_id);
+        dpdk_offload_get_reg_field(packet, REG_FIELD_SFLOW_CTX,
+                                   &info->sflow_id);
     }
 }
 
