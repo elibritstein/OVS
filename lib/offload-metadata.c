@@ -85,16 +85,16 @@ data_entry_destroy(struct offload_metadata *md, struct data_entry *entry,
         return;
     }
 
+    if (!associated && ovs_refcount_unref(&entry->refcount) > 1) {
+        /* Data has been referenced again since delayed release. */
+        return;
+    }
+
     VLOG_DBG_RL(&rl, "%s: md=%s, id=%"PRIu32". associated=%d",
                 __func__, md->name, entry->id, associated);
 
     ovs_mutex_lock(&md->maps_lock);
 
-    if (!associated && ovs_refcount_unref(&entry->refcount) > 1) {
-        /* Data has been referenced again since delayed release. */
-        ovs_mutex_unlock(&md->maps_lock);
-        return;
-    }
 
     if (md->priv_uninit) {
         md->priv_uninit(entry->priv);
