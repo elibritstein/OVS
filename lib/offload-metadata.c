@@ -81,15 +81,12 @@ static void
 data_entry_destroy(struct offload_metadata *md, struct data_entry *entry,
                    bool associated)
 {
-    struct data_entry *data_cur;
-    uint32_t id = entry->id;
-
     if (entry == NULL) {
         return;
     }
 
     VLOG_DBG_RL(&rl, "%s: md=%s, id=%"PRIu32". associated=%d",
-                __func__, md->name, id, associated);
+                __func__, md->name, entry->id, associated);
 
     ovs_mutex_lock(&md->maps_lock);
 
@@ -104,45 +101,18 @@ data_entry_destroy(struct offload_metadata *md, struct data_entry *entry,
         entry->priv_init_done = false;
     }
 
-    if (id != 0) {
-        size_t ihash = hash_add(0, id);
-
-        if (associated) {
-            CMAP_FOR_EACH_WITH_HASH_PROTECTED (data_cur, associated_i2d_node,
-                                               ihash,
-                                               &md->associated_i2d_map) {
-                if (data_cur->id == id) {
-                    break;
-                }
-            }
+    if (entry->id != 0) {
+        if (!associated) {
+            cmap_remove(&md->i2d_map, &entry->i2d_node, entry->i2d_hash);
+            cmap_remove(&md->d2i_map, &entry->d2i_node, entry->d2i_hash);
+            md->id_free(entry->id);
         } else {
-            CMAP_FOR_EACH_WITH_HASH_PROTECTED (data_cur, i2d_node, ihash,
-                                               &md->i2d_map) {
-                if (data_cur->id == id) {
-                    break;
-                }
-            }
-        }
-
-        if (data_cur && data_cur->id == id) {
-            if (!associated) {
-                cmap_remove(&md->i2d_map, &entry->i2d_node, entry->i2d_hash);
-                cmap_remove(&md->d2i_map, &entry->d2i_node, entry->d2i_hash);
-                md->id_free(id);
-            } else {
-                cmap_remove(&md->associated_i2d_map,
-                            &entry->associated_i2d_node,
-                            entry->associated_i2d_hash);
-            }
+            cmap_remove(&md->associated_i2d_map,
+                        &entry->associated_i2d_node,
+                        entry->associated_i2d_hash);
         }
     } else {
-        CMAP_FOR_EACH_WITH_HASH_PROTECTED (data_cur, d2i_node, entry->d2i_hash,
-                                           &md->d2i_map) {
-            if (memcmp(entry->data, data_cur->data, md->data_size) == 0) {
-                cmap_remove(&md->d2i_map, &entry->d2i_node, entry->d2i_hash);
-                break;
-            }
-        }
+        cmap_remove(&md->d2i_map, &entry->d2i_node, entry->d2i_hash);
     }
 
     ovsrcu_gc(data_entry_gc, entry, gc_node);
