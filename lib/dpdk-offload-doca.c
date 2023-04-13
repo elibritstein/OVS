@@ -1018,6 +1018,7 @@ doca_translate_actions(struct netdev *netdev OVS_UNUSED,
 
 static int
 create_doca_basic_flow_entry(struct netdev *netdev,
+                             unsigned int queue_id,
                              struct doca_flow_pipe *pipe,
                              struct doca_flow_match *spec,
                              struct doca_flow_actions *actions,
@@ -1026,12 +1027,11 @@ create_doca_basic_flow_entry(struct netdev *netdev,
                              struct doca_flow_handle *hndl,
                              struct rte_flow_error *error)
 {
-    unsigned int tid = netdev_offload_thread_id();
     struct doca_flow_pipe_entry *entry;
     struct doca_eswitch_ctx *esw_ctx;
     doca_error_t err;
 
-    err = doca_flow_pipe_add_entry(tid, pipe, spec, actions, monitor, fwd,
+    err = doca_flow_pipe_add_entry(queue_id, pipe, spec, actions, monitor, fwd,
                                    DOCA_FLOW_NO_WAIT, hndl, &entry);
     if (err) {
         VLOG_WARN_RL(&rl, "%s: Failed to create basic pipe entry. Error: %d (%s)",
@@ -1042,7 +1042,7 @@ create_doca_basic_flow_entry(struct netdev *netdev,
     }
 
     esw_ctx = doca_eswitch_ctx_get(netdev);
-    err = doca_flow_entries_process(esw_ctx->esw_port, tid,
+    err = doca_flow_entries_process(esw_ctx->esw_port, queue_id,
                                     ENTRY_PROCESS_TIMEOUT_MS, 1);
     if (err) {
         VLOG_WARN_RL(&rl, "%s: Failed to poll completion of pipe entry insertion. Error: %d (%s)",
@@ -1059,6 +1059,7 @@ create_doca_basic_flow_entry(struct netdev *netdev,
 
 static struct doca_flow_pipe_entry *
 create_doca_ctl_flow_entry(struct netdev *netdev,
+                           unsigned int queue_id,
                            struct doca_ctl_pipe_ctx *self_pipe,
                            uint32_t prio,
                            struct doca_flow_match *spec,
@@ -1069,13 +1070,13 @@ create_doca_ctl_flow_entry(struct netdev *netdev,
                            struct doca_flow_fwd *fwd,
                            struct rte_flow_error *error)
 {
-    unsigned int tid = netdev_offload_thread_id();
     struct doca_flow_pipe *pipe = self_pipe->pipe;
     struct doca_flow_pipe_entry *entry;
     doca_error_t err;
 
-    err = doca_flow_pipe_control_add_entry(tid, prio, pipe, spec, mask, actions,
-                                           action_descs, monitor, fwd, &entry);
+    err = doca_flow_pipe_control_add_entry(queue_id, prio, pipe, spec, mask,
+                                           actions, action_descs, monitor, fwd,
+                                           &entry);
     if (err) {
         VLOG_WARN_RL(&rl, "%s: Failed to create ctl pipe entry. Error: %d (%s)",
                      netdev_get_name(netdev), err, doca_get_error_string(err));
@@ -1119,6 +1120,7 @@ doca_get_ct_pipe(struct doca_eswitch_ctx *ctx,
 
 static struct doca_flow_handle *
 create_doca_flow_handle(struct netdev *netdev,
+                        unsigned int queue_id,
                         uint32_t prio,
                         uint32_t group,
                         struct doca_flow_match *spec,
@@ -1152,7 +1154,7 @@ create_doca_flow_handle(struct netdev *netdev,
             error->message = "Unsupported CT type";
             goto err_pipe;
         }
-        if (create_doca_basic_flow_entry(netdev, pipe, spec, actions,
+        if (create_doca_basic_flow_entry(netdev, queue_id, pipe, spec, actions,
                                          monitor, fwd, hndl, error)) {
             error->type = RTE_FLOW_ERROR_TYPE_HANDLE;
             error->message = "Failed to insert rule";
@@ -1167,9 +1169,10 @@ create_doca_flow_handle(struct netdev *netdev,
             goto err_pipe;
         }
         /* insert rule */
-        hndl->flow = create_doca_ctl_flow_entry(netdev, pipe_ctx, prio, spec,
-                                                mask, actions, action_descs,
-                                                monitor, fwd, error);
+        hndl->flow = create_doca_ctl_flow_entry(netdev, queue_id, pipe_ctx,
+                                                prio, spec, mask, actions,
+                                                action_descs, monitor, fwd,
+                                                error);
         if (!hndl->flow) {
             error->type = RTE_FLOW_ERROR_TYPE_HANDLE;
             error->message = "Could not insert rule";
@@ -1199,6 +1202,7 @@ dpdk_offload_doca_create(struct netdev *netdev,
                          struct dpdk_offload_handle *doh,
                          struct rte_flow_error *error)
 {
+    unsigned int tid = netdev_offload_thread_id();
     struct doca_flow_handle_resources flow_res;
     struct doca_flow_action_descs dacts_descs;
     struct doca_flow_monitor monitor;
@@ -1206,6 +1210,7 @@ dpdk_offload_doca_create(struct netdev *netdev,
     struct doca_flow_handle *hndl;
     struct doca_flow_match mask;
     struct doca_flow_match spec;
+    unsigned int queue_id = tid;
     struct doca_flow_fwd fwd;
     uint32_t prio;
 
@@ -1234,8 +1239,8 @@ dpdk_offload_doca_create(struct netdev *netdev,
     }
 
     prio = (flow_res.next_group == MISS_TABLE_ID);
-    hndl = create_doca_flow_handle(netdev, prio, attr->group, &spec, &mask,
-                                   &dacts, &dacts_descs, &monitor, &fwd,
+    hndl = create_doca_flow_handle(netdev, queue_id, prio, attr->group, &spec,
+                                   &mask, &dacts, &dacts_descs, &monitor, &fwd,
                                    &flow_res, doh, error);
     if (!hndl) {
         /* change to free doca flow resources function */
@@ -1249,11 +1254,35 @@ dpdk_offload_doca_create(struct netdev *netdev,
 }
 
 static doca_error_t
-destroy_doca_flow_entry(struct doca_flow_pipe_entry *flow)
+destroy_doca_flow_entry(struct doca_flow_pipe_entry *flow,
+                        unsigned int queue_id)
 {
-    unsigned int tid = netdev_offload_thread_id();
+    return doca_flow_pipe_rm_entry(queue_id, DOCA_FLOW_NO_WAIT, NULL, flow);
+}
 
-    return doca_flow_pipe_rm_entry(tid, DOCA_FLOW_NO_WAIT, NULL, flow);
+static int
+destroy_doca_flow_handle(struct doca_flow_handle *dfh,
+                         unsigned int queue_id,
+                         struct rte_flow_error *error)
+{
+    doca_error_t err;
+
+    err = destroy_doca_flow_entry(dfh->flow, queue_id);
+    if (err) {
+        if (error) {
+            error->type = RTE_FLOW_ERROR_TYPE_HANDLE;
+            error->message = doca_get_error_string(err);
+        }
+        return -1;
+    }
+
+    if (dfh->flow_res.next_pipe) {
+        doca_ctl_pipe_ctx_unref(dfh->flow_res.next_pipe);
+    }
+
+    doca_ctl_pipe_ctx_unref(dfh->flow_res.self_pipe);
+
+    return 0;
 }
 
 static int
@@ -1262,25 +1291,10 @@ dpdk_offload_doca_destroy(struct netdev *netdev OVS_UNUSED,
                           struct rte_flow_error *error,
                           bool esw_port_id OVS_UNUSED)
 {
-    struct doca_flow_handle *hndl;
-    doca_error_t err;
+    unsigned int tid = netdev_offload_thread_id();
+    unsigned int queue_id = tid;
 
-    hndl = &doh->dfh;
-
-    err = destroy_doca_flow_entry(hndl->flow);
-    if (err) {
-        error->type = RTE_FLOW_ERROR_TYPE_HANDLE;
-        error->message = doca_get_error_string(err);
-        return -1;
-    }
-
-    if (hndl->flow_res.next_pipe) {
-        doca_ctl_pipe_ctx_unref(hndl->flow_res.next_pipe);
-    }
-
-    doca_ctl_pipe_ctx_unref(hndl->flow_res.self_pipe);
-
-    return 0;
+    return destroy_doca_flow_handle(&doh->dfh, queue_id, error);
 }
 
 static int
@@ -1387,11 +1401,13 @@ static void
 doca_fixed_rule_uninit(unsigned int tid,
                        struct fixed_rule *fr)
 {
+    unsigned int queue_id = tid;
+
     if (fr->creation_tid != tid || !fr->doh.dfh.flow) {
         return;
     }
 
-    dpdk_offload_doca_destroy(NULL, &fr->doh, NULL, true);
+    destroy_doca_flow_handle(&fr->doh.dfh, queue_id, NULL);
     fr->doh.dfh.flow = NULL;
 }
 
@@ -1423,6 +1439,7 @@ doca_create_ct_zone_revisit_rule(struct netdev *netdev, uint32_t group,
                                  uint16_t zone, int nat,
                                  struct dpdk_offload_handle *doh)
 {
+    unsigned int tid = netdev_offload_thread_id();
     struct doca_flow_handle_resources flow_res;
     struct doca_ctl_pipe_ctx *next_pipe_ctx;
     uint32_t ct_state_spec, ct_state_mask;
@@ -1432,6 +1449,7 @@ doca_create_ct_zone_revisit_rule(struct netdev *netdev, uint32_t group,
     struct doca_flow_match mask;
     struct doca_flow_match spec;
     struct reg_field *reg_field;
+    unsigned int queue_id = tid;
     struct doca_flow_fwd fwd;
 
     memset(&flow_res, 0x0, sizeof flow_res);
@@ -1467,8 +1485,9 @@ doca_create_ct_zone_revisit_rule(struct netdev *netdev, uint32_t group,
     flow_res.next_pipe = next_pipe_ctx;
     flow_res.next_group = POSTCT_TABLE_ID;
 
-    hndl = create_doca_flow_handle(netdev, 0, group, &spec, &mask, NULL, NULL,
-                                   NULL, &fwd, &flow_res, doh, &error);
+    hndl = create_doca_flow_handle(netdev, queue_id, 0, group, &spec, &mask,
+                                   NULL, NULL, NULL, &fwd, &flow_res, doh,
+                                   &error);
     if (!hndl) {
         return -1;
     }
@@ -1481,6 +1500,7 @@ doca_create_ct_zone_uphold_rule(struct netdev *netdev,
                                 uint16_t zone, int nat, bool match_tcp,
                                 struct dpdk_offload_handle *doh)
 {
+    unsigned int tid = netdev_offload_thread_id();
     struct doca_flow_handle_resources flow_res;
     struct doca_flow_action_descs dacts_descs;
     struct doca_flow_actions dacts;
@@ -1489,6 +1509,7 @@ doca_create_ct_zone_uphold_rule(struct netdev *netdev,
     struct doca_flow_match mask;
     struct rte_flow_error error;
     struct reg_field *reg_field;
+    unsigned int queue_id = tid;
     struct doca_flow_fwd fwd;
     uint32_t next_group;
 
@@ -1524,9 +1545,9 @@ doca_create_ct_zone_uphold_rule(struct netdev *netdev,
     flow_res.next_pipe = NULL;
     flow_res.next_group = next_group;
 
-    hndl = create_doca_flow_handle(netdev, 1, group, &spec, &mask, &dacts,
-                                   &dacts_descs, NULL, &fwd, &flow_res, doh,
-                                   &error);
+    hndl = create_doca_flow_handle(netdev, queue_id, 1, group, &spec, &mask,
+                                   &dacts, &dacts_descs, NULL, &fwd, &flow_res,
+                                   doh, &error);
     if (!hndl) {
         return -1;
     }
@@ -1537,10 +1558,12 @@ static int
 doca_create_ct_zone_miss_rule(struct netdev *netdev, uint32_t group,
                               struct dpdk_offload_handle *doh)
 {
+    unsigned int tid = netdev_offload_thread_id();
     struct doca_flow_handle_resources flow_res;
     struct doca_ctl_pipe_ctx *pipe_ctx;
     struct doca_flow_handle *hndl;
     struct rte_flow_error error;
+    unsigned int queue_id = tid;
     struct doca_flow_fwd fwd;
 
     memset(&flow_res, 0, sizeof flow_res);
@@ -1556,8 +1579,9 @@ doca_create_ct_zone_miss_rule(struct netdev *netdev, uint32_t group,
     flow_res.next_pipe = pipe_ctx;
     flow_res.next_group = MISS_TABLE_ID;
 
-    hndl = create_doca_flow_handle(netdev, 2, group, NULL, NULL, NULL, NULL,
-                                   NULL, &fwd, &flow_res, doh, &error);
+    hndl = create_doca_flow_handle(netdev, queue_id, 2, group, NULL, NULL,
+                                   NULL, NULL, NULL, &fwd, &flow_res, doh,
+                                   &error);
     if (!hndl) {
         return -1;
     }
