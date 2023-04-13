@@ -19,7 +19,16 @@
 #include "smap.h"
 #include "vswitch-idl.h"
 
-#define OVS_DOCA_MAX_CT_CONNS 500000
+#define OVS_DOCA_MAX_CT_CONNS 250000
+
+/* Connections are offloaded with one hardware rule per direction.
+ * The netdev-offload layer manages offloads rule-wise, so a
+ * connection is handled in two parts. This discrepancy can be
+ * misleading.
+ * This macro expresses the number of hardware rules required
+ * to handle the number of CT connections supported by ovs-doca.
+ */
+#define OVS_DOCA_MAX_CT_RULES (OVS_DOCA_MAX_CT_CONNS * 2)
 
 bool
 ovs_doca_enabled(void);
