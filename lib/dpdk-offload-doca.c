@@ -1754,8 +1754,8 @@ doca_ct_pipe_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx,
     struct doca_flow_fwd fwd;
     struct reg_field *ct_reg;
     struct ds pipe_name;
+    int nb_actions = 0;
     uint32_t reg_mask;
-    int nb_actions;
     int ret, i;
 
     pipe_ctx = &ctx->ct_pipes[nw_type][tp_type][ct_type];
