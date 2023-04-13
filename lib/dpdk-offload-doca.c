@@ -1743,7 +1743,7 @@ doca_ct_pipe_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx,
     struct doca_ctl_pipe_ctx *miss_pipe_ctx = NULL;
     struct doca_ctl_pipe_ctx *fwd_pipe_ctx = NULL;
     struct doca_flow_actions actions[2];
-    struct doca_flow_actions *actions_list = actions;
+    struct doca_flow_actions *actions_list[ARRAY_SIZE(actions)];
     struct doca_basic_pipe_ctx *pipe_ctx;
     struct doca_flow_match match_mask;
     struct doca_flow_pipe *miss_pipe;
@@ -1834,6 +1834,7 @@ doca_ct_pipe_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx,
             reg_mask = ct_reg->mask << ct_reg->offset;
             actions[i].meta.u32[ct_reg->index] |= reg_mask;
         }
+        actions_list[i] = &actions[i];
     }
 
     /* Finalize the match templates. */
@@ -1854,7 +1855,7 @@ doca_ct_pipe_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx,
     cfg.port = doca_flow_port_switch_get();
     cfg.match = &ct_matches[nw_type][tp_type];
     cfg.match_mask = &match_mask;
-    cfg.actions = &actions_list;
+    cfg.actions = actions_list;
     cfg.monitor = &monitor;
 
     fwd_pipe_ctx = doca_ctl_pipe_ctx_ref(netdev, POSTCT_TABLE_ID);
