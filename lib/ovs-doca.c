@@ -31,8 +31,12 @@ static atomic_bool doca_initialized = ATOMIC_VAR_INIT(false);
 static FILE *log_stream = NULL;       /* Stream for DOCA log redirection */
 static struct doca_logger_backend *doca_logger = NULL;
 
-/* Maximum number of megaflows */
-#define OVS_DOCA_MAX_COUNTERS (1 << 16)
+/* Estimated maximum number of megaflows */
+#define OVS_DOCA_MAX_MEGAFLOWS_COUNTERS (1 << 16)
+/* For now, no shared counters, and we 2 counters are used per connection. */
+#define OVS_DOCA_MAX_CT_COUNTERS (OVS_DOCA_MAX_CT_CONNS * 2)
+#define OVS_DOCA_MAX_COUNTERS \
+    (OVS_DOCA_MAX_MEGAFLOWS_COUNTERS + OVS_DOCA_MAX_CT_COUNTERS)
 
 #define MAX_PORT_STR_LEN 128
 
