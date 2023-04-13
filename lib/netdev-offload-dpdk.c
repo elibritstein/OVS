@@ -220,9 +220,9 @@ offload_data_init(struct netdev *netdev)
                                   sizeof *data->flow_counters);
     data->conn_counters = xcalloc(netdev_offload_thread_nb(),
                                   sizeof *data->conn_counters);
-    data->aux_tables_once = (struct ovsthread_once) OVSTHREAD_ONCE_INITIALIZER;
 
     ovsrcu_set(&netdev->hw_info.offload_data, (void *) data);
+    offload->aux_tables_init(netdev);
 
     return 0;
 }
@@ -230,7 +230,6 @@ offload_data_init(struct netdev *netdev)
 static void
 offload_data_destroy__(struct netdev_offload_dpdk_data *data)
 {
-    ovs_mutex_destroy(&data->aux_tables_once.mutex);
     ovs_mutex_destroy(&data->map_lock);
     free(data->offload_counters);
     free(data->flow_counters);
@@ -259,6 +258,7 @@ offload_data_destroy(struct netdev *netdev)
         ovsrcu_postpone(free, node);
     }
 
+    offload->aux_tables_uninit(netdev);
     cmap_destroy(&data->ufid_to_rte_flow);
     ovsrcu_postpone(offload_data_destroy__, data);
 
@@ -371,8 +371,6 @@ ufid_to_rte_flow_associate(const ovs_u128 *ufid, struct netdev *netdev,
     data = xzalloc(sizeof *data);
 
     offload_data_lock(netdev);
-
-    offload->aux_tables_init(physdev);
 
     /*
      * We should not simply overwrite an existing rte flow.
@@ -5898,8 +5896,6 @@ flush_netdev_flows_in_related(struct netdev *netdev, struct netdev *related)
         return -1;
     }
 
-    offload->aux_tables_uninit(netdev);
-
     CMAP_FOR_EACH (data, node, map) {
         if (data->netdev != netdev && data->physdev != netdev) {
             continue;
@@ -6269,10 +6265,9 @@ netdev_offload_dpdk_ct_counter_query(struct netdev *netdev,
 }
 
 static void
-fixed_rule_uninit(struct netdev *netdev, unsigned int tid,
-                  struct fixed_rule *fr, bool is_esw)
+fixed_rule_uninit(struct netdev *netdev, struct fixed_rule *fr, bool is_esw)
 {
-    if (fr->creation_tid != tid || !fr->doh.rte_flow) {
+    if (!fr->doh.rte_flow) {
         return;
     }
 
@@ -6281,26 +6276,22 @@ fixed_rule_uninit(struct netdev *netdev, unsigned int tid,
 }
 
 static void
-ct_nat_miss_uninit(struct netdev *netdev, unsigned int tid,
-                   struct fixed_rule *fr)
+ct_nat_miss_uninit(struct netdev *netdev, struct fixed_rule *fr)
 {
-    fixed_rule_uninit(netdev, tid, fr, true);
+    fixed_rule_uninit(netdev, fr, true);
 }
 
 static int
-ct_nat_miss_init(struct netdev *netdev, unsigned int tid,
-                 struct fixed_rule *fr)
+ct_nat_miss_init(struct netdev *netdev, struct fixed_rule *fr)
 {
     if (add_miss_flow(netdev, CTNAT_TABLE_ID, CT_TABLE_ID, 0, &fr->doh)) {
         return -1;
     }
-    fr->creation_tid = tid;
     return 0;
 }
 
 static void
-ct_zones_uninit(struct netdev *netdev, unsigned int tid,
-                struct netdev_offload_dpdk_data *data)
+ct_zones_uninit(struct netdev *netdev, struct netdev_offload_dpdk_data *data)
 {
     struct fixed_rule *fr;
     uint32_t zone_id;
@@ -6315,15 +6306,14 @@ ct_zones_uninit(struct netdev *netdev, unsigned int tid,
             for (zone_id = MIN_ZONE_ID; zone_id <= MAX_ZONE_ID; zone_id++) {
                 fr = &data->zone_flows[nat][i][zone_id];
 
-                fixed_rule_uninit(netdev, tid, fr, true);
+                fixed_rule_uninit(netdev, fr, true);
             }
         }
     }
 }
 
 static int
-ct_zones_init(struct netdev *netdev, unsigned int tid,
-              struct netdev_offload_dpdk_data *data)
+ct_zones_init(struct netdev *netdev, struct netdev_offload_dpdk_data *data)
 {
     struct rte_flow_action_set_tag set_tag;
     struct rte_flow_item_port_id port_id;
@@ -6414,7 +6404,6 @@ ct_zones_init(struct netdev *netdev, unsigned int tid,
                 goto err;
             }
             fr->doh.rte_flow = doh.rte_flow;
-            fr->creation_tid = tid;
 
             fr = &data->zone_flows[nat][1][zone_id];
             attr.priority = 1;
@@ -6436,27 +6425,24 @@ ct_zones_init(struct netdev *netdev, unsigned int tid,
                 goto err;
             }
             fr->doh.rte_flow = doh.rte_flow;
-            fr->creation_tid = tid;
         }
     }
 
     return 0;
 
 err:
-    ct_zones_uninit(netdev, tid, data);
+    ct_zones_uninit(netdev, data);
     return -1;
 }
 
 static void
-hairpin_uninit(struct netdev *netdev, unsigned int tid,
-               struct fixed_rule *fr)
+hairpin_uninit(struct netdev *netdev, struct fixed_rule *fr)
 {
-    fixed_rule_uninit(netdev, tid, fr, false);
+    fixed_rule_uninit(netdev, fr, false);
 }
 
 static int
-hairpin_init(struct netdev *netdev, unsigned int tid,
-             struct fixed_rule *fr)
+hairpin_init(struct netdev *netdev, struct fixed_rule *fr)
 {
     struct rte_flow_attr attr = { .ingress = 1, };
     struct rte_flow_item_mark hp_mark;
@@ -6485,14 +6471,12 @@ hairpin_init(struct netdev *netdev, unsigned int tid,
         return -1;
     }
     fr->doh.rte_flow = doh.rte_flow;
-    fr->creation_tid = tid;
     return 0;
 }
 
 static void
 rte_aux_tables_uninit(struct netdev *netdev)
 {
-    unsigned int tid = netdev_offload_thread_id();
     struct netdev_offload_dpdk_data *data;
 
     if (netdev_vport_is_vport_class(netdev->netdev_class)) {
@@ -6502,16 +6486,16 @@ rte_aux_tables_uninit(struct netdev *netdev)
     data = (struct netdev_offload_dpdk_data *)
         ovsrcu_get(void *, &netdev->hw_info.offload_data);
 
-    ct_nat_miss_uninit(netdev, tid, &data->ct_nat_miss);
-    ct_zones_uninit(netdev, tid, data);
-    hairpin_uninit(netdev, tid, &data->hairpin);
+    ct_nat_miss_uninit(netdev, &data->ct_nat_miss);
+    ct_zones_uninit(netdev, data);
+    hairpin_uninit(netdev, &data->hairpin);
 }
 
 static int
 rte_aux_tables_init(struct netdev *netdev)
 {
-    unsigned int tid = netdev_offload_thread_id();
     struct netdev_offload_dpdk_data *data;
+    int ret = 0;
 
     if (netdev_vport_is_vport_class(netdev->netdev_class)) {
         return 0;
@@ -6520,27 +6504,19 @@ rte_aux_tables_init(struct netdev *netdev)
     data = (struct netdev_offload_dpdk_data *)
         ovsrcu_get(void *, &netdev->hw_info.offload_data);
 
-    if (ovsthread_once_start(&data->aux_tables_once)) {
-        int ret;
-
-        ret = ct_nat_miss_init(netdev, tid, &data->ct_nat_miss);
-        if (!ret) {
-            ret = ct_zones_init(netdev, tid, data);
-        }
-        if (!ret) {
-            ret = hairpin_init(netdev, tid, &data->hairpin);
-        }
-        ovsthread_once_done(&data->aux_tables_once);
-        if (ret) {
-            VLOG_WARN("Cannot apply init flows for netdev %s",
-                      netdev_get_name(netdev));
-            rte_aux_tables_uninit(netdev);
-            data->aux_tables_once = (struct ovsthread_once) OVSTHREAD_ONCE_INITIALIZER;
-        }
-        return ret;
+    ret = ct_nat_miss_init(netdev, &data->ct_nat_miss);
+    if (!ret) {
+        ret = ct_zones_init(netdev, data);
     }
-
-    return 0;
+    if (!ret) {
+        ret = hairpin_init(netdev, &data->hairpin);
+    }
+    if (ret) {
+        VLOG_WARN("Cannot apply init flows for netdev %s",
+                  netdev_get_name(netdev));
+        rte_aux_tables_uninit(netdev);
+    }
+    return ret;
 }
 
 static int

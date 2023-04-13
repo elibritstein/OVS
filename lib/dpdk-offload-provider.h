@@ -74,7 +74,6 @@ BUILD_ASSERT_DECL(MEMBER_SIZEOF(struct dpdk_offload_handle, rte_flow) ==
 
 struct fixed_rule {
     struct dpdk_offload_handle doh;
-    unsigned int creation_tid;
 };
 
 struct netdev_offload_dpdk_data {

@@ -693,6 +693,7 @@ netdev_offload_thread_init(unsigned int tid)
 {
     bool thread_is_hw_offload;
     bool thread_is_ct_clean;
+    bool thread_is_main;
     bool thread_is_rcu;
 
     thread_is_hw_offload = !strncmp(get_subprogram_name(),
@@ -700,14 +701,22 @@ netdev_offload_thread_init(unsigned int tid)
     thread_is_rcu = !strncmp(get_subprogram_name(), "urcu", strlen("urcu"));
     thread_is_ct_clean = !strncmp(get_subprogram_name(), "ct_clean",
                                   strlen("ct_clean"));
+    thread_is_main = *ovsthread_id_get() == 0;
 
     /* Panic if any other thread besides offload and RCU tries
      * to initialize their thread ID. */
-    ovs_assert(thread_is_hw_offload || thread_is_rcu || thread_is_ct_clean);
+    ovs_assert(thread_is_hw_offload || thread_is_rcu || thread_is_ct_clean ||
+               thread_is_main);
 
     if (*netdev_offload_thread_id_get() == OVSTHREAD_ID_UNSET) {
         unsigned int id;
 
+        if (thread_is_main) {
+            /* Main thread does the aux-tables init/uninit. It uses 0 thread-id
+             * as it is always a valid offload thread.
+             */
+            return 0;
+        }
         if (thread_is_ct_clean) {
             id = netdev_offload_thread_nb();
             return *netdev_offload_thread_id_get() = id;

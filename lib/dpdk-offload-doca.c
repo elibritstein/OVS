@@ -108,6 +108,8 @@
 
 #define ENTRY_PROCESS_TIMEOUT_MS 1000
 #define NUM_ZONE_FLOWS 4
+/* TBD until doca can support insertion from more than one queue */
+#define AUX_QUEUE 0
 
 VLOG_DEFINE_THIS_MODULE(dpdk_offload_doca);
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(600, 600);
@@ -1398,22 +1400,18 @@ dpdk_offload_doca_update_stats(struct dpif_flow_stats *stats,
 }
 
 static void
-doca_fixed_rule_uninit(unsigned int tid,
-                       struct fixed_rule *fr)
+doca_fixed_rule_uninit(struct fixed_rule *fr)
 {
-    unsigned int queue_id = tid;
-
-    if (fr->creation_tid != tid || !fr->doh.dfh.flow) {
+    if (!fr->doh.dfh.flow) {
         return;
     }
 
-    destroy_doca_flow_handle(&fr->doh.dfh, queue_id, NULL);
+    destroy_doca_flow_handle(&fr->doh.dfh, AUX_QUEUE, NULL);
     fr->doh.dfh.flow = NULL;
 }
 
 static void
-doca_ct_zones_uninit(unsigned int tid,
-                     struct doca_eswitch_ctx *ctx)
+doca_ct_zones_uninit(struct doca_eswitch_ctx *ctx)
 {
     struct fixed_rule *fr;
     uint32_t zone_id;
@@ -1427,8 +1425,7 @@ doca_ct_zones_uninit(unsigned int tid,
         for (i = 0; i < NUM_ZONE_FLOWS; i++) {
             for (zone_id = MIN_ZONE_ID; zone_id <= MAX_ZONE_ID; zone_id++) {
                 fr = &ctx->zone_flows[nat][i][zone_id];
-
-                doca_fixed_rule_uninit(tid, fr);
+                doca_fixed_rule_uninit(fr);
             }
         }
     }
@@ -1439,7 +1436,6 @@ doca_create_ct_zone_revisit_rule(struct netdev *netdev, uint32_t group,
                                  uint16_t zone, int nat,
                                  struct dpdk_offload_handle *doh)
 {
-    unsigned int tid = netdev_offload_thread_id();
     struct doca_flow_handle_resources flow_res;
     struct doca_ctl_pipe_ctx *next_pipe_ctx;
     uint32_t ct_state_spec, ct_state_mask;
@@ -1449,7 +1445,6 @@ doca_create_ct_zone_revisit_rule(struct netdev *netdev, uint32_t group,
     struct doca_flow_match mask;
     struct doca_flow_match spec;
     struct reg_field *reg_field;
-    unsigned int queue_id = tid;
     struct doca_flow_fwd fwd;
 
     memset(&flow_res, 0x0, sizeof flow_res);
@@ -1485,7 +1480,7 @@ doca_create_ct_zone_revisit_rule(struct netdev *netdev, uint32_t group,
     flow_res.next_pipe = next_pipe_ctx;
     flow_res.next_group = POSTCT_TABLE_ID;
 
-    hndl = create_doca_flow_handle(netdev, queue_id, 0, group, &spec, &mask,
+    hndl = create_doca_flow_handle(netdev, AUX_QUEUE, 0, group, &spec, &mask,
                                    NULL, NULL, NULL, &fwd, &flow_res, doh,
                                    &error);
     if (!hndl) {
@@ -1500,7 +1495,6 @@ doca_create_ct_zone_uphold_rule(struct netdev *netdev,
                                 uint16_t zone, int nat, bool match_tcp,
                                 struct dpdk_offload_handle *doh)
 {
-    unsigned int tid = netdev_offload_thread_id();
     struct doca_flow_handle_resources flow_res;
     struct doca_flow_action_descs dacts_descs;
     struct doca_flow_actions dacts;
@@ -1509,7 +1503,6 @@ doca_create_ct_zone_uphold_rule(struct netdev *netdev,
     struct doca_flow_match mask;
     struct rte_flow_error error;
     struct reg_field *reg_field;
-    unsigned int queue_id = tid;
     struct doca_flow_fwd fwd;
     uint32_t next_group;
 
@@ -1545,7 +1538,7 @@ doca_create_ct_zone_uphold_rule(struct netdev *netdev,
     flow_res.next_pipe = NULL;
     flow_res.next_group = next_group;
 
-    hndl = create_doca_flow_handle(netdev, queue_id, 1, group, &spec, &mask,
+    hndl = create_doca_flow_handle(netdev, AUX_QUEUE, 1, group, &spec, &mask,
                                    &dacts, &dacts_descs, NULL, &fwd, &flow_res,
                                    doh, &error);
     if (!hndl) {
@@ -1558,12 +1551,10 @@ static int
 doca_create_ct_zone_miss_rule(struct netdev *netdev, uint32_t group,
                               struct dpdk_offload_handle *doh)
 {
-    unsigned int tid = netdev_offload_thread_id();
     struct doca_flow_handle_resources flow_res;
     struct doca_ctl_pipe_ctx *pipe_ctx;
     struct doca_flow_handle *hndl;
     struct rte_flow_error error;
-    unsigned int queue_id = tid;
     struct doca_flow_fwd fwd;
 
     memset(&flow_res, 0, sizeof flow_res);
@@ -1579,7 +1570,7 @@ doca_create_ct_zone_miss_rule(struct netdev *netdev, uint32_t group,
     flow_res.next_pipe = pipe_ctx;
     flow_res.next_group = MISS_TABLE_ID;
 
-    hndl = create_doca_flow_handle(netdev, queue_id, 2, group, NULL, NULL,
+    hndl = create_doca_flow_handle(netdev, AUX_QUEUE, 2, group, NULL, NULL,
                                    NULL, NULL, NULL, &fwd, &flow_res, doh,
                                    &error);
     if (!hndl) {
@@ -1589,8 +1580,7 @@ doca_create_ct_zone_miss_rule(struct netdev *netdev, uint32_t group,
 }
 
 static int
-doca_ct_zones_init(struct netdev *netdev, unsigned int tid,
-                   struct doca_eswitch_ctx *ctx)
+doca_ct_zones_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx)
 {
     struct fixed_rule *fr;
     uint32_t base_group;
@@ -1617,7 +1607,6 @@ doca_ct_zones_init(struct netdev *netdev, unsigned int tid,
                                                  zone_id, nat, &fr->doh)) {
                 goto err;
             }
-            fr->creation_tid = tid;
 
             /* Otherwise, set the zone and go to CT/CT-NAT. */
 
@@ -1627,7 +1616,6 @@ doca_ct_zones_init(struct netdev *netdev, unsigned int tid,
                                                 nat, false, &fr->doh)) {
                 goto err;
             }
-            fr->creation_tid = tid;
 
             fr = &ctx->zone_flows[nat][2][zone_id];
             if (doca_create_ct_zone_uphold_rule(netdev, ctx,
@@ -1635,7 +1623,6 @@ doca_ct_zones_init(struct netdev *netdev, unsigned int tid,
                                                 zone_id, nat, true, &fr->doh)) {
                 goto err;
             }
-            fr->creation_tid = tid;
 
             /* Finally if the CT-zone was never visited, but the packet does
              * not match either TCP(!SFR) or UDP, miss and go to SW. */
@@ -1645,14 +1632,13 @@ doca_ct_zones_init(struct netdev *netdev, unsigned int tid,
                                               &fr->doh)) {
                 goto err;
             }
-            fr->creation_tid = tid;
         }
     }
 
     return 0;
 
 err:
-    doca_ct_zones_uninit(tid, ctx);
+    doca_ct_zones_uninit(ctx);
     return -1;
 }
 
@@ -1959,10 +1945,9 @@ static struct offload_metadata *doca_eswitch_md;
 static void
 doca_eswitch_ctx_uninit(void *ctx_)
 {
-    unsigned int tid = netdev_offload_thread_id();
     struct doca_eswitch_ctx *ctx = ctx_;
 
-    doca_ct_zones_uninit(tid, ctx);
+    doca_ct_zones_uninit(ctx);
     doca_ct_pipes_destroy(ctx);
     ctx->esw_port = NULL;
 }
@@ -1971,14 +1956,13 @@ static int
 doca_eswitch_ctx_init(void *ctx_, void *arg_, uint32_t id OVS_UNUSED)
 {
     struct netdev *netdev = (struct netdev *) arg_;
-    unsigned int tid = netdev_offload_thread_id();
     struct doca_eswitch_ctx *ctx = ctx_;
 
     if (doca_ct_pipes_init(netdev, ctx)) {
         goto error;
     }
 
-    if (doca_ct_zones_init(netdev, tid, ctx)) {
+    if (doca_ct_zones_init(netdev, ctx)) {
         goto error;
     }
 
@@ -2020,9 +2004,9 @@ doca_eswitch_init(void)
             .priv_init = doca_eswitch_ctx_init,
             .priv_uninit = doca_eswitch_ctx_uninit,
         };
-        unsigned int nb_thread = netdev_offload_thread_nb();
 
-        doca_eswitch_md = offload_metadata_create(nb_thread, "doca_eswitch",
+        /* Only one thread (main) handles the eswitch offload metadata. */
+        doca_eswitch_md = offload_metadata_create(1, "doca_eswitch",
                                                   sizeof(struct doca_flow_port *),
                                                   dump_doca_eswitch, params);
 
