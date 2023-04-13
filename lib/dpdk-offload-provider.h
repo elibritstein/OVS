@@ -130,11 +130,11 @@ struct dpdk_offload_api {
                   struct dpdk_offload_handle *doh,
                   struct rte_flow_error *error);
     int (*destroy)(struct netdev *netdev,
-                   struct rte_flow *rte_flow,
+                   struct dpdk_offload_handle *doh,
                    struct rte_flow_error *error,
                    bool esw_port_id);
     int (*query_count)(struct netdev *netdev,
-                       struct rte_flow *rte_flow,
+                       struct dpdk_offload_handle *doh,
                        struct rte_flow_query_count *query,
                        struct rte_flow_error *error);
 

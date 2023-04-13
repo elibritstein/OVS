@@ -1272,14 +1272,14 @@ destroy_doca_flow_entry(struct doca_flow_pipe_entry *flow)
 
 static int
 dpdk_offload_doca_destroy(struct netdev *netdev OVS_UNUSED,
-                          struct rte_flow *rte_flow,
+                          struct dpdk_offload_handle *doh,
                           struct rte_flow_error *error,
                           bool esw_port_id OVS_UNUSED)
 {
     struct doca_flow_handle *hndl;
     doca_error_t err;
 
-    hndl = (struct doca_flow_handle *) (void *) rte_flow;
+    hndl = (struct doca_flow_handle *) (void *) doh->rte_flow;
 
     err = destroy_doca_flow_entry(hndl->flow);
     if (err) {
@@ -1300,7 +1300,7 @@ dpdk_offload_doca_destroy(struct netdev *netdev OVS_UNUSED,
 
 static int
 dpdk_offload_doca_query_count(struct netdev *netdev,
-                              struct rte_flow *rte_flow,
+                              struct dpdk_offload_handle *doh,
                               struct rte_flow_query_count *query,
                               struct rte_flow_error *error)
 {
@@ -1309,7 +1309,7 @@ dpdk_offload_doca_query_count(struct netdev *netdev,
     struct doca_flow_query stats;
     doca_error_t err;
 
-    hndl = (struct doca_flow_handle *) (void *) rte_flow;
+    hndl = (struct doca_flow_handle *) (void *) doh->rte_flow;
     doca_flow = hndl->flow;
 
     memset(query, 0, sizeof *query);

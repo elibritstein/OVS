@@ -682,7 +682,7 @@ table_id_alloc(void)
     return 0;
 }
 
-static struct rte_flow *
+static struct dpdk_offload_handle *
 add_miss_flow(struct netdev *netdev,
               uint32_t src_table_id,
               uint32_t dst_table_id,
@@ -690,7 +690,7 @@ add_miss_flow(struct netdev *netdev,
 
 static int
 netdev_offload_dpdk_destroy_flow(struct netdev *netdev,
-                                 struct rte_flow *rte_flow,
+                                 struct dpdk_offload_handle *doh,
                                  const ovs_u128 *ufid, bool is_esw);
 
 static void
@@ -703,7 +703,7 @@ table_id_free(uint32_t id)
 
 struct table_id_ctx_priv {
     struct netdev *netdev;
-    struct rte_flow *miss_flow;
+    struct dpdk_offload_handle *miss_flow;
 };
 
 static int
@@ -754,6 +754,7 @@ table_id_ctx_uninit(void *priv_)
 
     netdev_offload_dpdk_destroy_flow(priv->netdev, priv->miss_flow, NULL, true);
     netdev_close(priv->netdev);
+    free(priv->miss_flow);
     priv->netdev = NULL;
 }
 
@@ -1152,7 +1153,7 @@ struct flow_miss_ctx_priv_arg {
 
 struct flow_miss_ctx_priv {
     struct netdev *netdev;
-    struct rte_flow *miss_flow;
+    struct dpdk_offload_handle *miss_flow;
 };
 
 static int
@@ -2768,14 +2769,14 @@ add_vport_match(struct flow_patterns *patterns,
 
 static int
 netdev_offload_dpdk_destroy_flow(struct netdev *netdev,
-                                 struct rte_flow *rte_flow,
+                                 struct dpdk_offload_handle *doh,
                                  const ovs_u128 *ufid, bool is_esw)
 {
     struct uuid ufid0 = UUID_ZERO;
     struct rte_flow_error error;
     int ret;
 
-    ret = offload->destroy(netdev, rte_flow, &error, is_esw);
+    ret = offload->destroy(netdev, doh, &error, is_esw);
     if (!ret) {
         unsigned int tid = netdev_offload_thread_id();
         struct netdev_offload_dpdk_data *data;
@@ -2788,14 +2789,14 @@ netdev_offload_dpdk_destroy_flow(struct netdev *netdev,
                     UUID_FMT, netdev_get_name(netdev),
                     is_esw ? netdev_dpdk_get_esw_mgr_port_id(netdev)
                            : netdev_dpdk_get_port_id(netdev),
-                    (intptr_t) rte_flow,
+                    (intptr_t) doh->rte_flow,
                     UUID_ARGS(ufid ? (struct uuid *) ufid : &ufid0));
     } else {
         VLOG_ERR("Failed: %s: flow destroy %d user_id rule 0x%"PRIxPTR" ufid "
                  UUID_FMT " %s (%u)", netdev_get_name(netdev),
                  is_esw ? netdev_dpdk_get_esw_mgr_port_id(netdev)
                         : netdev_dpdk_get_port_id(netdev),
-                 (intptr_t) rte_flow,
+                 (intptr_t) doh->rte_flow,
                  UUID_ARGS(ufid ? (struct uuid *) ufid : &ufid0),
                  error.message, error.type);
         return -1;
@@ -4362,7 +4363,7 @@ add_jump_action(struct flow_actions *actions, uint32_t group)
     add_flow_action(actions, RTE_FLOW_ACTION_TYPE_JUMP, jump);
 }
 
-static struct rte_flow *
+static struct dpdk_offload_handle *
 add_miss_flow(struct netdev *netdev,
               uint32_t src_table_id,
               uint32_t dst_table_id,
@@ -4388,7 +4389,7 @@ add_miss_flow(struct netdev *netdev,
         },
         .cnt = 3,
     };
-    struct dpdk_offload_handle doh;
+    struct dpdk_offload_handle *doh;
     struct rte_flow_error error;
 
     miss_attr.group = src_table_id;
@@ -4398,11 +4399,13 @@ add_miss_flow(struct netdev *netdev,
         miss_actions.cnt--;
     }
 
+    doh = xzalloc(sizeof *doh);
     port_id.id = netdev_dpdk_get_port_id(netdev);
     if (!create_rte_flow(netdev, &miss_attr, &miss_patterns, &miss_actions,
-                         &doh, &error)) {
-        return doh.rte_flow;
+                         doh, &error)) {
+        return doh;
     }
+    free(doh);
     return NULL;
 }
 
@@ -4871,8 +4874,7 @@ create_ct_conn(struct netdev *netdev,
 
 ct_err:
     if (netdev_offload_ct_on_ct_nat) {
-        netdev_offload_dpdk_destroy_flow(netdev, fi->doh[1].rte_flow, NULL,
-                                         true);
+        netdev_offload_dpdk_destroy_flow(netdev, &fi->doh[1], NULL, true);
     }
 out:
     free_flow_actions(&ct_actions, false);
@@ -4984,7 +4986,7 @@ create_pre_post_ct(struct netdev *netdev,
     goto out;
 
 pre_ct_err:
-    netdev_offload_dpdk_destroy_flow(netdev, fi->doh[1].rte_flow, NULL, true);
+    netdev_offload_dpdk_destroy_flow(netdev, &fi->doh[1], NULL, true);
 out:
     free_flow_actions(&pre_ct_actions, false);
     free_flow_actions(&post_ct_actions, false);
@@ -5597,7 +5599,7 @@ netdev_offload_dpdk_remove_flows(struct ufid_to_rte_flow_data *rte_flow_data)
 {
     unsigned int tid = netdev_offload_thread_id();
     struct netdev_offload_dpdk_data *data;
-    struct rte_flow *rte_flow;
+    struct dpdk_offload_handle *doh;
     struct netdev *physdev;
     struct netdev *netdev;
     ovs_u128 *ufid;
@@ -5624,13 +5626,13 @@ netdev_offload_dpdk_remove_flows(struct ufid_to_rte_flow_data *rte_flow_data)
     data = (struct netdev_offload_dpdk_data *)
         ovsrcu_get(void *, &netdev->hw_info.offload_data);
     for (i = 0; i < NUM_HANDLE_PER_ITEM; i++) {
-        rte_flow = rte_flow_data->flow_item.doh[i].rte_flow;
+        doh = &rte_flow_data->flow_item.doh[i];
 
-        if (!rte_flow) {
+        if (!doh->rte_flow) {
             continue;
         }
 
-        ret = netdev_offload_dpdk_destroy_flow(physdev, rte_flow, ufid, true);
+        ret = netdev_offload_dpdk_destroy_flow(physdev, doh, ufid, true);
         if (ret) {
             break;
         }
@@ -5827,8 +5829,8 @@ netdev_offload_dpdk_flow_get(struct netdev *netdev,
 {
     struct rte_flow_query_count query = { .reset = 1 };
     struct ufid_to_rte_flow_data *rte_flow_data;
+    struct dpdk_offload_handle *doh;
     struct rte_flow_error error;
-    struct rte_flow *rte_flow;
     struct indirect_ctx *ctx;
     int ret = 0;
 
@@ -5850,17 +5852,16 @@ netdev_offload_dpdk_flow_get(struct netdev *netdev,
     }
 
     attrs->offloaded = true;
-    rte_flow = rte_flow_data->flow_item.doh[1].rte_flow
-        ? rte_flow_data->flow_item.doh[1].rte_flow
-        : rte_flow_data->flow_item.doh[0].rte_flow;
+    doh = rte_flow_data->flow_item.doh[1].rte_flow
+        ? &rte_flow_data->flow_item.doh[1]
+        : &rte_flow_data->flow_item.doh[0];
 
     if (!rte_flow_data->act_resources.shared_count_ctx) {
-        ret = offload->query_count(rte_flow_data->physdev,
-                                   rte_flow, &query, &error);
+        ret = offload->query_count(rte_flow_data->physdev, doh, &query, &error);
         if (ret) {
             VLOG_DBG_RL(&rl, "%s: Failed to query ufid "UUID_FMT" flow: %p. "
                         "%d (%s)", netdev_get_name(netdev),
-                        UUID_ARGS((struct uuid *) ufid), rte_flow,
+                        UUID_ARGS((struct uuid *) ufid), doh->rte_flow,
                         error.type, error.message);
             goto out;
         }
@@ -6919,8 +6920,8 @@ netdev_offload_dpdk_conn_stats(struct netdev *netdev,
     struct rte_flow_query_count query = { .reset = 1 };
     struct ufid_to_rte_flow_data *rte_flow_data;
     const ovs_u128 *ufid = &ct_offload->ufid;
+    struct dpdk_offload_handle *doh;
     struct rte_flow_error error;
-    struct rte_flow *rte_flow;
     struct indirect_ctx *ctx;
     int ret = 0;
 
@@ -6945,13 +6946,12 @@ netdev_offload_dpdk_conn_stats(struct netdev *netdev,
         attrs->dp_layer = "dpdk";
     }
 
-    rte_flow = rte_flow_data->flow_item.doh[1].rte_flow
-        ? rte_flow_data->flow_item.doh[1].rte_flow
-        : rte_flow_data->flow_item.doh[0].rte_flow;
+    doh = rte_flow_data->flow_item.doh[1].rte_flow
+        ? &rte_flow_data->flow_item.doh[1]
+        : &rte_flow_data->flow_item.doh[0];
 
     if (!rte_flow_data->act_resources.shared_count_ctx) {
-        ret = offload->query_count(rte_flow_data->physdev,
-                                   rte_flow, &query, &error);
+        ret = offload->query_count(rte_flow_data->physdev, doh, &query, &error);
     } else {
         ctx = rte_flow_data->act_resources.shared_count_ctx;
         ret = offload->shared_query(ctx->port_id, ctx->act_hdl,
@@ -6960,7 +6960,7 @@ netdev_offload_dpdk_conn_stats(struct netdev *netdev,
     if (ret) {
         VLOG_DBG_RL(&rl, "%s: Failed to query ufid "UUID_FMT" flow: %p",
                     netdev_get_name(netdev), UUID_ARGS((struct uuid *) ufid),
-                    rte_flow);
+                    doh->rte_flow);
         goto out;
     }
     offload->update_stats(&rte_flow_data->stats, attrs, &query);
@@ -6982,10 +6982,30 @@ netdev_offload_dpdk_netdev_data_destroy(void *data OVS_UNUSED)
     return 0;
 }
 
+static int
+dpdk_offload_rte_destroy(struct netdev *netdev,
+                         struct dpdk_offload_handle *doh,
+                         struct rte_flow_error *error,
+                         bool esw_port_id)
+{
+    return netdev_dpdk_rte_flow_destroy(netdev, doh->rte_flow, error,
+                                        esw_port_id);
+}
+
+static int
+dpdk_offload_rte_query_count(struct netdev *netdev,
+                             struct dpdk_offload_handle *doh,
+                             struct rte_flow_query_count *query,
+                             struct rte_flow_error *error)
+{
+    return netdev_dpdk_rte_flow_query_count(netdev, doh->rte_flow, query,
+                                            error);
+}
+
 struct dpdk_offload_api dpdk_offload_api_rte = {
     .create = dpdk_offload_rte_create,
-    .destroy = netdev_dpdk_rte_flow_destroy,
-    .query_count = netdev_dpdk_rte_flow_query_count,
+    .destroy = dpdk_offload_rte_destroy,
+    .query_count = dpdk_offload_rte_query_count,
     .shared_create = netdev_dpdk_indirect_action_create,
     .shared_destroy = netdev_dpdk_indirect_action_destroy,
     .shared_query = netdev_dpdk_indirect_action_query,
