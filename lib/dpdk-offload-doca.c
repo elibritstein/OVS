@@ -1258,7 +1258,7 @@ dpdk_offload_doca_destroy(struct netdev *netdev OVS_UNUSED,
     struct doca_flow_handle *hndl;
     doca_error_t err;
 
-    hndl = (struct doca_flow_handle *) (void *) doh->rte_flow;
+    hndl = &doh->dfh;
 
     err = destroy_doca_flow_entry(hndl->flow);
     if (err) {
@@ -1287,7 +1287,7 @@ dpdk_offload_doca_query_count(struct netdev *netdev,
     struct doca_flow_query stats;
     doca_error_t err;
 
-    hndl = (struct doca_flow_handle *) (void *) doh->rte_flow;
+    hndl = &doh->dfh;
     doca_flow = hndl->flow;
 
     memset(query, 0, sizeof *query);
