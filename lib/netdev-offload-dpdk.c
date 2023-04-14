@@ -6277,12 +6277,12 @@ static void
 fixed_rule_uninit(struct netdev *netdev, unsigned int tid,
                   struct fixed_rule *fr, bool is_esw)
 {
-    if (fr->creation_tid != tid || !fr->flow) {
+    if (fr->creation_tid != tid || !fr->doh.rte_flow) {
         return;
     }
 
-    netdev_offload_dpdk_destroy_flow(netdev, fr->flow, NULL, is_esw);
-    fr->flow = NULL;
+    netdev_offload_dpdk_destroy_flow(netdev, &fr->doh, NULL, is_esw);
+    fr->doh.rte_flow = NULL;
 }
 
 static void
@@ -6296,12 +6296,15 @@ static int
 ct_nat_miss_init(struct netdev *netdev, unsigned int tid,
                  struct fixed_rule *fr)
 {
-    fr->flow = add_miss_flow(netdev, CTNAT_TABLE_ID, CT_TABLE_ID, 0);
-    fr->creation_tid = tid;
+    struct dpdk_offload_handle *doh;
 
-    if (fr->flow == NULL) {
+    doh = add_miss_flow(netdev, CTNAT_TABLE_ID, CT_TABLE_ID, 0);
+    if (doh == NULL) {
         return -1;
     }
+    fr->doh.rte_flow = doh->rte_flow;
+    free(doh);
+    fr->creation_tid = tid;
     return 0;
 }
 
@@ -6420,7 +6423,7 @@ ct_zones_init(struct netdev *netdev, unsigned int tid,
                                 &error)) {
                 goto err;
             }
-            fr->flow = doh.rte_flow;
+            fr->doh.rte_flow = doh.rte_flow;
             fr->creation_tid = tid;
 
             fr = &data->zone_flows[nat][1][zone_id];
@@ -6442,7 +6445,7 @@ ct_zones_init(struct netdev *netdev, unsigned int tid,
                                 &error)) {
                 goto err;
             }
-            fr->flow = doh.rte_flow;
+            fr->doh.rte_flow = doh.rte_flow;
             fr->creation_tid = tid;
         }
     }
@@ -6491,7 +6494,7 @@ hairpin_init(struct netdev *netdev, unsigned int tid,
     if (create_rte_flow(netdev, &attr, &patterns, &actions, &doh, &error)) {
         return -1;
     }
-    fr->flow = doh.rte_flow;
+    fr->doh.rte_flow = doh.rte_flow;
     fr->creation_tid = tid;
     return 0;
 }

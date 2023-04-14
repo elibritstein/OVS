@@ -48,24 +48,6 @@ struct raw_encap_data {
 };
 BUILD_ASSERT_DECL(offsetof(struct raw_encap_data, conf) == 0);
 
-struct fixed_rule {
-    void *flow;
-    unsigned int creation_tid;
-};
-
-struct netdev_offload_dpdk_data {
-    struct cmap ufid_to_rte_flow;
-    uint64_t *offload_counters;
-    uint64_t *flow_counters;
-    uint64_t *conn_counters;
-    struct ovs_mutex map_lock;
-    struct ovsthread_once aux_tables_once;
-    struct fixed_rule ct_nat_miss;
-    struct fixed_rule zone_flows[2][2][MAX_ZONE_ID + 1];
-    struct fixed_rule hairpin;
-    void *eswitch_ctx;
-};
-
 struct doca_flow_handle_resources {
     uint32_t group;
     struct doca_ctl_pipe_ctx *self_pipe;
@@ -89,6 +71,24 @@ BUILD_ASSERT_DECL(offsetof(struct dpdk_offload_handle, rte_flow) ==
                   offsetof(struct dpdk_offload_handle, dfh.flow));
 BUILD_ASSERT_DECL(MEMBER_SIZEOF(struct dpdk_offload_handle, rte_flow) ==
                   MEMBER_SIZEOF(struct dpdk_offload_handle, dfh.flow));
+
+struct fixed_rule {
+    struct dpdk_offload_handle doh;
+    unsigned int creation_tid;
+};
+
+struct netdev_offload_dpdk_data {
+    struct cmap ufid_to_rte_flow;
+    uint64_t *offload_counters;
+    uint64_t *flow_counters;
+    uint64_t *conn_counters;
+    struct ovs_mutex map_lock;
+    struct ovsthread_once aux_tables_once;
+    struct fixed_rule ct_nat_miss;
+    struct fixed_rule zone_flows[2][2][MAX_ZONE_ID + 1];
+    struct fixed_rule hairpin;
+    void *eswitch_ctx;
+};
 
 /* Proprietary rte-flow action enums. */
 enum {
