@@ -682,11 +682,12 @@ table_id_alloc(void)
     return 0;
 }
 
-static struct dpdk_offload_handle *
+static int
 add_miss_flow(struct netdev *netdev,
               uint32_t src_table_id,
               uint32_t dst_table_id,
-              uint32_t mark_id);
+              uint32_t mark_id,
+              struct dpdk_offload_handle *doh);
 
 static int
 netdev_offload_dpdk_destroy_flow(struct netdev *netdev,
@@ -703,7 +704,7 @@ table_id_free(uint32_t id)
 
 struct table_id_ctx_priv {
     struct netdev *netdev;
-    struct dpdk_offload_handle *miss_flow;
+    struct dpdk_offload_handle miss_flow;
 };
 
 static int
@@ -733,9 +734,8 @@ table_id_ctx_init(void *priv_, void *priv_arg_, uint32_t table_id)
         return -1;
     }
     priv->netdev = netdev_ref(priv_arg->netdev);
-    priv->miss_flow = add_miss_flow(priv->netdev, e2e_table_id, table_id, 0);
-
-    if (priv->miss_flow == NULL) {
+    if (add_miss_flow(priv->netdev, e2e_table_id, table_id, 0,
+                      &priv->miss_flow)) {
         priv->netdev = NULL;
         netdev_close(priv->netdev);
         return -1;
@@ -752,9 +752,8 @@ table_id_ctx_uninit(void *priv_)
        return;
     }
 
-    netdev_offload_dpdk_destroy_flow(priv->netdev, priv->miss_flow, NULL, true);
+    netdev_offload_dpdk_destroy_flow(priv->netdev, &priv->miss_flow, NULL, true);
     netdev_close(priv->netdev);
-    free(priv->miss_flow);
     priv->netdev = NULL;
 }
 
@@ -1153,7 +1152,7 @@ struct flow_miss_ctx_priv_arg {
 
 struct flow_miss_ctx_priv {
     struct netdev *netdev;
-    struct dpdk_offload_handle *miss_flow;
+    struct dpdk_offload_handle miss_flow;
 };
 
 static int
@@ -1167,10 +1166,8 @@ flow_miss_ctx_priv_init(void *priv_, void *priv_arg_, uint32_t mark_id)
     }
 
     priv->netdev = netdev_ref(priv_arg->netdev);
-    priv->miss_flow = add_miss_flow(priv->netdev, priv_arg->table_id,
-                                    MISS_TABLE_ID, mark_id);
-
-    if (priv->miss_flow == NULL) {
+    if (add_miss_flow(priv->netdev, priv_arg->table_id, MISS_TABLE_ID,
+                      mark_id, &priv->miss_flow)) {
         netdev_close(priv->netdev);
         priv->netdev = NULL;
         return -1;
@@ -1188,7 +1185,7 @@ flow_miss_ctx_priv_uninit(void *priv_)
        return;
     }
 
-    netdev_offload_dpdk_destroy_flow(priv->netdev, priv->miss_flow, NULL, true);
+    netdev_offload_dpdk_destroy_flow(priv->netdev, &priv->miss_flow, NULL, true);
     netdev_close(priv->netdev);
     priv->netdev = NULL;
 }
@@ -4364,11 +4361,12 @@ add_jump_action(struct flow_actions *actions, uint32_t group)
     add_flow_action(actions, RTE_FLOW_ACTION_TYPE_JUMP, jump);
 }
 
-static struct dpdk_offload_handle *
+static int
 add_miss_flow(struct netdev *netdev,
               uint32_t src_table_id,
               uint32_t dst_table_id,
-              uint32_t mark_id)
+              uint32_t mark_id,
+              struct dpdk_offload_handle *doh)
 {
     struct rte_flow_attr miss_attr = { .transfer = 1, .priority = 1, };
     struct rte_flow_item_port_id port_id;
@@ -4390,7 +4388,6 @@ add_miss_flow(struct netdev *netdev,
         },
         .cnt = 3,
     };
-    struct dpdk_offload_handle *doh;
     struct rte_flow_error error;
 
     miss_attr.group = src_table_id;
@@ -4400,14 +4397,12 @@ add_miss_flow(struct netdev *netdev,
         miss_actions.cnt--;
     }
 
-    doh = xzalloc(sizeof *doh);
     port_id.id = netdev_dpdk_get_port_id(netdev);
     if (!create_rte_flow(netdev, &miss_attr, &miss_patterns, &miss_actions,
                          doh, &error)) {
-        return doh;
+        return 0;
     }
-    free(doh);
-    return NULL;
+    return -1;
 }
 
 static int OVS_UNUSED
@@ -6296,14 +6291,9 @@ static int
 ct_nat_miss_init(struct netdev *netdev, unsigned int tid,
                  struct fixed_rule *fr)
 {
-    struct dpdk_offload_handle *doh;
-
-    doh = add_miss_flow(netdev, CTNAT_TABLE_ID, CT_TABLE_ID, 0);
-    if (doh == NULL) {
+    if (add_miss_flow(netdev, CTNAT_TABLE_ID, CT_TABLE_ID, 0, &fr->doh)) {
         return -1;
     }
-    fr->doh.rte_flow = doh->rte_flow;
-    free(doh);
     fr->creation_tid = tid;
     return 0;
 }
