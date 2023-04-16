@@ -731,6 +731,8 @@ doca_translate_gre_encap(const struct gre_base_hdr *gre,
     struct doca_flow_encap_action *encap = &dacts->encap;
     const void *gre_key;
 
+    /* Doca does not support L2 GRE. Until it does, disable this offload. */
+    return -1;
     encap->tun.protocol = gre->protocol;
     encap->tun.type = DOCA_FLOW_TUN_GRE;
     encap->tun.key_present = !!(gre->flags & htons(GRE_KEY));
@@ -940,7 +942,12 @@ doca_translate_actions(struct netdev *netdev OVS_UNUSED,
         } else if ((act_type == RTE_FLOW_ACTION_TYPE_NVGRE_DECAP) ||
                    (act_type == RTE_FLOW_ACTION_TYPE_VXLAN_DECAP) ||
                    (act_type == RTE_FLOW_ACTION_TYPE_RAW_DECAP)) {
-            /* VXLAN, GRE and GENEVE are supported natively */
+            /* VXLAN, L3 GRE and GENEVE are supported natively.
+             * L2 GRE is not however.
+             */
+            if (act_type == RTE_FLOW_ACTION_TYPE_NVGRE_DECAP) {
+                return -1;
+            }
             dacts->decap = true;
         } else if (act_type == RTE_FLOW_ACTION_TYPE_COUNT) {
             monitor->flags |= DOCA_FLOW_MONITOR_COUNT;
