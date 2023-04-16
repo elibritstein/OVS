@@ -733,7 +733,7 @@ doca_translate_gre_encap(const struct gre_base_hdr *gre,
 
     encap->tun.protocol = gre->protocol;
     encap->tun.type = DOCA_FLOW_TUN_GRE;
-    encap->tun.key_present = !!(gre->flags & GRE_KEY);
+    encap->tun.key_present = !!(gre->flags & htons(GRE_KEY));
 
     gre_key = gre + 1;
     if (encap->tun.key_present) {
