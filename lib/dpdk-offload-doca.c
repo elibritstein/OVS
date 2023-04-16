@@ -1349,7 +1349,13 @@ dpdk_offload_doca_get_pkt_recover_info(struct dp_packet *p,
 static int
 dpdk_offload_doca_netdev_data_destroy(void *data)
 {
-    return netdev_dpdk_doca_port_destroy((struct netdev *) data);
+    struct netdev *netdev = data;
+
+    if (netdev_vport_is_vport_class(netdev->netdev_class)) {
+        return 0;
+    }
+
+    return netdev_dpdk_doca_port_destroy(netdev);
 }
 
 static void
