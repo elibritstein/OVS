@@ -1527,7 +1527,7 @@ doca_create_ct_zone_uphold_rule(struct netdev *netdev,
     hndl = create_doca_flow_handle(netdev, 1, group, &spec, &mask, &dacts,
                                    &dacts_descs, NULL, &fwd, &flow_res, doh,
                                    &error);
-    if (hndl) {
+    if (!hndl) {
         return -1;
     }
     return 0;
@@ -1558,7 +1558,7 @@ doca_create_ct_zone_miss_rule(struct netdev *netdev, uint32_t group,
 
     hndl = create_doca_flow_handle(netdev, 2, group, NULL, NULL, NULL, NULL,
                                    NULL, &fwd, &flow_res, doh, &error);
-    if (hndl) {
+    if (!hndl) {
         return -1;
     }
     return 0;
