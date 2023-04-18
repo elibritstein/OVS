@@ -358,8 +358,7 @@ is_ct_zone_group_id(uint32_t group)
 }
 
 static struct doca_ctl_pipe_ctx *
-doca_ctl_pipe_ctx_ref(struct netdev *netdev,
-                      uint32_t group_id)
+doca_ctl_pipe_ctx_ref(struct netdev *netdev, uint32_t group_id)
 {
     struct doca_ctl_pipe_key key = {
         .group_id = group_id,
@@ -374,7 +373,7 @@ doca_ctl_pipe_ctx_ref(struct netdev *netdev,
     /* The pipe for recirc = 0 without any tunnel involved is
      * global and shared among devices on the esw. It is a root pipe.
      */
-    is_root = (group_id == 0);
+    is_root = group_id == 0;
     snprintf(pipe_name, sizeof pipe_name, "OVS_CTL_PIPE_%" PRIu32, group_id);
 
     memset(&arg.cfg, 0, sizeof arg.cfg);
@@ -1020,16 +1019,16 @@ doca_translate_actions(struct netdev *netdev OVS_UNUSED,
             monitor->flags |= DOCA_FLOW_MONITOR_COUNT;
         } else if (act_type == RTE_FLOW_ACTION_TYPE_JUMP) {
             const struct rte_flow_action_jump *jump = actions->conf;
-            struct doca_ctl_pipe_ctx *next_pipe;
+            struct doca_ctl_pipe_ctx *next_pipe_ctx;
 
-            next_pipe = doca_ctl_pipe_ctx_ref(netdev, jump->group);
-            if (!next_pipe) {
+            next_pipe_ctx = doca_ctl_pipe_ctx_ref(netdev, jump->group);
+            if (!next_pipe_ctx) {
                 return -1;
             }
 
             fwd->type = DOCA_FLOW_FWD_PIPE;
-            fwd->next_pipe = next_pipe->pipe;
-            flow_res->next_pipe = next_pipe;
+            fwd->next_pipe = next_pipe_ctx->pipe;
+            flow_res->next_pipe_ctx = next_pipe_ctx;
             flow_res->next_group = jump->group;
         } else if (act_type == RTE_FLOW_ACTION_TYPE_VXLAN_ENCAP) {
             if (doca_translate_vxlan_encap(actions, dacts)) {
@@ -1127,7 +1126,7 @@ create_doca_basic_flow_entry(struct netdev *netdev,
 static struct doca_flow_pipe_entry *
 create_doca_ctl_flow_entry(struct netdev *netdev,
                            unsigned int queue_id,
-                           struct doca_ctl_pipe_ctx *self_pipe,
+                           struct doca_ctl_pipe_ctx *self_pipe_ctx,
                            uint32_t prio,
                            struct doca_flow_match *spec,
                            struct doca_flow_match *mask,
@@ -1137,7 +1136,7 @@ create_doca_ctl_flow_entry(struct netdev *netdev,
                            struct doca_flow_fwd *fwd,
                            struct rte_flow_error *error)
 {
-    struct doca_flow_pipe *pipe = self_pipe->pipe;
+    struct doca_flow_pipe *pipe = self_pipe_ctx->pipe;
     struct doca_flow_pipe_entry *entry;
     doca_error_t err;
 
@@ -1249,7 +1248,7 @@ create_doca_flow_handle(struct netdev *netdev,
     }
 
     memcpy(&hndl->flow_res, flow_res, sizeof *flow_res);
-    hndl->flow_res.self_pipe = pipe_ctx;
+    hndl->flow_res.self_pipe_ctx = pipe_ctx;
     hndl->flow_res.group = group;
 
     return hndl;
@@ -1306,14 +1305,14 @@ dpdk_offload_doca_create(struct netdev *netdev,
         return -1;
     }
 
-    prio = (flow_res.next_group == MISS_TABLE_ID);
+    prio = flow_res.next_group == MISS_TABLE_ID;
     hndl = create_doca_flow_handle(netdev, queue_id, prio, attr->group, &spec,
                                    &mask, &dacts, &dacts_descs, &monitor, &fwd,
                                    &flow_res, doh, error);
     if (!hndl) {
         /* change to free doca flow resources function */
-        if (flow_res.next_pipe) {
-            doca_ctl_pipe_ctx_unref(flow_res.next_pipe);
+        if (flow_res.next_pipe_ctx) {
+            doca_ctl_pipe_ctx_unref(flow_res.next_pipe_ctx);
         }
         return -1;
     }
@@ -1344,11 +1343,11 @@ destroy_doca_flow_handle(struct doca_flow_handle *dfh,
         return -1;
     }
 
-    if (dfh->flow_res.next_pipe) {
-        doca_ctl_pipe_ctx_unref(dfh->flow_res.next_pipe);
+    if (dfh->flow_res.next_pipe_ctx) {
+        doca_ctl_pipe_ctx_unref(dfh->flow_res.next_pipe_ctx);
     }
 
-    doca_ctl_pipe_ctx_unref(dfh->flow_res.self_pipe);
+    doca_ctl_pipe_ctx_unref(dfh->flow_res.self_pipe_ctx);
 
     return 0;
 }
@@ -1543,7 +1542,7 @@ doca_create_ct_zone_revisit_rule(struct netdev *netdev, uint32_t group,
 
     fwd.type = DOCA_FLOW_FWD_PIPE;
     fwd.next_pipe = next_pipe_ctx->pipe;
-    flow_res.next_pipe = next_pipe_ctx;
+    flow_res.next_pipe_ctx = next_pipe_ctx;
     flow_res.next_group = POSTCT_TABLE_ID;
 
     hndl = create_doca_flow_handle(netdev, AUX_QUEUE, 0, group, &spec, &mask,
@@ -1601,7 +1600,7 @@ doca_create_ct_zone_uphold_rule(struct netdev *netdev,
 
     fwd.type = DOCA_FLOW_FWD_PIPE;
     fwd.next_pipe = doca_get_ct_pipe(ctx, next_group, &spec, NULL);
-    flow_res.next_pipe = NULL;
+    flow_res.next_pipe_ctx = NULL;
     flow_res.next_group = next_group;
 
     hndl = create_doca_flow_handle(netdev, AUX_QUEUE, 1, group, &spec, &mask,
@@ -1633,7 +1632,7 @@ doca_create_ct_zone_miss_rule(struct netdev *netdev, uint32_t group,
 
     fwd.type = DOCA_FLOW_FWD_PIPE;
     fwd.next_pipe = pipe_ctx->pipe;
-    flow_res.next_pipe = pipe_ctx;
+    flow_res.next_pipe_ctx = pipe_ctx;
     flow_res.next_group = MISS_TABLE_ID;
 
     hndl = create_doca_flow_handle(netdev, AUX_QUEUE, 2, group, NULL, NULL,

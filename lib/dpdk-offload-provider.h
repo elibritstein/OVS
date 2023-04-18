@@ -50,9 +50,9 @@ BUILD_ASSERT_DECL(offsetof(struct raw_encap_data, conf) == 0);
 
 struct doca_flow_handle_resources {
     uint32_t group;
-    struct doca_ctl_pipe_ctx *self_pipe;
+    struct doca_ctl_pipe_ctx *self_pipe_ctx;
     uint32_t next_group;
-    struct doca_ctl_pipe_ctx *next_pipe;
+    struct doca_ctl_pipe_ctx *next_pipe_ctx;
 };
 
 struct doca_flow_handle {
