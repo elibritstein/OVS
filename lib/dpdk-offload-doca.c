@@ -177,7 +177,7 @@ OVS_ASSERT_PACKED(struct doca_ctl_pipe_key,
 
 struct doca_ctl_pipe_arg {
     struct netdev *netdev;
-    struct doca_flow_pipe_cfg cfg;
+    uint32_t group_id;
 };
 
 static struct doca_eswitch_ctx *
@@ -275,6 +275,15 @@ is_ct_group(uint32_t group)
     return group == CT_TABLE_ID || group == CTNAT_TABLE_ID;
 }
 
+static bool
+is_ct_zone_group_id(uint32_t group)
+{
+    return ((group >= CT_TABLE_ID + MIN_ZONE_ID &&
+             group <= CT_TABLE_ID + MAX_ZONE_ID) ||
+            (group >= CTNAT_TABLE_ID + MIN_ZONE_ID &&
+             group <= CTNAT_TABLE_ID + MAX_ZONE_ID));
+}
+
 static inline enum ct_action_type
 ct_action_prev(enum ct_action_type cur)
 {
@@ -291,9 +300,34 @@ doca_ctl_pipe_ctx_init(void *ctx_, void *arg_, uint32_t id OVS_UNUSED)
 {
     struct doca_ctl_pipe_ctx *ctx = ctx_;
     struct doca_ctl_pipe_arg *arg = arg_;
+    struct doca_flow_pipe_cfg cfg;
+    char pipe_name[50];
+    uint32_t group_id;
+    bool is_root;
     int ret;
 
-    ret = doca_flow_pipe_create(&arg->cfg, NULL, NULL, &ctx->pipe);
+    /* The pipe for recirc = 0 without any tunnel involved is
+     * global and shared among devices on the esw. It is a root pipe.
+     */
+    group_id = arg->group_id;
+    is_root = group_id == 0;
+    snprintf(pipe_name, sizeof pipe_name, "OVS_CTL_PIPE_%" PRIu32, group_id);
+
+    memset(&cfg, 0, sizeof cfg);
+    cfg.attr.name = pipe_name;
+    cfg.attr.type = DOCA_FLOW_PIPE_CONTROL;
+    cfg.attr.is_root = is_root;
+    cfg.port = doca_flow_port_switch_get();
+
+    if (is_ct_zone_group_id(group_id)) {
+        cfg.attr.nb_flows = NUM_ZONE_FLOWS;
+    } else if (group_id == MISS_TABLE_ID) {
+        cfg.attr.nb_flows = 1;
+    } else if (group_id == CT_TABLE_ID || group_id == CTNAT_TABLE_ID) {
+        cfg.attr.nb_flows = OVS_DOCA_MAX_CT_RULES;
+    }
+
+    ret = doca_flow_pipe_create(&cfg, NULL, NULL, &ctx->pipe);
     if (ret) {
         VLOG_ERR("%s: Failed to create ctl pipe: %d (%s)",
                  netdev_get_name(arg->netdev), ret, doca_get_error_string(ret));
@@ -348,15 +382,6 @@ doca_ctl_pipe_md_init(void)
     }
 }
 
-static bool
-is_ct_zone_group_id(uint32_t group)
-{
-    return ((group >= CT_TABLE_ID + MIN_ZONE_ID &&
-             group <= CT_TABLE_ID + MAX_ZONE_ID) ||
-            (group >= CTNAT_TABLE_ID + MIN_ZONE_ID &&
-             group <= CTNAT_TABLE_ID + MAX_ZONE_ID));
-}
-
 static struct doca_ctl_pipe_ctx *
 doca_ctl_pipe_ctx_ref(struct netdev *netdev, uint32_t group_id)
 {
@@ -366,29 +391,8 @@ doca_ctl_pipe_ctx_ref(struct netdev *netdev, uint32_t group_id)
     };
     struct doca_ctl_pipe_arg arg = {
         .netdev = netdev,
+        .group_id = group_id,
     };
-    char pipe_name[50];
-    bool is_root;
-
-    /* The pipe for recirc = 0 without any tunnel involved is
-     * global and shared among devices on the esw. It is a root pipe.
-     */
-    is_root = group_id == 0;
-    snprintf(pipe_name, sizeof pipe_name, "OVS_CTL_PIPE_%" PRIu32, group_id);
-
-    memset(&arg.cfg, 0, sizeof arg.cfg);
-    arg.cfg.attr.name = pipe_name;
-    arg.cfg.attr.type = DOCA_FLOW_PIPE_CONTROL;
-    arg.cfg.attr.is_root = is_root;
-    arg.cfg.port = doca_flow_port_switch_get();
-
-    if (is_ct_zone_group_id(group_id)) {
-        arg.cfg.attr.nb_flows = NUM_ZONE_FLOWS;
-    } else if (group_id == MISS_TABLE_ID) {
-        arg.cfg.attr.nb_flows = 1;
-    } else if (group_id == CT_TABLE_ID || group_id == CTNAT_TABLE_ID) {
-        arg.cfg.attr.nb_flows = OVS_DOCA_MAX_CT_RULES;
-    }
 
     doca_ctl_pipe_md_init();
     return offload_metadata_priv_get(doca_ctl_pipe_md, &key, &arg, NULL, true);
