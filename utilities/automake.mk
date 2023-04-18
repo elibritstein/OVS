@@ -36,6 +36,7 @@ noinst_SCRIPTS += utilities/ovs-sim
 utilities/ovs-lib: $(top_builddir)/config.status
 
 EXTRA_DIST += \
+	utilities/bench.py \
 	utilities/gdb/ovs_gdb.py \
 	utilities/ovs-appctl-bashcomp.bash \
 	utilities/ovs-check-dead-ifs.in \
@@ -130,6 +131,7 @@ utilities_nlmon_LDADD = lib/libopenvswitch.la
 endif
 
 FLAKE8_PYFILES += utilities/ovs-pcap.in \
+	utilities/bench.py \
 	utilities/checkpatch.py utilities/ovs-dev.py \
 	utilities/gdb/ovs_gdb.py \
 	utilities/ovs-check-dead-ifs.in \
