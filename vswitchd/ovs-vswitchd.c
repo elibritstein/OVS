@@ -38,6 +38,7 @@
 #include "netdev.h"
 #include "openflow/openflow.h"
 #include "ovsdb-idl.h"
+#include "ovs-doca.h"
 #include "ovs-rcu.h"
 #include "ovs-router.h"
 #include "ovs-thread.h"
@@ -207,6 +208,7 @@ parse_options(int argc, char *argv[], char **unixctl_pathp)
         case 'V':
             ovs_print_version(0, 0);
             print_dpdk_version();
+            print_doca_version();
             exit(EXIT_SUCCESS);
 
         case OPT_MLOCKALL:

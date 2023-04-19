@@ -63,3 +63,8 @@ void
 ovs_doca_destroy(void)
 {
 }
+
+void
+print_doca_version(void)
+{
+}

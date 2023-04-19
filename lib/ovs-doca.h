@@ -47,4 +47,7 @@ ovs_doca_status(const struct ovsrec_open_vswitch *cfg);
 
 void
 ovs_doca_destroy(void);
+
+void
+print_doca_version(void);
 #endif

@@ -302,3 +302,9 @@ ovs_doca_destroy(void)
 {
     doca_flow_destroy();
 }
+
+void
+print_doca_version(void)
+{
+    printf("DOCA %s\n", doca_version_runtime());
+}
