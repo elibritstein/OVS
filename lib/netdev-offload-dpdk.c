@@ -204,6 +204,16 @@ struct ufid_to_rte_flow_data {
     struct act_resources act_resources;
 };
 
+static void
+offload_data_destroy__(struct netdev_offload_dpdk_data *data)
+{
+    ovs_mutex_destroy(&data->map_lock);
+    free(data->offload_counters);
+    free(data->flow_counters);
+    free(data->conn_counters);
+    free(data);
+}
+
 static int
 offload_data_init(struct netdev *netdev)
 {
@@ -222,19 +232,14 @@ offload_data_init(struct netdev *netdev)
                                   sizeof *data->conn_counters);
 
     ovsrcu_set(&netdev->hw_info.offload_data, (void *) data);
-    offload->aux_tables_init(netdev);
+    if (offload->aux_tables_init(netdev)) {
+        VLOG_WARN("aux_tables_init failed for netdev=%s",
+                  netdev_get_name(netdev));
+        offload_data_destroy__(data);
+        return EAGAIN;
+    }
 
     return 0;
-}
-
-static void
-offload_data_destroy__(struct netdev_offload_dpdk_data *data)
-{
-    ovs_mutex_destroy(&data->map_lock);
-    free(data->offload_counters);
-    free(data->flow_counters);
-    free(data->conn_counters);
-    free(data);
 }
 
 static void
@@ -349,9 +354,6 @@ ufid_to_rte_flow_data_find_protected(struct netdev *netdev,
 
     return NULL;
 }
-
-static int
-rte_aux_tables_init(struct netdev *netdev);
 
 static inline struct ufid_to_rte_flow_data *
 ufid_to_rte_flow_associate(const ovs_u128 *ufid, struct netdev *netdev,

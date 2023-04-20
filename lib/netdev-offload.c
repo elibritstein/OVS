@@ -182,9 +182,16 @@ static int
 netdev_assign_flow_api(struct netdev *netdev)
 {
     struct netdev_registered_flow_api *rfa;
+    int ret;
 
     CMAP_FOR_EACH (rfa, cmap_node, &netdev_flow_apis) {
-        if (!rfa->flow_api->init_flow_api(netdev)) {
+        ret = rfa->flow_api->init_flow_api(netdev);
+        if (ret == EAGAIN) {
+            VLOG_INFO("%s: flow API '%s' is not ready. Will try again",
+                      netdev_get_name(netdev), rfa->flow_api->type);
+            return ret;
+        }
+        if (!ret) {
             ovs_refcount_ref(&rfa->refcnt);
             atomic_store_relaxed(&netdev->hw_info.miss_api_supported, true);
             ovsrcu_set(&netdev->flow_api, rfa->flow_api);
@@ -198,7 +205,7 @@ netdev_assign_flow_api(struct netdev *netdev)
     atomic_store_relaxed(&netdev->hw_info.miss_api_supported, false);
     VLOG_INFO("%s: No suitable flow API found.", netdev_get_name(netdev));
 
-    return -1;
+    return EOPNOTSUPP;
 }
 
 int
@@ -494,11 +501,7 @@ netdev_init_flow_api(struct netdev *netdev)
         return 0;
     }
 
-    if (netdev_assign_flow_api(netdev)) {
-        return EOPNOTSUPP;
-    }
-
-    return 0;
+    return netdev_assign_flow_api(netdev);
 }
 
 void
@@ -875,6 +878,7 @@ netdev_ports_insert(struct netdev *netdev, struct dpif_port *dpif_port)
     const char *dpif_type = netdev_get_dpif_type(netdev);
     struct port_to_netdev_data *data;
     int ifindex = netdev_get_ifindex(netdev);
+    int ret;
 
     ovs_assert(dpif_type);
 
@@ -899,7 +903,11 @@ netdev_ports_insert(struct netdev *netdev, struct dpif_port *dpif_port)
                 netdev_ports_hash(dpif_port->port_no, dpif_type));
     ovs_rwlock_unlock(&netdev_hmap_rwlock);
 
-    netdev_init_flow_api(netdev);
+    ret = netdev_init_flow_api(netdev);
+    if (ret == EAGAIN) {
+        netdev_ports_remove(dpif_port->port_no, dpif_type);
+        return ret;
+    }
 
     return 0;
 }

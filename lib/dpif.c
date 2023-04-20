@@ -627,9 +627,12 @@ dpif_port_add(struct dpif *dpif, struct netdev *netdev, odp_port_t *port_nop)
             dpif_port.type = CONST_CAST(char *, netdev_get_type(netdev));
             dpif_port.name = CONST_CAST(char *, netdev_name);
             dpif_port.port_no = port_no;
-            netdev_ports_insert(datapath_netdev, &dpif_port);
+            if (netdev_ports_insert(datapath_netdev, &dpif_port) == EAGAIN) {
+                error = EAGAIN;
+            }
         }
-    } else {
+    }
+    if (error) {
         VLOG_WARN_RL(&error_rl, "%s: failed to add %s as port: %s",
                      dpif_name(dpif), netdev_name, ovs_strerror(error));
         port_no = ODPP_NONE;
