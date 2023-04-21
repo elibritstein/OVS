@@ -207,14 +207,61 @@ l4_to_tp_type(enum doca_flow_l4_type_ext l4_type)
 }
 
 static inline enum ct_action_type
-group_to_ct_type(uint32_t group)
+get_ct_action_type(uint32_t group, struct doca_flow_actions *actions)
 {
+    struct doca_flow_header_format *outer;
+
     switch (group) {
     case CT_TABLE_ID:
         return CT_ACTION_PLAIN;
     case CTNAT_TABLE_ID:
         /* Get the 'first' action of the CT chain. */
-        return ct_action_next[CT_ACTION_NULL];
+        if (!actions) {
+            return ct_action_next[CT_ACTION_NULL];
+        }
+        outer = &actions->outer;
+        /* Determine SNAT or DNAT. */
+        /* In case of a PAT, L3 type doesn't matter. */
+        if (outer->l4_type_ext == DOCA_FLOW_L4_TYPE_EXT_TCP) {
+            if (outer->tcp.l4_port.dst_port) {
+                actions->action_idx = 1;
+                return CT_ACTION_DNAT;
+            }
+            if (outer->tcp.l4_port.src_port) {
+                actions->action_idx = 1;
+                return CT_ACTION_SNAT;
+            }
+        } else if (outer->l4_type_ext == DOCA_FLOW_L4_TYPE_EXT_UDP) {
+            if (outer->udp.l4_port.dst_port) {
+                actions->action_idx = 1;
+                return CT_ACTION_DNAT;
+            }
+            if (outer->udp.l4_port.src_port) {
+                actions->action_idx = 1;
+                return CT_ACTION_SNAT;
+            }
+        }
+        if (outer->l3_type == DOCA_FLOW_L3_TYPE_IP4) {
+            if (outer->ip4.dst_ip) {
+                return CT_ACTION_DNAT;
+            }
+            if (outer->ip4.src_ip) {
+                return CT_ACTION_SNAT;
+            }
+        } else if (outer->l3_type == DOCA_FLOW_L3_TYPE_IP6) {
+            if (!is_all_zeros(&outer->ip6.dst_ip, sizeof outer->ip6.dst_ip)) {
+                return CT_ACTION_DNAT;
+            }
+            if (!is_all_zeros(&outer->ip6.src_ip, sizeof outer->ip6.src_ip)) {
+                return CT_ACTION_SNAT;
+            }
+        } else {
+            /* Redirection is for CT-NAT but there is actually no NAT action.
+             * Go to plain-ct.
+             */
+            return CT_ACTION_PLAIN;
+        }
+        OVS_NOT_REACHED();
     default:
         return CT_ACTION_NULL;
     }
@@ -1110,7 +1157,8 @@ create_doca_ctl_flow_entry(struct netdev *netdev,
 static struct doca_flow_pipe *
 doca_get_ct_pipe(struct doca_eswitch_ctx *ctx,
                  uint32_t group,
-                 struct doca_flow_match *spec)
+                 struct doca_flow_match *spec,
+                 struct doca_flow_actions *actions)
 {
     enum ct_action_type ct_type;
     enum ct_nw_type nw_type;
@@ -1120,7 +1168,7 @@ doca_get_ct_pipe(struct doca_eswitch_ctx *ctx,
         return NULL;
     }
 
-    ct_type = group_to_ct_type(group);
+    ct_type = get_ct_action_type(group, actions);
 
     nw_type = l3_to_nw_type(spec->outer.l3_type);
     if (nw_type >= NUM_CT_NW) {
@@ -1167,7 +1215,7 @@ create_doca_flow_handle(struct netdev *netdev,
             goto err_pipe;
         }
 
-        pipe = doca_get_ct_pipe(ctx, group, spec);
+        pipe = doca_get_ct_pipe(ctx, group, spec, actions);
         if (pipe == NULL) {
             error->type = RTE_FLOW_ERROR_TYPE_UNSPECIFIED;
             error->message = "Unsupported CT type";
@@ -1551,7 +1599,7 @@ doca_create_ct_zone_uphold_rule(struct netdev *netdev,
     next_group = nat ? CTNAT_TABLE_ID : CT_TABLE_ID;
 
     fwd.type = DOCA_FLOW_FWD_PIPE;
-    fwd.next_pipe = doca_get_ct_pipe(ctx, next_group, &spec);
+    fwd.next_pipe = doca_get_ct_pipe(ctx, next_group, &spec, NULL);
     flow_res.next_pipe = NULL;
     flow_res.next_group = next_group;
 
