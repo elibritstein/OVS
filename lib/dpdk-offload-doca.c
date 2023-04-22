@@ -1872,21 +1872,29 @@ doca_ct_pipe_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx,
             break;
         case CT_ACTION_DNAT:
             nb_actions = 2;
+            actions[0].outer.l3_type = DOCA_FLOW_L3_TYPE_IP4;
             actions[0].outer.ip4.dst_ip = UINT32_MAX;
+            actions[1].outer.l3_type = DOCA_FLOW_L3_TYPE_IP4;
             actions[1].outer.ip4.dst_ip = UINT32_MAX;
             if (tp_type == CT_TP_UDP) {
+                actions[1].outer.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_UDP;
                 actions[1].outer.udp.l4_port.dst_port = UINT16_MAX;
             } else {
+                actions[1].outer.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_TCP;
                 actions[1].outer.tcp.l4_port.dst_port = UINT16_MAX;
             }
             break;
         case CT_ACTION_SNAT:
             nb_actions = 2;
+            actions[0].outer.l3_type = DOCA_FLOW_L3_TYPE_IP4;
             actions[0].outer.ip4.src_ip = UINT32_MAX;
+            actions[1].outer.l3_type = DOCA_FLOW_L3_TYPE_IP4;
             actions[1].outer.ip4.src_ip = UINT32_MAX;
             if (tp_type == CT_TP_UDP) {
+                actions[1].outer.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_UDP;
                 actions[1].outer.udp.l4_port.src_port = UINT16_MAX;
             } else {
+                actions[1].outer.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_TCP;
                 actions[1].outer.tcp.l4_port.src_port = UINT16_MAX;
             }
             break;
