@@ -159,8 +159,13 @@ struct doca_basic_pipe_ctx {
     struct doca_ctl_pipe_ctx *miss_pipe_ctx;
 };
 
+struct doca_ctl_pipe_ctx {
+    struct doca_flow_pipe *pipe;
+};
+
 OVS_ASSERT_PACKED(struct doca_eswitch_ctx,
     struct doca_flow_port *esw_port;
+    struct doca_ctl_pipe_ctx *root_pipe_ctx;
     struct doca_basic_pipe_ctx ct_pipes[NUM_CT_NW][NUM_CT_TP][NUM_CT_ACTIONS];
     struct fixed_rule zone_flows[2][NUM_ZONE_FLOWS][MAX_ZONE_ID + 1];
 );
@@ -169,10 +174,6 @@ OVS_ASSERT_PACKED(struct doca_ctl_pipe_key,
     uint32_t group_id;
     uint32_t esw_mgr_port_id;
 );
-
-struct doca_ctl_pipe_ctx {
-    struct doca_flow_pipe *pipe;
-};
 
 struct doca_ctl_pipe_arg {
     struct netdev *netdev;
@@ -2022,6 +2023,10 @@ doca_eswitch_ctx_uninit(void *ctx_)
 
     doca_ct_zones_uninit(ctx);
     doca_ct_pipes_destroy(ctx);
+    if (ctx->root_pipe_ctx != NULL) {
+        doca_ctl_pipe_ctx_unref(ctx->root_pipe_ctx);
+    }
+    ctx->root_pipe_ctx = NULL;
     ctx->esw_port = NULL;
 }
 
@@ -2030,6 +2035,11 @@ doca_eswitch_ctx_init(void *ctx_, void *arg_, uint32_t id OVS_UNUSED)
 {
     struct netdev *netdev = (struct netdev *) arg_;
     struct doca_eswitch_ctx *ctx = ctx_;
+
+    ctx->root_pipe_ctx = doca_ctl_pipe_ctx_ref(netdev, 0);
+    if (ctx->root_pipe_ctx == NULL) {
+        goto error;
+    }
 
     if (doca_ct_pipes_init(netdev, ctx)) {
         goto error;
