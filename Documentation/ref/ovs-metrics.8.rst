@@ -49,6 +49,11 @@ Options
 
   In 'follow' or 'one-shot' mode, request the metrics extended page as well.
 
+* ``-w`` or ``--wait``
+
+  In 'watch' mode, wait for traffic to start before printing metrics.
+  Traffic is defined as the measured packets-per-second (PPS).
+
 See Also
 ========
 

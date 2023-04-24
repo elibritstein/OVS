@@ -80,12 +80,13 @@ class Entry():
         self.disabled = False
 
     def update(self, db):
-        ms = db.ts_delta()
         value = self.read_value(db)
-        per_sec = 1000 / ms
-        self.value_per_sec = (value - self.value) * per_sec
+        ms = db.ts_delta()
+        if ms > 0:
+            per_sec = 1000 / ms
+            self.value_per_sec = (value - self.value) * per_sec
+            self.update_count += 1
         self.value = value
-        self.update_count += 1
 
     def read_value(self, db):
         if self.disabled:
@@ -154,6 +155,8 @@ def metrics_watch():
     global options
     period = options.period
     clearLineStr = '\033[K'
+    waitforpkt = options.waitforpkt
+    started = False
 
     entries = [
         Entry('sw-pkts', 'packet',
@@ -207,14 +210,23 @@ def metrics_watch():
             db.reset()
             db.wait(period)
             count = 0
+            started = False
             continue
+
+        for e in entries:
+            e.update(db)
+
+        if waitforpkt and not started:
+            if entries[0].value_per_sec == 0:
+                print('%sWaiting for traffic.' % clearLineStr, end='\r')
+                db.wait(period)
+                continue;
+            else:
+                started = True
 
         if count != 0 and count % 10 == 0:
             print(legend)
         count += 1
-
-        for e in entries:
-            e.update(db)
 
         sec = '{:08.3f}'.format(db.last_ts() / 1000)
         values = ' '.join('{}'.format(x.format_human()) for x in entries)
@@ -296,6 +308,10 @@ def main():
 
     parser.add_option('-o', '--output', dest='outfile', default='',
                       help='write measures to file', metavar='<file.csv>')
+
+    parser.add_option('-w', '--wait', dest='waitforpkt', default=False,
+                      help='Wait for packet activity before starting.',
+                      action='store_true')
 
     (options, args) = parser.parse_args()
 
