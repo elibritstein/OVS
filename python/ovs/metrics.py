@@ -150,11 +150,12 @@ class MetricsDB():
         return self.update_ts[-1] - self.start_ts
 
     def ts_delta(self):
-        if len(self.update_ts) == 0:
-            return 0
+        val = 0
         if len(self.update_ts) == 1:
-            return self.last_ts
-        return self.update_ts[-1] - self.update_ts[-2]
+            return self.last_ts()
+        if len(self.update_ts) > 1:
+            val = self.update_ts[-1] - self.update_ts[-2]
+        return float(val)
 
     def delta(self):
         for _, entry in self.metrics.items():
