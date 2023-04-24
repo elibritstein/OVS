@@ -108,18 +108,8 @@ class MetricsDB():
     def __init__(self, extended=False, debug=False):
         self.extended = extended
         self.debug = debug
-
-        self.last_query_duration = 0
-        self.start_ts = util.time_msec()
         self.update_ts = deque()
-
-        self.metrics = dict()
-        self.query_duration_key = ''
-        self.update()
-        for k, v in self.metrics.items():
-            if k.endswith('scrape_duration_seconds'):
-                self.query_duration_key = k
-                break
+        self.reset()
 
     def __iter__(self):
         return self.metrics.__iter__()
@@ -129,6 +119,12 @@ class MetricsDB():
 
     def items(self):
         return self.metrics.items()
+
+    def _set_query_duration_key(self):
+        for k, v in self.metrics.items():
+            if k.endswith('scrape_duration_seconds'):
+                self.query_duration_key = k
+                break
 
     def update(self):
         families = get_metrics_families(extended=self.extended, debug=self.debug)
@@ -143,8 +139,16 @@ class MetricsDB():
                 else:
                     self.metrics[sample.name] = Entry(sample)
 
-        if self.query_duration_key != '':
-            self.last_query_duration = self.metrics[self.query_duration_key].last() * 1000
+        if self.query_duration_key == '':
+            self._set_query_duration_key()
+
+        self.last_query_duration = self.metrics[self.query_duration_key].last() * 1000
+
+    def reset(self):
+        self.last_query_duration = 0
+        self.start_ts = util.time_msec()
+        self.metrics = dict()
+        self.query_duration_key = ''
 
     def last_ts(self):
         return self.update_ts[-1] - self.start_ts
@@ -170,8 +174,9 @@ class MetricsDB():
             # Avoid 'drifting' away from the target period,
             # try to remain close to requested reads
             next_wake = period
-            next_wake -= self.last_ts() % period
-            next_wake -= self.last_query_duration
+            if len(self.update_ts) > 0:
+                next_wake -= self.last_ts() % period
+                next_wake -= self.last_query_duration
             next_wake /= 1000
             if next_wake > 0:
                 time.sleep(next_wake)

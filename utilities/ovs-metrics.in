@@ -22,7 +22,7 @@ import sys
 import signal
 
 try:
-    from ovs.metrics import MetricsDB
+    from ovs.metrics import MetricsDB, MetricsReadError
 except ModuleNotFoundError:
     print(u"""\
 ERROR: Missing dependencies.
@@ -153,6 +153,7 @@ def metrics_watch():
     global outfile
     global options
     period = options.period
+    clearLineStr = '\033[K'
 
     entries = [
         Entry('sw-pkts', 'packet',
@@ -199,7 +200,14 @@ def metrics_watch():
 
     count = 0
     while True:
-        db.update()
+        try:
+            db.update()
+        except MetricsReadError:
+            print('%sFailed to read OVS metrics, retrying...' % clearLineStr, end='\r')
+            db.reset()
+            db.wait(period)
+            count = 0
+            continue
 
         if count != 0 and count % 10 == 0:
             print(legend)
