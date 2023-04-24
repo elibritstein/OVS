@@ -337,66 +337,37 @@ ufid_to_rte_flow_data_find(struct netdev *netdev,
     return NULL;
 }
 
-/* Find rte_flow with @ufid, lock-protected. */
-static struct ufid_to_rte_flow_data *
-ufid_to_rte_flow_data_find_protected(struct netdev *netdev,
-                                     const ovs_u128 *ufid)
-{
-    size_t hash = hash_bytes(ufid, sizeof *ufid, 0);
-    struct ufid_to_rte_flow_data *data;
-    struct cmap *map = offload_data_map(netdev);
-
-    CMAP_FOR_EACH_WITH_HASH_PROTECTED (data, node, hash, map) {
-        if (ovs_u128_equals(*ufid, data->ufid)) {
-            return data;
-        }
-    }
-
-    return NULL;
-}
-
-static inline struct ufid_to_rte_flow_data *
+static inline int
 ufid_to_rte_flow_associate(const ovs_u128 *ufid, struct netdev *netdev,
-                           struct netdev *physdev, struct flow_item *flow_item,
+                           struct netdev *physdev,
+                           struct ufid_to_rte_flow_data *data,
                            struct act_resources *act_resources)
 {
     size_t hash = hash_bytes(ufid, sizeof *ufid, 0);
     unsigned int tid = netdev_offload_thread_id();
     struct cmap *map = offload_data_map(netdev);
-    struct ufid_to_rte_flow_data *data_prev;
-    struct ufid_to_rte_flow_data *data;
 
     if (!map) {
-        return NULL;
+        return ENODEV;
     }
 
-    data = xzalloc(sizeof *data);
-
-    offload_data_lock(netdev);
-
-    /*
-     * We should not simply overwrite an existing rte flow.
-     * We should have deleted it first before re-adding it.
-     * Thus, if following assert triggers, something is wrong:
-     * the rte_flow is not destroyed.
-     */
-    data_prev = ufid_to_rte_flow_data_find_protected(netdev, ufid);
-    if (data_prev && !data_prev->dead) {
-        ovs_assert(data_prev->flow_item.doh[0].rte_flow == NULL);
-    }
+    /* We already checked before that no one inserted an
+     * rte_flow for this ufid. As the ufid dispatch is per
+     * thread id, this ufid would have been serviced by
+     * this thread and sync is implicit. */
 
     data->ufid = *ufid;
     data->netdev = netdev_ref(netdev);
     data->physdev = netdev != physdev ? netdev_ref(physdev) : physdev;
-    data->flow_item = *flow_item;
     data->creation_tid = tid;
     ovs_mutex_init(&data->lock);
     memcpy(&data->act_resources, act_resources, sizeof data->act_resources);
 
+    offload_data_lock(netdev);
     cmap_insert(map, CONST_CAST(struct cmap_node *, &data->node), hash);
-
     offload_data_unlock(netdev);
-    return data;
+
+    return 0;
 }
 
 static void
@@ -5530,7 +5501,6 @@ netdev_offload_dpdk_add_flow(struct netdev *netdev,
     };
     struct act_vars act_vars = { .vport = ODPP_NONE };
     struct ufid_to_rte_flow_data *flows_data = NULL;
-    struct flow_item flow_item;
     int ret;
 
     act_vars.is_e2e_cache = info->is_e2e_cache_flow;
@@ -5553,24 +5523,30 @@ netdev_offload_dpdk_add_flow(struct netdev *netdev,
         goto out;
     }
 
-    memset(&flow_item, 0, sizeof flow_item);
+    flows_data = xzalloc(sizeof *flows_data);
     ret = netdev_offload_dpdk_actions(netdev, patterns.physdev, &patterns,
                                       nl_actions, actions_len, &act_resources,
-                                      &act_vars, &flow_item);
+                                      &act_vars, &flows_data->flow_item);
     if (ret) {
         goto out;
     }
 
-    flows_data = ufid_to_rte_flow_associate(ufid, netdev, patterns.physdev,
-                                            &flow_item, &act_resources);
+    if (ufid_to_rte_flow_associate(ufid, netdev, patterns.physdev,
+                                   flows_data, &act_resources)) {
+        ret = -1;
+        goto out;
+    }
     VLOG_DBG("%s/%s: installed flow %p/%p by ufid "UUID_FMT,
              netdev_get_name(netdev), netdev_get_name(patterns.physdev),
-             flow_item.doh[0].rte_flow, flow_item.doh[1].rte_flow,
+             flows_data->flow_item.doh[0].rte_flow,
+             flows_data->flow_item.doh[1].rte_flow,
              UUID_ARGS((struct uuid *) ufid));
 
 out:
     if (ret) {
         put_action_resources(&act_resources);
+        free(flows_data);
+        flows_data = NULL;
     }
     free_flow_patterns(&patterns);
     return flows_data;
@@ -6826,7 +6802,6 @@ netdev_offload_dpdk_conn_add(struct netdev *netdev,
     struct act_resources act_resources = { .flow_id = INVALID_FLOW_MARK, };
     struct ufid_to_rte_flow_data *rte_flow_data;
     const ovs_u128 *ufid = &ct_offload->ufid;
-    struct flow_item flow_item;
 
     rte_flow_data = ufid_to_rte_flow_data_find(netdev, ufid, false);
     if (rte_flow_data && rte_flow_data->flow_item.doh[0].rte_flow) {
@@ -6836,16 +6811,21 @@ netdev_offload_dpdk_conn_add(struct netdev *netdev,
 
     per_thread_init();
 
+    rte_flow_data = xzalloc(sizeof *rte_flow_data);
     if (netdev_offload_dpdk_insert_conn(netdev, ct_offload,
-                                        &act_resources, &flow_item)) {
+                                        &act_resources,
+                                        &rte_flow_data->flow_item)) {
+        free(rte_flow_data);
         return EINVAL;
     }
 
-    rte_flow_data = ufid_to_rte_flow_associate(ufid, netdev, netdev,
-                                               &flow_item, &act_resources);
-    /* Only way for insertion to fail is if the netdev has no map anymore,
-     * which should never happen. */
-    ovs_assert(rte_flow_data != NULL);
+    if (ufid_to_rte_flow_associate(ufid, netdev, netdev,
+                                   rte_flow_data, &act_resources)) {
+        /* Only way for insertion to fail is if the netdev has no map anymore,
+         * which should never happen. */
+        free(rte_flow_data);
+        return ENODATA;
+    }
 
     return 0;
 }
