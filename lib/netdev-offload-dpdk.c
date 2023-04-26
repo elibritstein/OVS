@@ -1465,20 +1465,21 @@ static void
 netdev_offload_dpdk_upkeep(struct netdev *netdev, bool quiescing)
 {
     unsigned int tid = netdev_offload_thread_id();
+    long long int now = time_msec();
 
     if (offload->upkeep) {
         offload->upkeep(netdev, quiescing);
     }
 
-    offload_metadata_upkeep(label_id_md, tid);
-    offload_metadata_upkeep(zone_id_md, tid);
-    offload_metadata_upkeep(table_id_md, tid);
-    offload_metadata_upkeep(sflow_id_md, tid);
-    offload_metadata_upkeep(ct_ctx_md, tid);
-    offload_metadata_upkeep(tnl_md, tid);
-    offload_metadata_upkeep(flow_miss_ctx_md, tid);
-    offload_metadata_upkeep(shared_age_md, tid);
-    offload_metadata_upkeep(shared_count_md, tid);
+    offload_metadata_upkeep(label_id_md, tid, now);
+    offload_metadata_upkeep(zone_id_md, tid, now);
+    offload_metadata_upkeep(table_id_md, tid, now);
+    offload_metadata_upkeep(sflow_id_md, tid, now);
+    offload_metadata_upkeep(ct_ctx_md, tid, now);
+    offload_metadata_upkeep(tnl_md, tid, now);
+    offload_metadata_upkeep(flow_miss_ctx_md, tid, now);
+    offload_metadata_upkeep(shared_age_md, tid, now);
+    offload_metadata_upkeep(shared_count_md, tid, now);
 }
 
 /*

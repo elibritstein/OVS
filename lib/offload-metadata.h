@@ -99,7 +99,8 @@ offload_metadata_create(unsigned int nb_user,
 void offload_metadata_destroy(struct offload_metadata *md);
 
 /* Execute delayed reclamations, if any. */
-void offload_metadata_upkeep(struct offload_metadata *md, unsigned int uid);
+void offload_metadata_upkeep(struct offload_metadata *md, unsigned int uid,
+                             long long int now);
 
 /* From 'data', find its node in the map and return its attached priv if any.
  * If 'take_ref' is true, a reference is taken on the data.

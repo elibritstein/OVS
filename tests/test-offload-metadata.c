@@ -227,7 +227,7 @@ test_offload_metadata_id(long long int delay)
     if (delay) {
         xnanosleep(delay * 1e6 + 1);
     }
-    offload_metadata_upkeep(md, 0);
+    offload_metadata_upkeep(md, 0, time_msec());
 
     for (int i = 0; i < N; i++) {
         struct data ff;
@@ -295,7 +295,7 @@ test_offload_metadata_id_set(long long int delay)
     if (delay) {
         xnanosleep(delay * 1e6 + 1);
     }
-    offload_metadata_upkeep(md, 0);
+    offload_metadata_upkeep(md, 0, time_msec());
 
     for (int i = 0; i < N; i++) {
         struct data ff;
@@ -386,7 +386,7 @@ test_offload_metadata_id_priv(long long int delay)
     if (delay) {
         xnanosleep(delay * 1e6 + 1);
     }
-    offload_metadata_upkeep(md, 0);
+    offload_metadata_upkeep(md, 0, time_msec());
 
     for (int i = 0; i < N; i++) {
         struct arg arg = {
@@ -463,7 +463,7 @@ test_offload_metadata_priv(long long int delay)
     if (delay) {
         xnanosleep(delay * 1e6 + 1);
     }
-    offload_metadata_upkeep(md, 0);
+    offload_metadata_upkeep(md, 0, time_msec());
 
     for (int i = 0; i < N; i++) {
         struct arg arg = {

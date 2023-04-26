@@ -232,11 +232,11 @@ offload_metadata_destroy(struct offload_metadata *md)
 }
 
 void
-offload_metadata_upkeep(struct offload_metadata *md, unsigned int uid)
+offload_metadata_upkeep(struct offload_metadata *md, unsigned int uid,
+                        long long int now)
 {
     struct ovs_list *list;
     struct ovs_list *node;
-    long long int now;
 
     if (md == NULL) {
         return;
@@ -249,7 +249,6 @@ offload_metadata_upkeep(struct offload_metadata *md, unsigned int uid)
     ovs_assert(uid < md->nb_user);
     list = &md->free_lists[uid];
 
-    now = time_msec();
     while (!ovs_list_is_empty(list)) {
         struct release_item *item;
 
