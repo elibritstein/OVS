@@ -175,9 +175,11 @@ offload_metadata_create(unsigned int nb_user,
 
     md->delay = params.release_delay_ms;
 
-    md->free_lists = xcalloc(nb_user, sizeof *md->free_lists);
-    for (unsigned int i = 0; i < nb_user; i++) {
-        ovs_list_init(&md->free_lists[i]);
+    if (md->delay > 0) {
+        md->free_lists = xcalloc(nb_user, sizeof *md->free_lists);
+        for (unsigned int i = 0; i < nb_user; i++) {
+            ovs_list_init(&md->free_lists[i]);
+        }
     }
 
     cmap_init(&md->d2i_map);
@@ -202,7 +204,7 @@ offload_metadata_destroy(struct offload_metadata *md)
         return;
     }
 
-    for (unsigned int i = 0; i < md->nb_user; i++) {
+    for (unsigned int i = 0; md->delay > 0 && i < md->nb_user; i++) {
         struct ovs_list *list = &md->free_lists[i];
         struct ovs_list *node;
 
@@ -237,6 +239,10 @@ offload_metadata_upkeep(struct offload_metadata *md, unsigned int uid)
     long long int now;
 
     if (md == NULL) {
+        return;
+    }
+
+    if (md->delay == 0) {
         return;
     }
 
