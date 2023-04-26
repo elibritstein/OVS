@@ -90,6 +90,9 @@ ovs-install-data-local:
 python-sdist: $(srcdir)/python/ovs/version.py $(ovs_pyfiles) python/ovs/dirs.py
 	(cd python/ && $(PYTHON3) setup.py sdist)
 
+python-install: $(srcdir)/python/ovs/version.py $(ovs_pyfiles) python/ovs/dirs.py
+	(cd python/ && $(PYTHON3) setup.py install)
+
 pypi-upload: $(srcdir)/python/ovs/version.py $(ovs_pyfiles) python/ovs/dirs.py
 	(cd python/ && $(PYTHON3) setup.py sdist upload)
 install-data-local: ovs-install-data-local
