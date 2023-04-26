@@ -23,9 +23,11 @@ import signal
 
 try:
     from ovs.metrics import MetricsDB
-except Exception:
+except ModuleNotFoundError:
     print(u"""\
-ERROR: Please install the correct Open vSwitch python support libraries (version @VERSION@).
+ERROR: Missing dependencies.
+Please install the Open vSwitch python libraries: python3-openvswitch (version @VERSION@).
+Alternatively, install them from source: ( cd ovs/python ; python3 setup.py install ).
 Alternatively, check that your PYTHONPATH is pointing to the correct location.""")
     sys.exit(1)
 
