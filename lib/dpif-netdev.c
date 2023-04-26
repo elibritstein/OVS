@@ -4028,7 +4028,7 @@ dp_offload_ct(struct dp_offload_thread_item *item)
 
 #define DP_NETDEV_OFFLOAD_BACKOFF_MIN 1
 #define DP_NETDEV_OFFLOAD_BACKOFF_MAX 64
-#define DP_NETDEV_OFFLOAD_QUIESCE_INTERVAL_US (10 * 1000) /* 10 ms */
+#define DP_NETDEV_OFFLOAD_QUIESCE_INTERVAL_US (100 * 1000) /* 100 ms */
 
 #define DP_OFFLOAD_UPKEEP_PERIOD_MS (256)
 /* Number of max-backoff to roughly reach the upkeep period. */
