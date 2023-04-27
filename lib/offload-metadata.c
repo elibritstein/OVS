@@ -97,6 +97,11 @@ context_release(struct release_item *item)
         goto maps_unlock;
     }
 
+    if (md->priv_uninit) {
+        md->priv_uninit(item->data->priv);
+        item->data->priv_init_done = false;
+    }
+
     if (item->id != 0) {
         ihash = hash_add(0, item->id);
 
@@ -153,18 +158,6 @@ context_delayed_release(struct offload_metadata *md, unsigned int uid,
     item->id = id;
     item->data = data;
     item->associated = associated;
-    if (md->priv_uninit) {
-        if (ovs_refcount_read(&data->refcount) == 1) {
-            /* Immediately uninit the priv, even if the
-             * data release is delayed. If another object takes
-             * a ref on the data, the priv will then be re-initialized.
-             */
-            ovs_mutex_lock(&md->maps_lock);
-            md->priv_uninit(item->data->priv);
-            item->data->priv_init_done = false;
-            ovs_mutex_unlock(&md->maps_lock);
-        }
-    }
     if (md->delay == 0) {
         context_release(item);
         return;

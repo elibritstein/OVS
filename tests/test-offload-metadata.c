@@ -104,9 +104,8 @@ priv_init(void *priv_, void *arg_, uint32_t id)
     struct priv *priv = priv_;
     struct arg *arg = arg_;
 
-    if (priv->hdl) {
-        return 0;
-    }
+    /* Verify that we don't double-init priv. */
+    ovs_assert(priv->hdl == NULL);
 
     priv->hdl = arg->ptr;
     priv->id = id;
@@ -118,9 +117,8 @@ priv_uninit(void *priv_)
 {
     struct priv *priv = priv_;
 
-    if (!priv->hdl) {
-        return;
-    }
+    /* Verify that we don't double-uninit priv. */
+    ovs_assert(priv->hdl != NULL);
 
     priv->hdl = NULL;
     priv->id = 0;
@@ -322,6 +320,7 @@ test_offload_metadata_id_priv(long long int delay)
         priv = offload_metadata_priv_get(md, &datas[i], &arg, &id, false);
         ovs_assert(ids[i] == id);
         ovs_assert(priv != NULL);
+        ovs_assert(priv->hdl != NULL);
         ovs_assert(id != 0);
         ovs_assert(priv == offload_metadata_priv_get(md, &datas[i], &arg,
                                                      NULL, false));
@@ -331,6 +330,10 @@ test_offload_metadata_id_priv(long long int delay)
         ovs_assert(priv == offload_metadata_priv_get(md, &datas[i], &arg,
                                                      NULL, false));
         privs[i] = priv;
+    }
+
+    for (int i = 0; i < N; i++) {
+        ovs_assert(privs[i]->hdl != NULL);
     }
 
     release_start = time_msec();
@@ -355,6 +358,10 @@ test_offload_metadata_id_priv(long long int delay)
 
         ovs_assert(NULL == offload_metadata_priv_get(md, &datas[i], &arg,
                                                      NULL, false));
+    }
+
+    for (int i = 0; i < N; i++) {
+        ovs_assert(privs[i]->hdl == NULL);
     }
 
     if (delay != 0) {
@@ -400,8 +407,16 @@ test_offload_metadata_priv(long long int delay)
         ovs_assert(priv != NULL);
         ovs_assert(id == 0);
         ovs_assert(priv == offload_metadata_priv_get(md, &datas[i], &arg,
+                                                     NULL, true));
+        offload_metadata_priv_unref(md, 0, priv);
+        ovs_assert(priv == offload_metadata_priv_get(md, &datas[i], &arg,
                                                      NULL, false));
         privs[i] = priv;
+    }
+
+    for (int i = 0; i < N; i++) {
+        /* Verify that priv init is properly called. */
+        ovs_assert(privs[i]->hdl != NULL);
     }
 
     for (int i = 0; i < N; i++) {
@@ -420,6 +435,11 @@ test_offload_metadata_priv(long long int delay)
 
         ovs_assert(NULL == offload_metadata_priv_get(md, &datas[i], &arg,
                                                      NULL, false));
+    }
+
+    for (int i = 0; i < N; i++) {
+        /* Verify that priv uninit is actually executed. */
+        ovs_assert(privs[i]->hdl == NULL);
     }
 
     offload_metadata_destroy(md);
