@@ -5781,6 +5781,14 @@ netdev_offload_dpdk_init_flow_api(struct netdev *netdev)
         return EOPNOTSUPP;
     }
 
+    /* VDPA ports which are added without representor are not backed by ethdev
+     * in DPDK and are not compatible with the offload API so do not init it.
+     */
+    if (!netdev_dpdk_is_ethdev(netdev) &&
+        !netdev_vport_is_vport_class(netdev->netdev_class)) {
+        return EOPNOTSUPP;
+    }
+
     offload_provider_api_init();
 
     if (netdev_dpdk_flow_api_supported(netdev)) {
