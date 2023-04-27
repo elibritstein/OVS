@@ -5510,6 +5510,12 @@ out:
 }
 
 bool
+netdev_dpdk_is_ethdev(struct netdev *netdev)
+{
+    return netdev_dpdk_get_port_id(netdev) != -1;
+}
+
+bool
 netdev_dpdk_flow_api_supported(struct netdev *netdev)
 {
     struct netdev_dpdk *dev;

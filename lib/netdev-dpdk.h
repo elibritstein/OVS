@@ -54,6 +54,9 @@ netdev_dpdk_rte_flow_query_count(struct netdev *netdev,
 int
 netdev_dpdk_get_port_id(struct netdev *netdev);
 
+bool
+netdev_dpdk_is_ethdev(struct netdev *netdev);
+
 int
 netdev_dpdk_doca_port_create(struct netdev *netdev);
 
