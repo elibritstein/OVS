@@ -2428,6 +2428,7 @@ struct act_vars {
     bool is_ct_conn;
     rte_be16_t vlan_tpid;
     uint8_t vlan_pcp;
+    uint8_t proto;
 };
 
 static int
@@ -3616,6 +3617,8 @@ parse_flow_match(struct netdev *netdev,
         return -1;
     }
 
+    act_vars->proto = proto;
+
     if (proto == IPPROTO_TCP) {
         struct rte_flow_item_tcp *spec, *mask;
 
@@ -4574,6 +4577,14 @@ parse_ct_actions(struct netdev *netdev,
     struct ct_miss_ctx ct_miss_ctx;
     const struct nlattr *cta;
     unsigned int ctleft;
+
+    /* Not Supported */
+    if (act_vars->proto && act_vars->proto != IPPROTO_UDP &&
+        act_vars->proto != IPPROTO_TCP) {
+        VLOG_DBG_RL(&rl, "Unsupported CT offload for L4 protocol: 0x02%" PRIx8,
+                    act_vars->proto);
+        return -1;
+    }
 
     memset(&ct_miss_ctx, 0, sizeof ct_miss_ctx);
     act_vars->ct_mode = CT_MODE_CT;
