@@ -711,6 +711,10 @@ delete_chains_from_netdev(struct netdev *netdev, struct tcf_id *id)
          */
         HMAP_FOR_EACH_POP (chain_node, node, &map) {
             id->chain = chain_node->chain;
+            /* Delete empty chain doesn't seem to work with
+             * tc_del_flower_filter() so use tc_del_filter()
+             * without specifying TCA_KIND.
+             */
             tc_del_filter(id, NULL);
             free(chain_node);
         }
