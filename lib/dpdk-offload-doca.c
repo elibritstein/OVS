@@ -36,38 +36,37 @@
  *
  * The CT offload implementation over basic pipes is designed as such:
  *
- * +--------------------------------------------------------------------------------------------+
- * |  Control pipes                                                                             |
- * |                                                                                            |
- * |           ┌─[ CT Zone X ]─────┐          +---------------------------------+               |
- * |           │  ┌─[ CT Zone Y ]─────┐       | Basic pipes                     |               |
- * |           │  │  ┌─[ CT Zone Z ]─────┐    |                                 |               |
- * |           │  │  │  ┌─────────┐      │    |                                 |               |
- * |           │  │  │  │ct_zone=Z├──────┼──────────────────────────────────────────────┐       |
- * |           │  │  │  └─────────┘hit   │    |                                 |       │       |
- * |           │  │  │                   │    |     ┌─[ IPv4 x UDP ]────┐       |       │       |
- * |           │  │  │    ┌──────────┐   │    |     │                   │       |       │       |
- * | ┌───────┐ │  │  │    │IPv4 + UDP├───┼─────────►│  ┌─[ IPv4 x TCP ]────┐    |       │       |
- * | │Pre-CT ├──────►│    └──────────┘hit│    |     │  │                   │    |       │       |
- * | └───────┘ │  │  │    ┌──────────┐   │    |     │  │  ┌───────┐        │    |       │       |
- * |           │  │  │    │IPv4 + TCP├───┼───────────────►│CT-SNAT├──┐     │    |       │       |
- * |           │  │  │    └──────────┘hit│    |     │  │  └───┬───┘  │     │    |       │       |
- * |           │  │  │                   │    |     │  │ miss │      │hit  │    |    ┌──▼────┐  |
- * |           │  │  │       ┌─────────┐ │    |     │  │  ┌───▼───┐  └──────────────►│       │  |
- * |           │  │  │       │Catch-all│ │    |     │  │  │CT-DNAT├─────────────────►│Post-CT│  |
- * |           └──│  │       └────┬────┘ │    |     │  │  └───┬───┘  ┌──────────────►│       │  |
- * |              └──│            │      │    |     │  │ miss │      │hit  │    |    └───────┘  |
- * |                 └────────────┼──────┘    |     │  │  ┌───▼───┐  │     │    |               |
- * |                              │           |     │  │  │  CT   ├──┘     │    |               |
- * |                              │           |     │  │  └───┬───┘        │    |               |
- * |                              │           |     └──│ miss │            │    |               |
- * |                              │           |        └──────┼────────────┘    |               |
- * |                              │           +------------│--│-----------------+               |
- * |                              ▼                        ▼  ▼                                 |
- * |                       ┌─[ Miss pipe ]───────────────────────────┐                          |
- * |                       │         Go to software datapath         │                          |
- * |                       └─────────────────────────────────────────┘                          |
- * +--------------------------------------------------------------------------------------------+
+ * +---------------------------------------------------------------------------------------------------+
+ * | Control pipes                                                                                     |
+ * |                                                                                                   |
+ * |                 ┌─[ CT Zone X ]─────┐                                                             |
+ * |                 │  ┌─[ CT Zone Y ]─────┐                                                          |
+ * |                 │  │  ┌─[ CT Zone Z ]─────┐                                                       |
+ * |                 │  │  │                   │                                                       |
+ * |                 │  │  │  ┌─────────┐      │                                                       |
+ * |                 │  │  │  │ct_zone=Z├──────┼────────────────────────────────────────────┐          |
+ * |                 │  │  │  └─────────┘hit   │                                            │          |
+ * |                 │  │  │                   │    +----------------------------+          │          |
+ * |                 │  │  │                   │    | Basic pipes                |          │          |
+ * |                 │  │  │                   │    |                            |          │          |
+ * |                 │  │  │                   │    |  ┌─[ CT IPv4 x UDP ]─┐     |          │          |
+ * |                 │  │  │    ┌──────────┐   │    |  │                   │     |          │          |
+ * |                 │  │  │    │IPv4 + UDP├───┼──────►│  ┌─[ CT IPv4 x TCP ]─┐  |          ▼          |
+ * |  ┌─[ Pre-CT ]─┐ │  │  │    └──────────┘hit│    |  │  │                   │  |    ┌─[ Post-CT ]──┐ |
+ * |  │            ├──────►│    ┌──────────┐   │    |  │  │ ┌─────────────┐   │──────►│              │ |
+ * |  │            │ │  │  │    │IPv4 + TCP├───┼─────────►│ │ CT entries  ├───┼──────►│              │ |
+ * |  └────────────┘ │  │  │    └──────────┘hit│    |  │  │ └─────────────┘hit│  |    └──────────────┘ |
+ * |                 │  │  │       ┌─────────┐ │    |  │  │   ┌─────────┐     │  |                     |
+ * |                 │  │  │       │Catch-all│ │    |  │  │   │Catch-all│     │  |                     |
+ * |                 └──│  │       └────┬────┘ │    |  └──│   └────┬────┘     │  |                     |
+ * |                    └──│            │      │    |     └────────┼──────────┘  |                     |
+ * |                       └────────────┼──────┘    |           │  │             |                     |
+ * |                                    │           +-----------│--│-------------+                     |
+ * |                                    ▼                       │  │                                   |
+ * |                             ┌─[ Miss pipe ]────────────────▼──▼───────┐                           |
+ * |                             │         Go to software datapath         │                           |
+ * |                             └─────────────────────────────────────────┘                           |
+ * +---------------------------------------------------------------------------------------------------+
  *
  * This model is replicated once per eswitch.
  *
@@ -86,24 +85,27 @@
  * If this ct_zone match fails, then either CT was never executed, or
  * it was executed in a different CT zone. If it matches the currently
  * supported CT (network x protocol) tuple, then its ct_zone is set and
- * it is forwarded to the corresponding CT pipe chain. If no (net x proto)
+ * it is forwarded to the corresponding CT pipe. If no (network x protocol)
  * tuple matches, then CT is not supported for this flow and the packet
  * goes to software.
  *
- * A CT pipe chain exist per supported (net x proto) tuple, e.g.
- * there is one for (ipv4 + TCP), one for (ipv4 + UDP), etc.
+ * The CT pipe is a basic pipe with a single action type, which writes to
  *
- * Each chain is constituted of all supported CT actions:
- * plain CT forwarding with no packet modification, CT-SNAT with
- * header source fields modifications, or CT-DNAT with header
- * destination fields modifications.
+ *  * The packet registers used for CT metadata.
+ *  * The packet 5-tuple.
  *
- * If no entry is found in the CT-SNAT pipe, the CT-DNAT pipe
- * is attempted, then finally the CT-PLAIN pipe. If any of those
- * three hit, then CT is executed and the packet is forwarded to post-CT.
+ * For plain CT, the 5-tuple is overwritten with its own values.
+ * For NAT, the translations are written instead where relevant.
  *
- * On the final miss in CT-PLAIN, the packet is forwarded to the
- * miss pipe, which will send it to the software datapath.
+ * In both cases, all fields are written anyway.
+ * This way, the number of template used by the CT pipe is minimal.
+ * During performance tests, no impact was measured due to the
+ * superfluous writes.
+ *
+ * If a CT entry matches the packet, the CT pipe action is executed
+ * and the packet is then forwarded to post-CT. Otherwise, the packet
+ * goes to the miss pipe and is then handed over to the software
+ * datapath.
  *
  * The diagram was drawn with https://asciiflow.com/ and edited in VIM.
  */
@@ -130,34 +132,6 @@ enum ct_tp_type {
     CT_TP_UDP, /* CT on UDP datagrams. */
     CT_TP_TCP, /* CT on TCP streams. */
     NUM_CT_TP,
-};
-
-enum ct_action_type {
-    CT_ACTION_PLAIN, /* Plain CT action, without packet modification. */
-    CT_ACTION_DNAT, /* CT with destination fields header rewrite. */
-    CT_ACTION_SNAT, /* CT with source fields header rewrite. */
-    CT_ACTION_NULL,
-    NUM_CT_ACTIONS = CT_ACTION_NULL,
-};
-
-/* As described in the model above, a CT chain executes
- * several CT actions, each done by its supported CT pipe.
- * For each of the CT action type, a match is attempted
- * in its pipe, and on miss goes to the next CT action.
- *
- * This introduces dependencies between the CT pipes.
- * As we attempt CT-SNAT first, then CT-DNAT, then CT-PLAIN,
- * that means the CT-SNAT depends on CT-DNAT to exist, etc.
- *
- * Express this in the following table, used to properly
- * order pipe creation and destruction.
- */
-
-enum ct_action_type ct_action_next[] = {
-    [CT_ACTION_PLAIN] = CT_ACTION_NULL, /* No dependency. */
-    [CT_ACTION_DNAT] = CT_ACTION_PLAIN,
-    [CT_ACTION_SNAT] = CT_ACTION_DNAT,
-    [CT_ACTION_NULL] = CT_ACTION_SNAT, /* Chains start here. */
 };
 
 enum hash_pipe_type {
@@ -223,7 +197,7 @@ OVS_ASSERT_PACKED(struct doca_eswitch_ctx,
     struct doca_flow_port *esw_port;
     struct doca_ctl_pipe_ctx *root_pipe_ctx;
     struct doca_async_state async_state[MAX_OFFLOAD_QUEUE_NB];
-    struct doca_basic_pipe_ctx ct_pipes[NUM_CT_NW][NUM_CT_TP][NUM_CT_ACTIONS];
+    struct doca_basic_pipe_ctx ct_pipes[NUM_CT_NW][NUM_CT_TP];
     struct fixed_rule zone_flows[2][NUM_ZONE_FLOWS][MAX_ZONE_ID + 1];
 );
 
@@ -280,77 +254,6 @@ l4_to_tp_type(enum doca_flow_l4_type_ext l4_type)
     return NUM_CT_TP;
 }
 
-static inline enum ct_action_type
-get_ct_action_type(uint32_t group, struct doca_flow_actions *actions)
-{
-    struct doca_flow_header_format *outer;
-
-    switch (group) {
-    case CT_TABLE_ID:
-        if (actions) {
-            actions->action_idx = 0;
-        }
-        return CT_ACTION_PLAIN;
-    case CTNAT_TABLE_ID:
-        /* Get the 'first' action of the CT chain. */
-        if (!actions) {
-            return ct_action_next[CT_ACTION_NULL];
-        }
-        outer = &actions->outer;
-        /* Determine SNAT or DNAT. */
-        /* In case of a PAT, L3 type doesn't matter. */
-        if (outer->l4_type_ext == DOCA_FLOW_L4_TYPE_EXT_TCP) {
-            if (outer->tcp.l4_port.dst_port) {
-                actions->action_idx = 1;
-                return CT_ACTION_DNAT;
-            }
-            if (outer->tcp.l4_port.src_port) {
-                actions->action_idx = 1;
-                return CT_ACTION_SNAT;
-            }
-        } else if (outer->l4_type_ext == DOCA_FLOW_L4_TYPE_EXT_UDP) {
-            if (outer->udp.l4_port.dst_port) {
-                actions->action_idx = 1;
-                return CT_ACTION_DNAT;
-            }
-            if (outer->udp.l4_port.src_port) {
-                actions->action_idx = 1;
-                return CT_ACTION_SNAT;
-            }
-        }
-        if (actions) {
-            actions->action_idx = 0;
-        }
-        if (outer->l3_type == DOCA_FLOW_L3_TYPE_IP4) {
-            if (outer->ip4.dst_ip) {
-                return CT_ACTION_DNAT;
-            }
-            if (outer->ip4.src_ip) {
-                return CT_ACTION_SNAT;
-            }
-        } else if (outer->l3_type == DOCA_FLOW_L3_TYPE_IP6) {
-            if (!is_all_zeros(&outer->ip6.dst_ip, sizeof outer->ip6.dst_ip)) {
-                return CT_ACTION_DNAT;
-            }
-            if (!is_all_zeros(&outer->ip6.src_ip, sizeof outer->ip6.src_ip)) {
-                return CT_ACTION_SNAT;
-            }
-        } else {
-            /* Redirection is for CT-NAT but there is actually no NAT action.
-             * Go to plain-ct.
-             */
-            if (actions) {
-                actions->action_idx = 0;
-            }
-            return CT_ACTION_PLAIN;
-        }
-        OVS_NOT_REACHED();
-    default:
-        return CT_ACTION_NULL;
-    }
-    OVS_NOT_REACHED();
-}
-
 static bool
 is_ct_zone_group_id(uint32_t group)
 {
@@ -358,17 +261,6 @@ is_ct_zone_group_id(uint32_t group)
              group <= CT_TABLE_ID + MAX_ZONE_ID) ||
             (group >= CTNAT_TABLE_ID + MIN_ZONE_ID &&
              group <= CTNAT_TABLE_ID + MAX_ZONE_ID));
-}
-
-static inline enum ct_action_type
-ct_action_prev(enum ct_action_type cur)
-{
-    for (int i = 0; i < NUM_CT_ACTIONS; i++) {
-        if (ct_action_next[i] == cur) {
-            return i;
-        }
-    }
-    return CT_ACTION_NULL;
 }
 
 static int
@@ -1793,19 +1685,14 @@ create_doca_ctl_flow_entry(struct netdev *netdev,
 
 static struct doca_flow_pipe *
 doca_get_ct_pipe(struct doca_eswitch_ctx *ctx,
-                 uint32_t group,
-                 struct doca_flow_match *spec,
-                 struct doca_flow_actions *actions)
+                 struct doca_flow_match *spec)
 {
-    enum ct_action_type ct_type;
     enum ct_nw_type nw_type;
     enum ct_tp_type tp_type;
 
     if (ctx == NULL) {
         return NULL;
     }
-
-    ct_type = get_ct_action_type(group, actions);
 
     nw_type = l3_to_nw_type(spec->outer.l3_type);
     if (nw_type >= NUM_CT_NW) {
@@ -1819,7 +1706,7 @@ doca_get_ct_pipe(struct doca_eswitch_ctx *ctx,
         return NULL;
     }
 
-    return ctx->ct_pipes[nw_type][tp_type][ct_type].pipe;
+    return ctx->ct_pipes[nw_type][tp_type].pipe;
 }
 
 static struct doca_flow_handle *
@@ -2231,7 +2118,7 @@ doca_create_ct_zone_uphold_rule(struct netdev *netdev,
     next_group = nat ? CTNAT_TABLE_ID : CT_TABLE_ID;
 
     fwd.type = DOCA_FLOW_FWD_PIPE;
-    fwd.next_pipe = doca_get_ct_pipe(ctx, next_group, &spec, NULL);
+    fwd.next_pipe = doca_get_ct_pipe(ctx, &spec);
     flow_res.next_pipe_ctx = NULL;
     flow_res.next_group = next_group;
 
@@ -2342,44 +2229,30 @@ err:
 
 static void
 doca_ct_pipe_destroy(struct doca_eswitch_ctx *ctx,
-                     enum ct_nw_type nw_type, enum ct_tp_type tp_type,
-                     enum ct_action_type ct_type)
+                     enum ct_nw_type nw_type, enum ct_tp_type tp_type)
 {
-    enum ct_action_type prev = ct_action_prev(ct_type);
     struct doca_basic_pipe_ctx *pipe_ctx;
 
-    if (prev != CT_ACTION_NULL) {
-        /* First destroy any previous pipe in the chain,
-         * if not already done. */
-        doca_ct_pipe_destroy(ctx, nw_type, tp_type, prev);
-    }
+    pipe_ctx = &ctx->ct_pipes[nw_type][tp_type];
 
-    pipe_ctx = &ctx->ct_pipes[nw_type][tp_type][ct_type];
+    doca_ctl_pipe_ctx_unref(pipe_ctx->fwd_pipe_ctx);
+    pipe_ctx->fwd_pipe_ctx = NULL;
 
-    if (pipe_ctx->fwd_pipe_ctx) {
-        doca_ctl_pipe_ctx_unref(pipe_ctx->fwd_pipe_ctx);
-        pipe_ctx->fwd_pipe_ctx = NULL;
-    }
-    if (pipe_ctx->miss_pipe_ctx) {
-        doca_ctl_pipe_ctx_unref(pipe_ctx->miss_pipe_ctx);
-        pipe_ctx->miss_pipe_ctx = NULL;
-    }
-    if (pipe_ctx->pipe) {
-        doca_flow_pipe_destroy(pipe_ctx->pipe);
-        pipe_ctx->pipe = NULL;
-    }
+    doca_ctl_pipe_ctx_unref(pipe_ctx->miss_pipe_ctx);
+    pipe_ctx->miss_pipe_ctx = NULL;
+
+    doca_flow_pipe_destroy(pipe_ctx->pipe);
+    pipe_ctx->pipe = NULL;
 }
 
 static void
 doca_ct_pipes_destroy(struct doca_eswitch_ctx *ctx)
 {
-    int i, j, k;
+    int i, j;
 
     for (i = 0; i < NUM_CT_NW; i++) {
         for (j = 0; j < NUM_CT_TP; j++) {
-            for (k = 0; k < NUM_CT_ACTIONS; k++) {
-                doca_ct_pipe_destroy(ctx, i, j, k);
-            }
+            doca_ct_pipe_destroy(ctx, i, j);
         }
     }
 }
@@ -2387,10 +2260,9 @@ doca_ct_pipes_destroy(struct doca_eswitch_ctx *ctx)
 static void
 doca_basic_pipe_name(struct ds *s, struct netdev *netdev,
                      enum ct_nw_type nw_type,
-                     enum ct_tp_type tp_type,
-                     enum ct_action_type ct_type)
+                     enum ct_tp_type tp_type)
 {
-    ds_put_format(s, "OVS_BASIC_PIPE_%d",
+    ds_put_format(s, "OVS_BASIC_CT_PIPE_%d",
                   netdev_dpdk_get_esw_mgr_port_id(netdev));
 
     switch (nw_type) {
@@ -2411,20 +2283,6 @@ doca_basic_pipe_name(struct ds *s, struct netdev *netdev,
     case NUM_CT_TP:
        OVS_NOT_REACHED();
     }
-
-    switch (ct_type) {
-    case CT_ACTION_PLAIN:
-        ds_put_cstr(s, "_CT");
-        break;
-    case CT_ACTION_DNAT:
-        ds_put_cstr(s, "_CT_DNAT");
-        break;
-    case CT_ACTION_SNAT:
-        ds_put_cstr(s, "_CT_SNAT");
-        break;
-    case CT_ACTION_NULL:
-       OVS_NOT_REACHED();
-    };
 }
 
 static struct doca_flow_match ct_matches[NUM_CT_NW][NUM_CT_TP] = {
@@ -2448,137 +2306,94 @@ static struct doca_flow_match ct_matches[NUM_CT_NW][NUM_CT_TP] = {
     },
 };
 
-#define CT_PIPE_ACT_ARR_SIZE 2
-
 static int
 doca_ct_pipe_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx,
-                  enum ct_nw_type nw_type, enum ct_tp_type tp_type,
-                  enum ct_action_type ct_type)
+                  enum ct_nw_type nw_type, enum ct_tp_type tp_type)
 {
-    struct doca_flow_actions *actions_masks_list[CT_PIPE_ACT_ARR_SIZE];
-    struct doca_flow_header_format *outer_masks[CT_PIPE_ACT_ARR_SIZE];
-    struct doca_flow_actions actions_masks[CT_PIPE_ACT_ARR_SIZE];
-    struct doca_flow_actions *actions_list[CT_PIPE_ACT_ARR_SIZE];
-    struct doca_flow_header_format *outer[CT_PIPE_ACT_ARR_SIZE];
-    struct doca_flow_actions actions[CT_PIPE_ACT_ARR_SIZE];
     struct doca_ctl_pipe_ctx *miss_pipe_ctx = NULL;
     struct doca_ctl_pipe_ctx *fwd_pipe_ctx = NULL;
+    struct doca_flow_actions *actions_masks_list;
+    struct doca_flow_header_format *outer_masks;
+    struct doca_flow_actions actions_masks;
+    struct doca_flow_header_format *outer;
+    struct doca_flow_actions *actions_list;
     struct doca_basic_pipe_ctx *pipe_ctx;
     struct doca_flow_match match_mask;
+    struct doca_flow_actions actions;
     struct doca_flow_pipe *miss_pipe;
     struct doca_flow_port *doca_port;
     struct doca_flow_monitor monitor;
+    enum dpdk_reg_id set_tags[] = {
+        REG_FIELD_CT_STATE,
+        REG_FIELD_CT_MARK,
+        REG_FIELD_CT_LABEL_ID,
+    };
     struct doca_flow_pipe_cfg cfg;
-    enum ct_action_type next_ct;
     struct doca_flow_fwd miss;
     struct doca_flow_fwd fwd;
     struct reg_field *ct_reg;
     struct ds pipe_name;
-    int nb_actions = 0;
     uint32_t reg_mask;
     int ret, i;
 
-    pipe_ctx = &ctx->ct_pipes[nw_type][tp_type][ct_type];
+    pipe_ctx = &ctx->ct_pipes[nw_type][tp_type];
 
     /* Do not re-init a pipe if already done. */
     if (pipe_ctx->pipe != NULL) {
         return 0;
     }
 
-    /* Make sure the next pipe in the CT chain is already
-     * initialized before linking to it from this one. */
-    if (ct_action_next[ct_type] != CT_ACTION_NULL) {
-        ret = doca_ct_pipe_init(netdev, ctx, nw_type, tp_type,
-                                ct_action_next[ct_type]);
-        if (ret) {
-            return ret;
-        }
-    }
-
     memset(&cfg, 0, sizeof cfg);
     memset(&fwd, 0, sizeof fwd);
     memset(&miss, 0, sizeof miss);
-    memset(actions, 0, sizeof actions);
-    memset(actions_masks, 0, sizeof actions_masks);
+    memset(&actions, 0, sizeof actions);
+    memset(&actions_masks, 0, sizeof actions_masks);
     memset(&monitor, 0, sizeof monitor);
 
     ds_init(&pipe_name);
-    doca_basic_pipe_name(&pipe_name, netdev, nw_type, tp_type, ct_type);
+    doca_basic_pipe_name(&pipe_name, netdev, nw_type, tp_type);
 
-    outer[0] = &actions[0].outer;
-    outer[1] = &actions[1].outer;
-    outer_masks[0] = &actions_masks[0].outer;
-    outer_masks[1] = &actions_masks[1].outer;
-    /* Finalize the action templates. */
+    actions_list = &actions;
+    actions_masks_list = &actions_masks;
+
+    outer = &actions.outer;
+    outer_masks = &actions_masks.outer;
+
+    /* Write the CT-NAT action template. */
     if (nw_type == CT_NW_IP4) {
-        switch (ct_type) {
-        case CT_ACTION_PLAIN:
-            nb_actions = 1;
-            break;
-        case CT_ACTION_DNAT:
-            nb_actions = 2;
-            outer[0]->l3_type = DOCA_FLOW_L3_TYPE_IP4;
-            outer[0]->ip4.dst_ip = UINT32_MAX;
-            outer[1]->l3_type = DOCA_FLOW_L3_TYPE_IP4;
-            outer[1]->ip4.dst_ip = UINT32_MAX;
-            if (tp_type == CT_TP_UDP) {
-                outer[1]->l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_UDP;
-                outer[1]->udp.l4_port.dst_port = UINT16_MAX;
-            } else {
-                outer[1]->l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_TCP;
-                outer[1]->tcp.l4_port.dst_port = UINT16_MAX;
-            }
-            break;
-        case CT_ACTION_SNAT:
-            nb_actions = 2;
-            outer[0]->l3_type = DOCA_FLOW_L3_TYPE_IP4;
-            outer[0]->ip4.src_ip = UINT32_MAX;
-            outer[1]->l3_type = DOCA_FLOW_L3_TYPE_IP4;
-            outer[1]->ip4.src_ip = UINT32_MAX;
-            if (tp_type == CT_TP_UDP) {
-                outer[1]->l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_UDP;
-                outer[1]->udp.l4_port.src_port = UINT16_MAX;
-            } else {
-                outer[1]->l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_TCP;
-                outer[1]->tcp.l4_port.src_port = UINT16_MAX;
-            }
-            break;
-        case CT_ACTION_NULL:
-            OVS_NOT_REACHED();
-            break;
-        };
+        outer->l3_type = DOCA_FLOW_L3_TYPE_IP4;
+        outer->ip4.src_ip = UINT32_MAX;
+        outer->ip4.dst_ip = UINT32_MAX;
+        if (tp_type == CT_TP_UDP) {
+            outer->l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_UDP;
+            outer->udp.l4_port.src_port = UINT16_MAX;
+            outer->udp.l4_port.dst_port = UINT16_MAX;
+        } else {
+            outer->l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_TCP;
+            outer->tcp.l4_port.src_port = UINT16_MAX;
+            outer->tcp.l4_port.dst_port = UINT16_MAX;
+        }
     } else {
         OVS_NOT_REACHED();
     }
 
-    memcpy(outer_masks[0], outer[0], sizeof *outer_masks[0]);
-    memcpy(outer_masks[1], outer[1], sizeof *outer_masks[1]);
-    for (i = 0; i < ARRAY_SIZE(actions); i++) {
-        enum dpdk_reg_id set_tags[] = {
-            REG_FIELD_CT_STATE,
-            REG_FIELD_CT_MARK,
-            REG_FIELD_CT_LABEL_ID,
-        };
-        int j;
+    memcpy(outer_masks, outer, sizeof *outer_masks);
 
-        ct_reg = &reg_fields[REG_FIELD_CT_CTX];
+    ct_reg = &reg_fields[REG_FIELD_CT_CTX];
+    reg_mask = ct_reg->mask << ct_reg->offset;
+    /* Use 0xFFFs values to set pkt_meta in the action upon pipe create
+     * and have the mask in the actions_mask
+     */
+    actions.meta.pkt_meta = UINT32_MAX;
+    actions_masks.meta.pkt_meta = ct_reg->mask << ct_reg->offset;
+    for (i = 0; i < ARRAY_SIZE(set_tags); i++) {
+        ct_reg = &reg_fields[set_tags[i]];
         reg_mask = ct_reg->mask << ct_reg->offset;
-        /* Use 0xFFFs values to set pkt_meta in the action upon pipe create
+        /* Use 0xFFFs values to set meta.u32 in the action upon pipe create
          * and have the mask in the actions_mask
          */
-        actions[i].meta.pkt_meta = UINT32_MAX;
-        actions_masks[i].meta.pkt_meta = ct_reg->mask << ct_reg->offset;
-        for (j = 0; j < ARRAY_SIZE(set_tags); j++) {
-            ct_reg = &reg_fields[set_tags[j]];
-            reg_mask = ct_reg->mask << ct_reg->offset;
-            /* Use 0xFFFs values to set meta.u32 in the action upon pipe create
-             * and have the mask in the actions_mask
-             */
-            actions[i].meta.u32[ct_reg->index] = UINT32_MAX;
-            actions_masks[i].meta.u32[ct_reg->index] |= reg_mask;
-        }
-        actions_list[i] = &actions[i];
-        actions_masks_list[i] = &actions_masks[i];
+        actions.meta.u32[ct_reg->index] = UINT32_MAX;
+        actions_masks.meta.u32[ct_reg->index] |= reg_mask;
     }
 
     /* Finalize the match templates. */
@@ -2594,13 +2409,13 @@ doca_ct_pipe_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx,
     cfg.attr.name = ds_cstr(&pipe_name);
     cfg.attr.type = DOCA_FLOW_PIPE_BASIC;
     cfg.attr.is_root = false;
-    cfg.attr.nb_actions = nb_actions,
+    cfg.attr.nb_actions = 1,
     cfg.attr.nb_flows = OVS_DOCA_MAX_CT_RULES;
     cfg.port = doca_flow_port_switch_get(doca_port);
     cfg.match = &ct_matches[nw_type][tp_type];
     cfg.match_mask = &match_mask;
-    cfg.actions = actions_list;
-    cfg.actions_masks = actions_masks_list;
+    cfg.actions = &actions_list;
+    cfg.actions_masks = &actions_masks_list;
     cfg.monitor = &monitor;
 
     fwd_pipe_ctx = doca_ctl_pipe_ctx_ref(netdev, POSTCT_TABLE_ID);
@@ -2612,18 +2427,13 @@ doca_ct_pipe_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx,
     fwd.type = DOCA_FLOW_FWD_PIPE;
     fwd.next_pipe = fwd_pipe_ctx->pipe;
 
-    next_ct = ct_action_next[ct_type];
-    if (next_ct != CT_ACTION_NULL) {
-        miss_pipe = ctx->ct_pipes[nw_type][tp_type][next_ct].pipe;
-    } else {
-        miss_pipe_ctx = doca_ctl_pipe_ctx_ref(netdev, MISS_TABLE_ID);
-        if (miss_pipe_ctx == NULL) {
-            VLOG_ERR("%s: Failed to take a reference on miss table",
-                     netdev_get_name(netdev));
-            return -1;
-        }
-        miss_pipe = miss_pipe_ctx->pipe;
+    miss_pipe_ctx = doca_ctl_pipe_ctx_ref(netdev, MISS_TABLE_ID);
+    if (miss_pipe_ctx == NULL) {
+        VLOG_ERR("%s: Failed to take a reference on miss table",
+                 netdev_get_name(netdev));
+        return -1;
     }
+    miss_pipe = miss_pipe_ctx->pipe;
     miss.type = DOCA_FLOW_FWD_PIPE;
     miss.next_pipe = miss_pipe;
 
@@ -2650,14 +2460,12 @@ error:
 static int
 doca_ct_pipes_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx)
 {
-    int i, j, k;
+    int i, j;
 
     for (i = 0; i < NUM_CT_NW; i++) {
         for (j = 0; j < NUM_CT_TP; j++) {
-            for (k = 0; k < NUM_CT_ACTIONS; k++) {
-                if (doca_ct_pipe_init(netdev, ctx, i, j, k)) {
-                    goto error;
-                }
+            if (doca_ct_pipe_init(netdev, ctx, i, j)) {
+                goto error;
             }
         }
     }
@@ -2938,7 +2746,6 @@ dpdk_offload_doca_insert_conn(struct netdev *netdev,
     struct doca_flow_actions dacts;
     struct doca_flow_match dspec;
     struct doca_eswitch_ctx *ctx;
-    enum ct_action_type ct_type;
     struct doca_flow_pipe *pipe;
     struct rte_flow_error error;
     struct reg_field *ct_reg;
@@ -2979,46 +2786,44 @@ dpdk_offload_doca_insert_conn(struct netdev *netdev,
 
     dhdr = &dacts.outer;
 
-    /* NAT */
+    /* Common part for all CT, plain and NAT. */
+
+    dhdr->l3_type = DOCA_FLOW_L3_TYPE_IP4;
+    dhdr->ip4.src_ip = ct_match->key.src.addr.ipv4;
+    dhdr->ip4.dst_ip = ct_match->key.dst.addr.ipv4;
+
+    if (tp_type == CT_TP_TCP) {
+        dhdr->l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_TCP;
+        dhdr->tcp.l4_port.src_port = ct_match->key.src.port;
+        dhdr->tcp.l4_port.dst_port = ct_match->key.dst.port;
+    } else {
+        dhdr->l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_UDP;
+        dhdr->udp.l4_port.src_port = ct_match->key.src.port;
+        dhdr->udp.l4_port.dst_port = ct_match->key.dst.port;
+    }
+
+    /* For NAT translate the relevant fields. */
     if (ct_offload->nat.mod_flags) {
         is_ct = false;
-
-        /* IPv4 */
         if (nw_type == CT_NW_IP4) {
             if (ct_offload->nat.mod_flags & NAT_ACTION_SRC) {
-                dhdr->l3_type = DOCA_FLOW_L3_TYPE_IP4;
                 dhdr->ip4.src_ip = ct_offload->nat.key.src.addr.ipv4;
-                dhdr->ip4.dst_ip = 0;
             } else if (ct_offload->nat.mod_flags & NAT_ACTION_DST) {
-                dhdr->l3_type = DOCA_FLOW_L3_TYPE_IP4;
-                dhdr->ip4.src_ip = 0;
                 dhdr->ip4.dst_ip = ct_offload->nat.key.dst.addr.ipv4;
-            } else {
-                dhdr->l3_type = 0;
             }
         }
         if (ct_offload->nat.mod_flags & NAT_ACTION_SRC_PORT) {
             if (tp_type == CT_TP_TCP) {
-                dhdr->l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_TCP;
                 dhdr->tcp.l4_port.src_port = ct_offload->nat.key.src.port;
-                dhdr->tcp.l4_port.dst_port = 0;
             } else {
-                dhdr->l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_UDP;
                 dhdr->udp.l4_port.src_port = ct_offload->nat.key.src.port;
-                dhdr->udp.l4_port.dst_port = 0;
             }
         } else if (ct_offload->nat.mod_flags & NAT_ACTION_DST_PORT) {
             if (tp_type == CT_TP_TCP) {
-                dhdr->l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_TCP;
-                dhdr->tcp.l4_port.src_port = 0;
                 dhdr->tcp.l4_port.dst_port = ct_offload->nat.key.dst.port;
             } else {
-                dhdr->l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_UDP;
-                dhdr->udp.l4_port.src_port = 0;
                 dhdr->udp.l4_port.dst_port = ct_offload->nat.key.dst.port;
             }
-        } else {
-            dhdr->l4_type_ext = 0;
         }
     } else {
         is_ct = true;
@@ -3046,54 +2851,21 @@ dpdk_offload_doca_insert_conn(struct netdev *netdev,
     queue_id = netdev_offload_thread_id();
     memset(fi, 0, sizeof *fi);
 
-    ct_type = CT_ACTION_NULL;
-    if (netdev_offload_ct_on_ct_nat || !is_ct) {
-        int pos = netdev_offload_ct_on_ct_nat;
+    log_conn_rule(is_ct ? CT_TABLE_ID : CTNAT_TABLE_ID, tp_type, &dspec,
+                  &dacts);
 
-        ct_type = get_ct_action_type(CTNAT_TABLE_ID, &dacts);
-        /* In case that netdev_offload_ct_on_ct_nat flag is on, and the
-         * connection is plain, we need to offload only on the plain pipe.
-         */
-        if (ct_type == CT_ACTION_PLAIN) {
-            pos = 0;
-        }
-        pipe = ctx->ct_pipes[nw_type][tp_type][ct_type].pipe;
-        log_conn_rule(CTNAT_TABLE_ID, tp_type, &dspec, &dacts);
-        if (create_doca_basic_flow_entry(netdev, queue_id, pipe, &dspec,
-                                         &dacts, NULL, NULL, &fi->doh[pos],
-                                         &error)) {
-            VLOG_WARN_RL(&rl, "%s: Failed to create ct entry: Error %d (%s)",
-                         netdev_get_name(netdev), error.type, error.message);
-            return -1;
-        }
-        fi->doh[pos].valid = true;
+    dacts.action_idx = 0;
+    pipe = ctx->ct_pipes[nw_type][tp_type].pipe;
+    if (create_doca_basic_flow_entry(netdev, queue_id, pipe, &dspec,
+                                     &dacts, NULL, NULL, &fi->doh[0],
+                                     &error)) {
+        VLOG_WARN_RL(&rl, "%s: Failed to create ct entry: Error %d (%s)",
+                     netdev_get_name(netdev), error.type, error.message);
+        return -1;
     }
-
-    if ((netdev_offload_ct_on_ct_nat || is_ct) &&
-        (ct_type != CT_ACTION_PLAIN)) {
-        /* In case that netdev_offload_ct_on_ct_nat flag is on, and the
-         * connection is plain, already offloaded on the plain pipe above.
-         */
-        ct_type = get_ct_action_type(CT_TABLE_ID, &dacts);
-        pipe = ctx->ct_pipes[nw_type][tp_type][ct_type].pipe;
-        log_conn_rule(CT_TABLE_ID, tp_type, &dspec, &dacts);
-        if (create_doca_basic_flow_entry(netdev, queue_id, pipe, &dspec,
-                                         &dacts, NULL, NULL, &fi->doh[0],
-                                         &error)) {
-            VLOG_WARN_RL(&rl, "%s: Failed to create ct entry: Error %d (%s)",
-                         netdev_get_name(netdev), error.type, error.message);
-            goto ct_err;
-        }
-        fi->doh[0].valid = true;
-    }
+    fi->doh[0].valid = true;
 
     return 0;
-
-ct_err:
-    if (fi->doh[1].valid) {
-        destroy_dpdk_offload_handle(netdev, &fi->doh[1], queue_id, &error);
-    }
-    return -1;
 }
 
 struct dpdk_offload_api dpdk_offload_api_doca = {
