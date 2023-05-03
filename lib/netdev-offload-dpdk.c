@@ -3695,6 +3695,14 @@ parse_flow_match(struct netdev *netdev,
         !((match->wc.masks.ct_state & CS_NEW) &&
           (match->flow.ct_state & CS_NEW)) &&
         !(match->wc.masks.ct_state & OVS_CS_F_NAT_MASK)) {
+
+        if (act_vars->proto && act_vars->proto != IPPROTO_UDP &&
+            act_vars->proto != IPPROTO_TCP) {
+            VLOG_DBG_RL(&rl, "Unsupported CT offload for L4 protocol: 0x02%"
+                        PRIx8, act_vars->proto);
+            return -1;
+        }
+
         if ((!match->flow.recirc_id &&
              !(match->wc.masks.ct_state & match->flow.ct_state)) ||
             !add_pattern_match_reg_field(patterns, REG_FIELD_CT_STATE,
