@@ -1146,7 +1146,7 @@ create_doca_ctl_flow_entry(struct netdev *netdev,
 
     err = doca_flow_pipe_control_add_entry(queue_id, prio, pipe, spec, mask,
                                            actions, action_descs, monitor, fwd,
-                                           &entry);
+                                           NULL, &entry);
     if (err) {
         VLOG_WARN_RL(&rl, "%s: Failed to create ctl pipe entry. Error: %d (%s)",
                      netdev_get_name(netdev), err, doca_get_error_string(err));
