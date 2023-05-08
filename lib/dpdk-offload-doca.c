@@ -933,11 +933,12 @@ doca_translate_actions(struct netdev *netdev OVS_UNUSED,
                        struct doca_flow_match *spec,
                        const struct rte_flow_action *actions,
                        struct doca_flow_actions *dacts,
-                       struct doca_flow_action_descs *acts_descs OVS_UNUSED,
+                       struct doca_flow_actions *dacts_masks,
                        struct doca_flow_fwd *fwd,
                        struct doca_flow_monitor *monitor,
                        struct doca_flow_handle_resources *flow_res)
 {
+    struct doca_flow_header_format *outer_masks = &dacts_masks->outer;
     struct doca_flow_header_format *outer = &dacts->outer;
     bool vlan_act_push = false;
 
@@ -1048,23 +1049,20 @@ doca_translate_actions(struct netdev *netdev OVS_UNUSED,
             uint32_t reg_mask = reg_fields[REG_FIELD_FLOW_INFO].mask;
 
             dacts->meta.pkt_meta |= (mark->id & reg_mask) << reg_offset;
-            acts_descs->meta.pkt_meta.mask.u32 |= reg_mask << reg_offset;
-            acts_descs->meta.pkt_meta.type = DOCA_FLOW_ACTION_SET;
+            dacts_masks->meta.pkt_meta |= reg_mask << reg_offset;
         } else if (act_type == OVS_RTE_FLOW_ACTION_TYPE_CT_INFO) {
             const struct rte_flow_action_set_meta *set_meta = actions->conf;
             uint32_t reg_offset = reg_fields[REG_FIELD_CT_CTX].offset;
             uint32_t reg_mask = reg_fields[REG_FIELD_CT_CTX].mask;
 
             dacts->meta.pkt_meta |= (set_meta->data & reg_mask) << reg_offset;
-            acts_descs->meta.pkt_meta.mask.u32 |= (set_meta->mask & reg_mask) << reg_offset;
-            acts_descs->meta.pkt_meta.type = DOCA_FLOW_ACTION_SET;
+            dacts_masks->meta.pkt_meta |= (set_meta->mask & reg_mask) << reg_offset;
         } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_TAG) {
             const struct rte_flow_action_set_tag *set_tag = actions->conf;
             uint8_t index = set_tag->index;
 
             dacts->meta.u32[index] |= set_tag->data;
-            acts_descs->meta.u32[index].mask.u32 |= set_tag->mask;
-            acts_descs->meta.u32[index].type = DOCA_FLOW_ACTION_SET;
+            dacts_masks->meta.u32[index] |= set_tag->mask;
         } else if (act_type == RTE_FLOW_ACTION_TYPE_OF_POP_VLAN) {
             /* Current support is for a single VLAN tag */
             if (dacts->pop) {
@@ -1083,6 +1081,7 @@ doca_translate_actions(struct netdev *netdev OVS_UNUSED,
         }
     }
 
+    memcpy(outer_masks, outer, sizeof *outer_masks);
     return 0;
 }
 
@@ -1135,7 +1134,7 @@ create_doca_ctl_flow_entry(struct netdev *netdev,
                            struct doca_flow_match *spec,
                            struct doca_flow_match *mask,
                            struct doca_flow_actions *actions,
-                           struct doca_flow_action_descs *action_descs,
+                           struct doca_flow_actions *actions_masks,
                            struct doca_flow_monitor *monitor,
                            struct doca_flow_fwd *fwd,
                            struct rte_flow_error *error)
@@ -1145,7 +1144,7 @@ create_doca_ctl_flow_entry(struct netdev *netdev,
     doca_error_t err;
 
     err = doca_flow_pipe_control_add_entry(queue_id, prio, pipe, spec, mask,
-                                           actions, action_descs, monitor, fwd,
+                                           actions, actions_masks, NULL, monitor, fwd,
                                            NULL, &entry);
     if (err) {
         VLOG_WARN_RL(&rl, "%s: Failed to create ctl pipe entry. Error: %d (%s)",
@@ -1197,7 +1196,7 @@ create_doca_flow_handle(struct netdev *netdev,
                         struct doca_flow_match *spec,
                         struct doca_flow_match *mask,
                         struct doca_flow_actions *actions,
-                        struct doca_flow_action_descs *action_descs,
+                        struct doca_flow_actions *actions_masks,
                         struct doca_flow_monitor *monitor,
                         struct doca_flow_fwd *fwd,
                         struct doca_flow_handle_resources *flow_res,
@@ -1242,7 +1241,7 @@ create_doca_flow_handle(struct netdev *netdev,
         /* insert rule */
         hndl->flow = create_doca_ctl_flow_entry(netdev, queue_id, pipe_ctx,
                                                 prio, spec, mask, actions,
-                                                action_descs, monitor, fwd,
+                                                actions_masks, monitor, fwd,
                                                 error);
         if (!hndl->flow) {
             error->type = RTE_FLOW_ERROR_TYPE_HANDLE;
@@ -1274,10 +1273,9 @@ dpdk_offload_doca_create(struct netdev *netdev,
                          struct rte_flow_error *error)
 {
     unsigned int tid = netdev_offload_thread_id();
+    struct doca_flow_actions dacts, dacts_masks;
     struct doca_flow_handle_resources flow_res;
-    struct doca_flow_action_descs dacts_descs;
     struct doca_flow_monitor monitor;
-    struct doca_flow_actions dacts;
     struct doca_flow_handle *hndl;
     struct doca_flow_match mask;
     struct doca_flow_match spec;
@@ -1285,7 +1283,7 @@ dpdk_offload_doca_create(struct netdev *netdev,
     struct doca_flow_fwd fwd;
     uint32_t prio;
 
-    memset(&dacts_descs, 0x0, sizeof dacts_descs);
+    memset(&dacts_masks, 0x0, sizeof dacts_masks);
     memset(&flow_res, 0x0, sizeof flow_res);
     memset(&monitor, 0x0, sizeof monitor);
     memset(&dacts, 0x0, sizeof dacts);
@@ -1301,7 +1299,7 @@ dpdk_offload_doca_create(struct netdev *netdev,
     }
 
     /* parse actions */
-    if (doca_translate_actions(netdev, &spec, actions, &dacts, &dacts_descs,
+    if (doca_translate_actions(netdev, &spec, actions, &dacts, &dacts_masks,
                                &fwd, &monitor, &flow_res)) {
         error->type = RTE_FLOW_ERROR_TYPE_ACTION;
         error->message = "Could not create actions";
@@ -1311,7 +1309,7 @@ dpdk_offload_doca_create(struct netdev *netdev,
 
     prio = flow_res.next_group == MISS_TABLE_ID;
     hndl = create_doca_flow_handle(netdev, queue_id, prio, attr->group, &spec,
-                                   &mask, &dacts, &dacts_descs, &monitor, &fwd,
+                                   &mask, &dacts, &dacts_masks, &monitor, &fwd,
                                    &flow_res, doh, error);
     if (!hndl) {
         /* change to free doca flow resources function */
@@ -1564,9 +1562,8 @@ doca_create_ct_zone_uphold_rule(struct netdev *netdev,
                                 uint16_t zone, int nat, bool match_tcp,
                                 struct dpdk_offload_handle *doh)
 {
+    struct doca_flow_actions dacts, dacts_masks;
     struct doca_flow_handle_resources flow_res;
-    struct doca_flow_action_descs dacts_descs;
-    struct doca_flow_actions dacts;
     struct doca_flow_handle *hndl;
     struct doca_flow_match spec;
     struct doca_flow_match mask;
@@ -1575,7 +1572,7 @@ doca_create_ct_zone_uphold_rule(struct netdev *netdev,
     struct doca_flow_fwd fwd;
     uint32_t next_group;
 
-    memset(&dacts_descs, 0x0, sizeof dacts_descs);
+    memset(&dacts_masks, 0x0, sizeof dacts_masks);
     memset(&flow_res, 0x0, sizeof flow_res);
     memset(&dacts, 0x0, sizeof dacts);
     memset(&fwd, 0x0, sizeof fwd);
@@ -1597,8 +1594,7 @@ doca_create_ct_zone_uphold_rule(struct netdev *netdev,
 
     reg_field = &reg_fields[REG_FIELD_CT_ZONE];
     dacts.meta.u32[reg_field->index] |= zone << reg_field->offset;
-    dacts_descs.meta.u32[reg_field->index].mask.u32 |= reg_field->mask << reg_field->offset;
-    dacts_descs.meta.u32[reg_field->index].type = DOCA_FLOW_ACTION_SET;
+    dacts_masks.meta.u32[reg_field->index] |= reg_field->mask << reg_field->offset;
 
     next_group = nat ? CTNAT_TABLE_ID : CT_TABLE_ID;
 
@@ -1608,7 +1604,7 @@ doca_create_ct_zone_uphold_rule(struct netdev *netdev,
     flow_res.next_group = next_group;
 
     hndl = create_doca_flow_handle(netdev, AUX_QUEUE, 1, group, &spec, &mask,
-                                   &dacts, &dacts_descs, NULL, &fwd, &flow_res,
+                                   &dacts, &dacts_masks, NULL, &fwd, &flow_res,
                                    doh, &error);
     if (!hndl) {
         return -1;
@@ -1819,15 +1815,21 @@ static struct doca_flow_match ct_matches[NUM_CT_NW][NUM_CT_TP] = {
     },
 };
 
+#define CT_PIPE_ACT_ARR_SIZE 2
+
 static int
 doca_ct_pipe_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx,
                   enum ct_nw_type nw_type, enum ct_tp_type tp_type,
                   enum ct_action_type ct_type)
 {
+    struct doca_flow_actions *actions_masks_list[CT_PIPE_ACT_ARR_SIZE];
+    struct doca_flow_header_format *outer_masks[CT_PIPE_ACT_ARR_SIZE];
+    struct doca_flow_actions actions_masks[CT_PIPE_ACT_ARR_SIZE];
+    struct doca_flow_actions *actions_list[CT_PIPE_ACT_ARR_SIZE];
+    struct doca_flow_header_format *outer[CT_PIPE_ACT_ARR_SIZE];
+    struct doca_flow_actions actions[CT_PIPE_ACT_ARR_SIZE];
     struct doca_ctl_pipe_ctx *miss_pipe_ctx = NULL;
     struct doca_ctl_pipe_ctx *fwd_pipe_ctx = NULL;
-    struct doca_flow_actions actions[2];
-    struct doca_flow_actions *actions_list[ARRAY_SIZE(actions)];
     struct doca_basic_pipe_ctx *pipe_ctx;
     struct doca_flow_match match_mask;
     struct doca_flow_pipe *miss_pipe;
@@ -1863,11 +1865,16 @@ doca_ct_pipe_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx,
     memset(&fwd, 0, sizeof fwd);
     memset(&miss, 0, sizeof miss);
     memset(actions, 0, sizeof actions);
+    memset(actions_masks, 0, sizeof actions_masks);
     memset(&monitor, 0, sizeof monitor);
 
     ds_init(&pipe_name);
     doca_basic_pipe_name(&pipe_name, netdev, nw_type, tp_type, ct_type);
 
+    outer[0] = &actions[0].outer;
+    outer[1] = &actions[1].outer;
+    outer_masks[0] = &actions_masks[0].outer;
+    outer_masks[1] = &actions_masks[1].outer;
     /* Finalize the action templates. */
     if (nw_type == CT_NW_IP4) {
         switch (ct_type) {
@@ -1876,30 +1883,30 @@ doca_ct_pipe_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx,
             break;
         case CT_ACTION_DNAT:
             nb_actions = 2;
-            actions[0].outer.l3_type = DOCA_FLOW_L3_TYPE_IP4;
-            actions[0].outer.ip4.dst_ip = UINT32_MAX;
-            actions[1].outer.l3_type = DOCA_FLOW_L3_TYPE_IP4;
-            actions[1].outer.ip4.dst_ip = UINT32_MAX;
+            outer[0]->l3_type = DOCA_FLOW_L3_TYPE_IP4;
+            outer[0]->ip4.dst_ip = UINT32_MAX;
+            outer[1]->l3_type = DOCA_FLOW_L3_TYPE_IP4;
+            outer[1]->ip4.dst_ip = UINT32_MAX;
             if (tp_type == CT_TP_UDP) {
-                actions[1].outer.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_UDP;
-                actions[1].outer.udp.l4_port.dst_port = UINT16_MAX;
+                outer[1]->l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_UDP;
+                outer[1]->udp.l4_port.dst_port = UINT16_MAX;
             } else {
-                actions[1].outer.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_TCP;
-                actions[1].outer.tcp.l4_port.dst_port = UINT16_MAX;
+                outer[1]->l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_TCP;
+                outer[1]->tcp.l4_port.dst_port = UINT16_MAX;
             }
             break;
         case CT_ACTION_SNAT:
             nb_actions = 2;
-            actions[0].outer.l3_type = DOCA_FLOW_L3_TYPE_IP4;
-            actions[0].outer.ip4.src_ip = UINT32_MAX;
-            actions[1].outer.l3_type = DOCA_FLOW_L3_TYPE_IP4;
-            actions[1].outer.ip4.src_ip = UINT32_MAX;
+            outer[0]->l3_type = DOCA_FLOW_L3_TYPE_IP4;
+            outer[0]->ip4.src_ip = UINT32_MAX;
+            outer[1]->l3_type = DOCA_FLOW_L3_TYPE_IP4;
+            outer[1]->ip4.src_ip = UINT32_MAX;
             if (tp_type == CT_TP_UDP) {
-                actions[1].outer.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_UDP;
-                actions[1].outer.udp.l4_port.src_port = UINT16_MAX;
+                outer[1]->l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_UDP;
+                outer[1]->udp.l4_port.src_port = UINT16_MAX;
             } else {
-                actions[1].outer.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_TCP;
-                actions[1].outer.tcp.l4_port.src_port = UINT16_MAX;
+                outer[1]->l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_TCP;
+                outer[1]->tcp.l4_port.src_port = UINT16_MAX;
             }
             break;
         case CT_ACTION_NULL:
@@ -1910,6 +1917,8 @@ doca_ct_pipe_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx,
         OVS_NOT_REACHED();
     }
 
+    memcpy(outer_masks[0], outer[0], sizeof *outer_masks[0]);
+    memcpy(outer_masks[1], outer[1], sizeof *outer_masks[1]);
     for (i = 0; i < ARRAY_SIZE(actions); i++) {
         enum dpdk_reg_id set_tags[] = {
             REG_FIELD_CT_STATE,
@@ -1920,13 +1929,22 @@ doca_ct_pipe_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx,
 
         ct_reg = &reg_fields[REG_FIELD_CT_CTX];
         reg_mask = ct_reg->mask << ct_reg->offset;
-        actions[i].meta.pkt_meta = ct_reg->mask << ct_reg->offset;
+        /* Use 0xFFFs values to set pkt_meta in the action upon pipe create
+         * and have the mask in the actions_mask
+         */
+        actions[i].meta.pkt_meta = UINT32_MAX;
+        actions_masks[i].meta.pkt_meta = ct_reg->mask << ct_reg->offset;
         for (j = 0; j < ARRAY_SIZE(set_tags); j++) {
             ct_reg = &reg_fields[set_tags[j]];
             reg_mask = ct_reg->mask << ct_reg->offset;
-            actions[i].meta.u32[ct_reg->index] |= reg_mask;
+            /* Use 0xFFFs values to set meta.u32 in the action upon pipe create
+             * and have the mask in the actions_mask
+             */
+            actions[i].meta.u32[ct_reg->index] = UINT32_MAX;
+            actions_masks[i].meta.u32[ct_reg->index] |= reg_mask;
         }
         actions_list[i] = &actions[i];
+        actions_masks_list[i] = &actions_masks[i];
     }
 
     /* Finalize the match templates. */
@@ -1948,6 +1966,7 @@ doca_ct_pipe_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx,
     cfg.match = &ct_matches[nw_type][tp_type];
     cfg.match_mask = &match_mask;
     cfg.actions = actions_list;
+    cfg.actions_masks = actions_masks_list;
     cfg.monitor = &monitor;
 
     fwd_pipe_ctx = doca_ctl_pipe_ctx_ref(netdev, POSTCT_TABLE_ID);
