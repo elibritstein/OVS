@@ -4235,8 +4235,7 @@ dp_netdev_offload_ct_enqueue(struct dp_offload_thread_item *item)
 static void
 dp_netdev_ct_offload_get_ufid(ovs_u128 *ufid)
 {
-    ufid->u64.lo = (uint64_t) ufid;
-    ufid->u64.hi = (uint64_t) ufid;
+    ufid->u64.hi = ufid->u64.lo = hash_pointer(ufid, 0);
     uuid_set_bits_v4((struct uuid *) ufid, UUID_ATTR_1);
 }
 
