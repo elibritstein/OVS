@@ -235,8 +235,7 @@ void
 offload_metadata_upkeep(struct offload_metadata *md, unsigned int uid,
                         long long int now)
 {
-    struct ovs_list *list;
-    struct ovs_list *node;
+    struct release_item *item;
 
     if (md == NULL) {
         return;
@@ -247,20 +246,15 @@ offload_metadata_upkeep(struct offload_metadata *md, unsigned int uid,
     }
 
     ovs_assert(uid < md->nb_user);
-    list = &md->free_lists[uid];
 
-    while (!ovs_list_is_empty(list)) {
-        struct release_item *item;
-
-        node = ovs_list_front(list);
-        item = CONTAINER_OF(node, struct release_item, node);
+    LIST_FOR_EACH_SAFE (item, node, &md->free_lists[uid]) {
         if (now < item->timestamp + md->delay) {
             break;
         }
         VLOG_DBG_RL(&rl, "%s: md=%s, id=%d, associated=%d, timestamp=%llu, "
                     "now=%llu", __func__, item->md->name, item->id,
                     item->associated, item->timestamp, now);
-        ovs_list_remove(node);
+        ovs_list_remove(&item->node);
         context_release(item);
     }
 }
