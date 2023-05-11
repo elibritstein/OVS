@@ -498,6 +498,7 @@ struct e2e_cache_ufid_msg {
 };
 
 static struct dp_offload_thread *dp_offload_threads = NULL;
+struct ovs_dpdk_mempool *ct_add_msgs_mp = NULL;
 static void *dp_netdev_flow_offload_main(void *arg);
 
 static void
@@ -611,6 +612,7 @@ dp_netdev_offload_init(void)
 {
     static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
     unsigned int nb_offload_thread = netdev_offload_thread_nb();
+    unsigned int elt_size;
     unsigned int tid;
 
     if (!ovsthread_once_start(&once)) {
@@ -619,6 +621,11 @@ dp_netdev_offload_init(void)
 
     dp_offload_threads = xcalloc(nb_offload_thread,
                                  sizeof *dp_offload_threads);
+
+    elt_size = sizeof (struct dp_offload_thread_item) +
+        CT_DIR_NUM * sizeof (struct ct_flow_offload_item);
+    ct_add_msgs_mp = ovs_dpdk_mempool_create(offload_ct_add_queue_size,
+                                             elt_size);
 
     for (tid = 0; tid < nb_offload_thread; tid++) {
         struct dp_offload_thread *thread;
@@ -3451,6 +3458,18 @@ dp_netdev_free_flow_offload(struct dp_offload_thread_item *offload)
 }
 
 static void
+free_ct_offload_item(struct dp_offload_thread_item *offload)
+{
+    struct ct_flow_offload_item *ct_offload = offload->data->ct_offload_item;
+
+    if (ct_offload[CT_DIR_INIT].op == DP_NETDEV_FLOW_OFFLOAD_OP_ADD) {
+        ovs_dpdk_mempool_free(ct_add_msgs_mp, offload);
+    } else {
+        free(offload);
+    }
+}
+
+static void
 dp_netdev_free_ct_offload__(struct dp_offload_thread_item *offload)
 {
     struct ct_flow_offload_item *ct_offload = offload->data->ct_offload_item;
@@ -3462,7 +3481,7 @@ dp_netdev_free_ct_offload__(struct dp_offload_thread_item *offload)
         free(ct_offload[CT_DIR_REP].actions);
     }
 
-    free(offload);
+    free_ct_offload_item(offload);
 }
 
 static void
@@ -4280,7 +4299,13 @@ dp_netdev_ct_offload_add_item(struct ct_flow_offload_item *ct_offload)
     if (dp_netdev_e2e_cache_enabled) {
         return;
     }
-    item = xzalloc(sizeof *item + CT_DIR_NUM * sizeof *ct_offload);
+
+    ovs_dpdk_mempool_alloc(ct_add_msgs_mp, (void **) &item);
+    if (OVS_UNLIKELY(item == NULL)) {
+        VLOG_ERR("Could not allocate an item from mempool");
+        return;
+    }
+
     item->type = DP_OFFLOAD_CT;
     item->dp = NULL;
     item->timestamp = ct_offload[0].timestamp;
