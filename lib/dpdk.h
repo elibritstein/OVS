@@ -34,6 +34,7 @@
 
 struct smap;
 struct ovsrec_open_vswitch;
+struct ovs_dpdk_mempool;
 
 void dpdk_init(const struct smap *ovs_other_config);
 bool dpdk_attach_thread(unsigned cpu);
@@ -45,5 +46,10 @@ bool dpdk_per_port_memory(void);
 bool dpdk_available(void);
 void print_dpdk_version(void);
 void dpdk_status(const struct ovsrec_open_vswitch *);
+
+void ovs_dpdk_mempool_destroy(struct ovs_dpdk_mempool *odmp);
+struct ovs_dpdk_mempool *ovs_dpdk_mempool_create(unsigned n, unsigned elt_size);
+void ovs_dpdk_mempool_free(struct ovs_dpdk_mempool *odmp, void *obj);
+int ovs_dpdk_mempool_alloc(struct ovs_dpdk_mempool *odmp, void **obj_p);
 
 #endif /* dpdk.h */

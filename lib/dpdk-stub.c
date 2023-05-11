@@ -92,3 +92,29 @@ dpdk_status(const struct ovsrec_open_vswitch *cfg)
         ovsrec_open_vswitch_set_dpdk_version(cfg, "none");
     }
 }
+
+void
+ovs_dpdk_mempool_destroy(struct ovs_dpdk_mempool *odmp OVS_UNUSED)
+{
+}
+
+struct ovs_dpdk_mempool *
+ovs_dpdk_mempool_create(unsigned n OVS_UNUSED, unsigned elt_size OVS_UNUSED)
+{
+    return NULL;
+}
+
+void
+ovs_dpdk_mempool_free(struct ovs_dpdk_mempool *odmp OVS_UNUSED,
+                      void *obj OVS_UNUSED)
+{
+    ovs_assert(false);
+}
+
+int
+ovs_dpdk_mempool_alloc(struct ovs_dpdk_mempool *odmp OVS_UNUSED, void **obj_p)
+{
+    ovs_assert(false);
+    *obj_p = NULL;
+    return -1;
+}

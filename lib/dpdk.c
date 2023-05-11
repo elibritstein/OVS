@@ -26,6 +26,7 @@
 #include <rte_errno.h>
 #include <rte_log.h>
 #include <rte_malloc.h>
+#include <rte_mempool.h>
 #include <rte_memzone.h>
 #include <rte_version.h>
 #include <rte_flow.h>
@@ -656,4 +657,43 @@ dpdk_status(const struct ovsrec_open_vswitch *cfg)
         ovsrec_open_vswitch_set_dpdk_initialized(cfg, dpdk_available());
         ovsrec_open_vswitch_set_dpdk_version(cfg, rte_version());
     }
+}
+
+#define DMP_CACHE_SIZE 32
+
+void
+ovs_dpdk_mempool_destroy(struct ovs_dpdk_mempool *odmp)
+{
+    rte_mempool_free((struct rte_mempool *) odmp);
+}
+
+struct ovs_dpdk_mempool *
+ovs_dpdk_mempool_create(unsigned n, unsigned elt_size)
+{
+    char mp_name[RTE_MEMPOOL_NAMESIZE];
+    static int mp_count = 0;
+    struct rte_mempool *mp;
+
+    snprintf(mp_name, sizeof mp_name, "ovs_dpdk_mempool%d", mp_count++);
+    /* The worst case is that all the caches (per l-core) are full except the
+     * current one. Increase the number of elements by this number to handle
+     * this case.
+     */
+    n += (RTE_MAX_LCORE - 1) * DMP_CACHE_SIZE;
+    mp = rte_mempool_create(mp_name, n, elt_size, DMP_CACHE_SIZE, 0, NULL,
+                            NULL, NULL, NULL, SOCKET_ID_ANY, 0);
+
+    return (struct ovs_dpdk_mempool *) mp;
+}
+
+void
+ovs_dpdk_mempool_free(struct ovs_dpdk_mempool *odmp, void *obj)
+{
+    rte_mempool_put((struct rte_mempool *) odmp, obj);
+}
+
+int
+ovs_dpdk_mempool_alloc(struct ovs_dpdk_mempool *odmp, void **obj_p)
+{
+    return rte_mempool_get((struct rte_mempool *) odmp, obj_p);
 }
