@@ -454,6 +454,9 @@ AC_DEFUN([OVS_CHECK_DOCA], [
          ;;
     esac
 
+    USED_PATH=`$PKG_CONFIG --variable=prefix doca`
+    echo "Using '$USED_PATH'"
+
     ovs_save_CFLAGS="$CFLAGS"
     ovs_save_LDFLAGS="$LDFLAGS"
     CFLAGS="$CFLAGS $DOCA_INCLUDE"
@@ -587,6 +590,9 @@ AC_DEFUN([OVS_CHECK_DPDK], [
              [AC_MSG_ERROR([unable to use libdpdk.pc for shared build])])
          ;;
     esac
+
+    USED_PATH=`$PKG_CONFIG --variable=prefix libdpdk`
+    echo "Using '$USED_PATH'"
 
     ovs_save_CFLAGS="$CFLAGS"
     ovs_save_LDFLAGS="$LDFLAGS"
