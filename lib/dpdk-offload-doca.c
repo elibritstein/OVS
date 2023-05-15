@@ -949,8 +949,12 @@ doca_translate_actions(struct netdev *netdev OVS_UNUSED,
             fwd->type = DOCA_FLOW_FWD_DROP;
         } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_MAC_SRC) {
             memcpy(&outer->eth.src_mac, actions->conf, DOCA_ETHER_ADDR_LEN);
+            memset(&outer_masks->eth.src_mac, 0xFF,
+                   sizeof outer_masks->eth.src_mac);
         } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_MAC_DST) {
             memcpy(&outer->eth.dst_mac, actions->conf, DOCA_ETHER_ADDR_LEN);
+            memset(&outer_masks->eth.dst_mac, 0xFF,
+                   sizeof outer_masks->eth.dst_mac);
         } else if (act_type == RTE_FLOW_ACTION_TYPE_OF_SET_VLAN_VID) {
             const struct rte_flow_action_of_set_vlan_vid *rte_vlan_vid;
 
@@ -964,33 +968,51 @@ doca_translate_actions(struct netdev *netdev OVS_UNUSED,
                 dacts->has_push = true;
             } else {
                 outer->eth_vlan[0].tci = rte_vlan_vid->vlan_vid;
+                memset(&outer_masks->eth_vlan[0].tci, 0xFF,
+                       sizeof outer_masks->eth_vlan[0].tci);
             }
         } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_IPV4_SRC) {
             outer->l3_type = DOCA_FLOW_L3_TYPE_IP4;
             outer->ip4.src_ip = *(__be32 *) actions->conf;
+            memset(&outer_masks->ip4.src_ip, 0xFF,
+                   sizeof outer_masks->ip4.src_ip);
         } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_IPV4_DST) {
             outer->l3_type = DOCA_FLOW_L3_TYPE_IP4;
             outer->ip4.dst_ip = *(__be32 *) actions->conf;
+            memset(&outer_masks->ip4.dst_ip, 0xFF,
+                   sizeof outer_masks->ip4.dst_ip);
         } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_IPV4_TTL) {
             outer->l3_type = DOCA_FLOW_L3_TYPE_IP4;
             outer->ip4.ttl = *(__u8 *) actions->conf;
+            memset(&outer_masks->ip4.ttl, 0xFF,
+                   sizeof outer_masks->ip4.ttl);
         } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_IPV6_HOP) {
             outer->l3_type = DOCA_FLOW_L3_TYPE_IP6;
             outer->ip6.hop_limit = *(__u8 *) actions->conf;
+            memset(&outer_masks->ip6.hop_limit, 0xFF,
+                   sizeof outer_masks->ip6.hop_limit);
         } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_IPV6_SRC) {
             outer->l3_type = DOCA_FLOW_L3_TYPE_IP6;
             memcpy(&outer->ip6.src_ip, actions->conf, sizeof outer->ip6.src_ip);
+            memset(&outer_masks->ip6.src_ip, 0xFF,
+                   sizeof outer_masks->ip6.src_ip);
         } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_IPV6_DST) {
             outer->l3_type = DOCA_FLOW_L3_TYPE_IP6;
             memcpy(&outer->ip6.dst_ip, actions->conf, sizeof outer->ip6.dst_ip);
+            memset(&outer_masks->ip6.dst_ip, 0xFF,
+                   sizeof outer_masks->ip6.dst_ip);
         } else if (act_type == RTE_FLOW_ACTION_TYPE_SET_TP_SRC) {
             doca_be16_t src_port = *(doca_be16_t *) actions->conf;
 
             outer->l4_type_ext = spec->outer.l4_type_ext;
             if (spec->outer.l4_type_ext == DOCA_FLOW_L4_TYPE_EXT_TCP) {
                 outer->tcp.l4_port.src_port = src_port;
+                memset(&outer_masks->tcp.l4_port.src_port, 0xFF,
+                       sizeof outer_masks->tcp.l4_port.src_port);
             } else if (spec->outer.l4_type_ext == DOCA_FLOW_L4_TYPE_EXT_UDP) {
                 outer->udp.l4_port.src_port = src_port;
+                memset(&outer_masks->udp.l4_port.src_port, 0xFF,
+                       sizeof outer_masks->udp.l4_port.src_port);
             } else {
                 OVS_NOT_REACHED();
             }
@@ -1000,8 +1022,12 @@ doca_translate_actions(struct netdev *netdev OVS_UNUSED,
             outer->l4_type_ext = spec->outer.l4_type_ext;
             if (spec->outer.l4_type_ext == DOCA_FLOW_L4_TYPE_EXT_TCP) {
                 outer->tcp.l4_port.dst_port = dst_port;
+                memset(&outer_masks->tcp.l4_port.dst_port, 0xFF,
+                       sizeof outer_masks->tcp.l4_port.dst_port);
             } else if (spec->outer.l4_type_ext == DOCA_FLOW_L4_TYPE_EXT_UDP) {
                 outer->udp.l4_port.dst_port = dst_port;
+                memset(&outer_masks->udp.l4_port.dst_port, 0xFF,
+                       sizeof outer_masks->udp.l4_port.dst_port);
             } else {
                 OVS_NOT_REACHED();
             }
@@ -1069,6 +1095,7 @@ doca_translate_actions(struct netdev *netdev OVS_UNUSED,
                 return -1;
             }
             dacts->pop = true;
+            dacts_masks->pop = true;
         } else if (act_type == RTE_FLOW_ACTION_TYPE_OF_PUSH_VLAN) {
             if (vlan_act_push) {
                 return -1;
@@ -1081,7 +1108,6 @@ doca_translate_actions(struct netdev *netdev OVS_UNUSED,
         }
     }
 
-    memcpy(outer_masks, outer, sizeof *outer_masks);
     return 0;
 }
 
