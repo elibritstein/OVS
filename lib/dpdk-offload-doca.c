@@ -1352,7 +1352,7 @@ static doca_error_t
 destroy_doca_flow_entry(struct doca_flow_pipe_entry *flow,
                         unsigned int queue_id)
 {
-    return doca_flow_pipe_rm_entry(queue_id, DOCA_FLOW_NO_WAIT, NULL, flow);
+    return doca_flow_pipe_rm_entry(queue_id, DOCA_FLOW_NO_WAIT, flow);
 }
 
 static int
