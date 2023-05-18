@@ -609,6 +609,12 @@ doca_translate_items(struct netdev *netdev OVS_UNUSED,
             const struct rte_flow_item_vlan *spec = items->spec;
             const struct rte_flow_item_vlan *mask = items->mask;
 
+            /* HW supports match on one Ethertype, the Ethertype following the
+             * last VLAN tag of the packet (see PRM). DOCA API has only that one.
+             * Add a match on it as part of the doca eth header.
+             */
+            doca_hdr_spec->eth.type = spec->inner_type;
+            doca_hdr_mask->eth.type = mask->inner_type;
             doca_hdr_spec->eth_vlan[0].tci = spec->tci;
             doca_hdr_mask->eth_vlan[0].tci = mask->tci;
             doca_hdr_spec->l2_valid_headers = DOCA_FLOW_L2_VALID_HEADER_VLAN_0;
