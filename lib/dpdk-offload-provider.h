@@ -72,6 +72,12 @@ BUILD_ASSERT_DECL(offsetof(struct dpdk_offload_handle, rte_flow) ==
 BUILD_ASSERT_DECL(MEMBER_SIZEOF(struct dpdk_offload_handle, rte_flow) ==
                   MEMBER_SIZEOF(struct dpdk_offload_handle, dfh.flow));
 
+#define NUM_HANDLE_PER_ITEM 2
+struct flow_item {
+    struct dpdk_offload_handle doh[NUM_HANDLE_PER_ITEM];
+    bool flow_offload;
+};
+
 struct fixed_rule {
     struct dpdk_offload_handle doh;
 };
@@ -172,6 +178,14 @@ struct dpdk_offload_api {
 
     void (*get_packet_recover_info)(struct dp_packet *p,
                                     struct dpdk_offload_recovery_info *info);
+
+    int (*insert_conn)(struct netdev *netdev,
+                       struct ct_flow_offload_item ct_offload[1],
+                       uint32_t ct_match_zone_id,
+                       uint32_t ct_action_label_id,
+                       struct rte_flow_action_handle *act_hdl,
+                       uint32_t ct_miss_ctx_id,
+                       struct flow_item *fi);
 
     struct reg_field *(*reg_fields)(void);
 

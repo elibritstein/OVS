@@ -184,12 +184,6 @@ struct act_resources {
     uint32_t meter_id;
 };
 
-#define NUM_HANDLE_PER_ITEM 2
-struct flow_item {
-    struct dpdk_offload_handle doh[NUM_HANDLE_PER_ITEM];
-    bool flow_offload;
-};
-
 struct ufid_to_rte_flow_data {
     struct cmap_node node;
     ovs_u128 ufid;
