@@ -4810,8 +4810,10 @@ create_ct_conn(struct netdev *netdev,
                           &ct_state, &ctnat_state);
     is_ct = ct_actions.cnt == nat_actions.cnt;
 
-    put_table_id(act_resources->self_table_id);
-    act_resources->self_table_id = 0;
+    if (act_resources) {
+        put_table_id(act_resources->self_table_id);
+        act_resources->self_table_id = 0;
+    }
     pos = netdev_offload_ct_on_ct_nat;
 
     if (netdev_offload_ct_on_ct_nat || !is_ct) {
@@ -6486,7 +6488,7 @@ static int
 conn_build_patterns(struct netdev *netdev,
                     const struct ct_match *ct_match,
                     struct flow_patterns *patterns,
-                    struct act_resources *act_resources,
+                    uint32_t ct_match_zone_id,
                     struct act_vars *act_vars)
 {
     struct rte_flow_item_port_id *port_id_spec;
@@ -6582,16 +6584,8 @@ conn_build_patterns(struct netdev *netdev,
         return -1;
     }
 
-    if (get_zone_id(ct_match->key.zone,
-                    &act_resources->ct_match_zone_id)) {
-        VLOG_ERR_RL(&rl, "Unable to find the offload zone id mapped to the "
-                    "CT zone %" PRIu16, ct_match->key.zone);
-        return -1;
-    }
-
-    if (add_pattern_match_reg_field(patterns,
-                                    REG_FIELD_CT_ZONE,
-                                    act_resources->ct_match_zone_id,
+    if (add_pattern_match_reg_field(patterns, REG_FIELD_CT_ZONE,
+                                    ct_match_zone_id,
                                     offload->reg_fields()[REG_FIELD_CT_ZONE].mask)) {
         VLOG_ERR_RL(&rl, "Failed to add the CT zone %"PRIu16" register match",
                     ct_match->key.zone);
@@ -6603,24 +6597,24 @@ conn_build_patterns(struct netdev *netdev,
 }
 
 static int
-conn_build_actions(struct netdev *netdev,
-                   struct ct_flow_offload_item ct_offload[1],
+conn_build_actions(struct ct_flow_offload_item ct_offload[1],
                    struct flow_actions *actions,
-                   struct act_resources *act_resources,
-                   struct act_vars *act_vars)
+                   uint32_t ct_action_label_id,
+                   struct rte_flow_action_handle *act_hdl,
+                   uint32_t ct_miss_ctx_id)
 {
     struct rte_flow_action_set_meta *set_meta;
-    struct flows_counter_key counter_id_key;
-    struct ct_miss_ctx miss_ctx;
     struct rte_flow_action *ia;
-    struct indirect_ctx *ctx;
     size_t size;
 
-    if (add_count_action(netdev, actions, act_resources, act_vars)) {
-        return -1;
-    }
+    if (offload->shared_create) {
+        add_flow_action(actions, RTE_FLOW_ACTION_TYPE_INDIRECT, NULL);
+        actions->shared_count_action_pos = actions->cnt - 1;
+    } else {
+        struct rte_flow_action_count *count = per_thread_xzalloc(sizeof *count);
 
-    memset(&miss_ctx, 0, sizeof miss_ctx);
+        add_flow_action(actions, RTE_FLOW_ACTION_TYPE_COUNT, count);
+    }
 
     /* NAT */
     if (ct_offload->nat.mod_flags) {
@@ -6672,57 +6666,26 @@ conn_build_actions(struct netdev *netdev,
     add_action_set_reg_field(actions, REG_FIELD_CT_MARK,
                              ct_offload->mark_key,
                              offload->reg_fields()[REG_FIELD_CT_MARK].mask);
-    miss_ctx.mark = ct_offload->mark_key;
 
     /* CT LABEL */
-    if (netdev_offload_dpdk_ct_labels_mapping) {
-        if (get_label_id(&ct_offload->label_key,
-                         &act_resources->ct_action_label_id)) {
-            VLOG_ERR_RL(&rl, "Failed to generate a label ID");
-            return -1;
-        }
-        add_action_set_reg_field(actions, REG_FIELD_CT_LABEL_ID,
-                                 act_resources->ct_action_label_id,
-                                 offload->reg_fields()[REG_FIELD_CT_LABEL_ID].mask);
-    } else {
-        add_action_set_reg_field(actions, REG_FIELD_CT_LABEL_ID,
-                                 ct_offload->label_key.u32[0],
-                                 offload->reg_fields()[REG_FIELD_CT_LABEL_ID].mask);
-    }
-    memcpy(&miss_ctx.label, &ct_offload->label_key, sizeof miss_ctx.label);
-
-    /* CT ZONE */
-    /* Nothing to do beside matching. */
-    miss_ctx.zone = ct_offload->ct_match.key.zone;
+    add_action_set_reg_field(actions, REG_FIELD_CT_LABEL_ID,
+                             ct_action_label_id,
+                             offload->reg_fields()[REG_FIELD_CT_LABEL_ID].mask);
 
     /* CT STATE */
-    miss_ctx.state = ct_offload->ct_state;
     add_action_set_reg_field(actions, REG_FIELD_CT_STATE,
-                             miss_ctx.state, 0xFF);
+                             ct_offload->ct_state, 0xFF);
 
     /* Shared counter. */
     if (offload->shared_create) {
-        memset(&counter_id_key, 0, sizeof counter_id_key);
-        counter_id_key.ptr_key = ct_offload->ctid_key;
-
-        ctx = get_indirect_count_ctx(netdev, &counter_id_key, true);
-        if (!ctx) {
-            VLOG_ERR("Could not set CT shared count");
-            return -1;
-        }
-        act_resources->shared_count_ctx = ctx;
         ia = &actions->actions[actions->shared_count_action_pos];
         ovs_assert(ia->type == RTE_FLOW_ACTION_TYPE_INDIRECT &&
                 ia->conf == NULL);
-        ia->conf = ctx->act_hdl;
+        ia->conf = act_hdl;
     }
 
-    if (get_ct_ctx_id(&miss_ctx, &act_resources->ct_miss_ctx_id)) {
-        VLOG_ERR("Could not get a CT context ID");
-        return -1;
-    }
     set_meta = per_thread_xzalloc(sizeof *set_meta);
-    set_meta->data = act_resources->ct_miss_ctx_id;
+    set_meta->data = ct_miss_ctx_id;
     add_flow_action(actions, OVS_RTE_FLOW_ACTION_TYPE(CT_INFO), set_meta);
 
     /* Last CT action is to go to Post-CT. */
@@ -6735,7 +6698,10 @@ conn_build_actions(struct netdev *netdev,
 static int
 netdev_offload_dpdk_insert_conn(struct netdev *netdev,
                                 struct ct_flow_offload_item ct_offload[1],
-                                struct act_resources *act_resources,
+                                uint32_t ct_match_zone_id,
+                                uint32_t ct_action_label_id,
+                                struct rte_flow_action_handle *act_hdl,
+                                uint32_t ct_miss_ctx_id,
                                 struct flow_item *fi)
 {
     struct flow_patterns patterns = {
@@ -6756,14 +6722,14 @@ netdev_offload_dpdk_insert_conn(struct netdev *netdev,
     memset(&act_vars, 0, sizeof act_vars);
     act_vars.vport = ODPP_NONE;
 
-    ret = conn_build_patterns(netdev, &ct_offload->ct_match,
-                              &patterns, act_resources, &act_vars);
+    ret = conn_build_patterns(netdev, &ct_offload->ct_match, &patterns,
+                              ct_match_zone_id, &act_vars);
     if (ret) {
         goto free_patterns;
     }
 
-    ret = conn_build_actions(netdev, ct_offload,
-                             &actions, act_resources, &act_vars);
+    ret = conn_build_actions(ct_offload, &actions, ct_action_label_id,
+                             act_hdl, ct_miss_ctx_id);
     if (ret) {
         goto free_actions;
     }
@@ -6771,19 +6737,10 @@ netdev_offload_dpdk_insert_conn(struct netdev *netdev,
     memset(&flow_attr, 0, sizeof flow_attr);
     flow_attr.transfer = 1;
 
-    ret = netdev_offload_dpdk_flow_create(netdev,
-                                          &flow_attr, &patterns, &actions,
-                                          &error, act_resources, &act_vars,
+    ret = netdev_offload_dpdk_flow_create(netdev, &flow_attr, &patterns,
+                                          &actions, &error, NULL, &act_vars,
                                           fi);
 
-    if (ret == 0) {
-        unsigned int tid = netdev_offload_thread_id();
-        struct netdev_offload_dpdk_data *data;
-
-        data = (struct netdev_offload_dpdk_data *)
-            ovsrcu_get(void *, &netdev->hw_info.offload_data);
-        data->conn_counters[tid]++;
-    }
 free_actions:
     free_flow_actions(&actions, true);
 free_patterns:
@@ -6793,12 +6750,76 @@ free_patterns:
 }
 
 static int
+conn_get_resources(struct netdev *netdev,
+                   struct ct_flow_offload_item ct_offload[1],
+                   struct act_resources *act_resources)
+{
+    struct flows_counter_key counter_id_key;
+    struct ct_miss_ctx miss_ctx;
+    struct indirect_ctx *ctx;
+
+    memset(&miss_ctx, 0, sizeof miss_ctx);
+
+    /* CT ZONE */
+    if (get_zone_id(ct_offload->ct_match.key.zone,
+                    &act_resources->ct_match_zone_id)) {
+        VLOG_ERR_RL(&rl, "Unable to find the offload zone id mapped to the "
+                    "CT zone %" PRIu16, ct_offload->ct_match.key.zone);
+        return -1;
+    }
+    miss_ctx.zone = ct_offload->ct_match.key.zone;
+
+
+    /* CT MARK */
+    miss_ctx.mark = ct_offload->mark_key;
+
+    /* CT LABEL */
+    if (netdev_offload_dpdk_ct_labels_mapping) {
+        if (get_label_id(&ct_offload->label_key,
+                         &act_resources->ct_action_label_id)) {
+            VLOG_ERR_RL(&rl, "Failed to generate a label ID");
+            return -1;
+        }
+    }
+    memcpy(&miss_ctx.label, &ct_offload->label_key, sizeof miss_ctx.label);
+
+    miss_ctx.state = ct_offload->ct_state;
+
+    if (get_ct_ctx_id(&miss_ctx, &act_resources->ct_miss_ctx_id)) {
+        VLOG_ERR("Could not get a CT context ID");
+        return -1;
+    }
+
+    /* Shared counter. */
+    if (offload->shared_create) {
+        memset(&counter_id_key, 0, sizeof counter_id_key);
+        counter_id_key.ptr_key = ct_offload->ctid_key;
+
+        ctx = get_indirect_count_ctx(netdev, &counter_id_key, true);
+        if (!ctx) {
+            VLOG_ERR("Could not set CT shared count");
+            return -1;
+        }
+        act_resources->shared_count_ctx = ctx;
+    }
+
+    put_table_id(act_resources->self_table_id);
+    act_resources->self_table_id = 0;
+
+    return 0;
+}
+
+static int
 netdev_offload_dpdk_conn_add(struct netdev *netdev,
                              struct ct_flow_offload_item ct_offload[1])
 {
     struct act_resources act_resources = { .flow_id = INVALID_FLOW_MARK, };
+    unsigned int tid = netdev_offload_thread_id();
     struct ufid_to_rte_flow_data *rte_flow_data;
     const ovs_u128 *ufid = &ct_offload->ufid;
+    struct rte_flow_action_handle *act_hdl;
+    struct netdev_offload_dpdk_data *data;
+    uint32_t ct_action_label_id;
 
     rte_flow_data = ufid_to_rte_flow_data_find(netdev, ufid, false);
     if (rte_flow_data && rte_flow_data->flow_item.doh[0].rte_flow) {
@@ -6808,13 +6829,34 @@ netdev_offload_dpdk_conn_add(struct netdev *netdev,
 
     per_thread_init();
 
+    if (conn_get_resources(netdev, ct_offload, &act_resources)) {
+        return EINVAL;
+    }
+
+    if (act_resources.shared_count_ctx) {
+        act_hdl = act_resources.shared_count_ctx->act_hdl;
+    } else {
+        act_hdl = NULL;
+    }
+    if (netdev_offload_dpdk_ct_labels_mapping) {
+        ct_action_label_id = act_resources.ct_action_label_id;
+    } else {
+        ct_action_label_id = ct_offload->label_key.u32[0];
+    }
+
     rte_flow_data = xzalloc(sizeof *rte_flow_data);
     if (netdev_offload_dpdk_insert_conn(netdev, ct_offload,
-                                        &act_resources,
+                                        act_resources.ct_match_zone_id,
+                                        ct_action_label_id, act_hdl,
+                                        act_resources.ct_miss_ctx_id,
                                         &rte_flow_data->flow_item)) {
         free(rte_flow_data);
         return EINVAL;
     }
+
+    data = (struct netdev_offload_dpdk_data *)
+        ovsrcu_get(void *, &netdev->hw_info.offload_data);
+    data->conn_counters[tid]++;
 
     if (ufid_to_rte_flow_associate(ufid, netdev, netdev,
                                    rte_flow_data, &act_resources)) {
