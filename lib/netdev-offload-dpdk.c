@@ -6690,13 +6690,13 @@ conn_build_actions(struct ct_flow_offload_item ct_offload[1],
 }
 
 static int
-netdev_offload_dpdk_insert_conn(struct netdev *netdev,
-                                struct ct_flow_offload_item ct_offload[1],
-                                uint32_t ct_match_zone_id,
-                                uint32_t ct_action_label_id,
-                                struct rte_flow_action_handle *act_hdl,
-                                uint32_t ct_miss_ctx_id,
-                                struct flow_item *fi)
+dpdk_offload_insert_conn_rte(struct netdev *netdev,
+                             struct ct_flow_offload_item ct_offload[1],
+                             uint32_t ct_match_zone_id,
+                             uint32_t ct_action_label_id,
+                             struct rte_flow_action_handle *act_hdl,
+                             uint32_t ct_miss_ctx_id,
+                             struct flow_item *fi)
 {
     struct flow_patterns patterns = {
         .items = NULL,
@@ -6839,11 +6839,11 @@ netdev_offload_dpdk_conn_add(struct netdev *netdev,
     }
 
     rte_flow_data = xzalloc(sizeof *rte_flow_data);
-    if (netdev_offload_dpdk_insert_conn(netdev, ct_offload,
-                                        act_resources.ct_match_zone_id,
-                                        ct_action_label_id, act_hdl,
-                                        act_resources.ct_miss_ctx_id,
-                                        &rte_flow_data->flow_item)) {
+    if (offload->insert_conn(netdev, ct_offload,
+                             act_resources.ct_match_zone_id,
+                             ct_action_label_id, act_hdl,
+                             act_resources.ct_miss_ctx_id,
+                             &rte_flow_data->flow_item)) {
         free(rte_flow_data);
         return EINVAL;
     }
@@ -6985,6 +6985,7 @@ struct dpdk_offload_api dpdk_offload_api_rte = {
     .shared_destroy = netdev_dpdk_indirect_action_destroy,
     .shared_query = netdev_dpdk_indirect_action_query,
     .get_packet_recover_info = rte_get_packet_recovery_info,
+    .insert_conn = dpdk_offload_insert_conn_rte,
     .reg_fields = rte_get_reg_fields,
     .netdev_data_destroy = netdev_offload_dpdk_netdev_data_destroy,
     .update_stats = netdev_offload_dpdk_update_stats,
