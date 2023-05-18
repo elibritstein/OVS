@@ -251,6 +251,9 @@ get_ct_action_type(uint32_t group, struct doca_flow_actions *actions)
 
     switch (group) {
     case CT_TABLE_ID:
+        if (actions) {
+            actions->action_idx = 0;
+        }
         return CT_ACTION_PLAIN;
     case CTNAT_TABLE_ID:
         /* Get the 'first' action of the CT chain. */
@@ -279,6 +282,9 @@ get_ct_action_type(uint32_t group, struct doca_flow_actions *actions)
                 return CT_ACTION_SNAT;
             }
         }
+        if (actions) {
+            actions->action_idx = 0;
+        }
         if (outer->l3_type == DOCA_FLOW_L3_TYPE_IP4) {
             if (outer->ip4.dst_ip) {
                 return CT_ACTION_DNAT;
@@ -297,6 +303,9 @@ get_ct_action_type(uint32_t group, struct doca_flow_actions *actions)
             /* Redirection is for CT-NAT but there is actually no NAT action.
              * Go to plain-ct.
              */
+            if (actions) {
+                actions->action_idx = 0;
+            }
             return CT_ACTION_PLAIN;
         }
         OVS_NOT_REACHED();
@@ -2484,12 +2493,183 @@ dpdk_offload_doca_aux_tables_init(struct netdev *netdev)
     return 0;
 }
 
+static int
+dpdk_offload_doca_insert_conn(struct netdev *netdev,
+                              struct ct_flow_offload_item ct_offload[1],
+                              uint32_t ct_match_zone_id,
+                              uint32_t ct_action_label_id,
+                              struct rte_flow_action_handle *act_hdl OVS_UNUSED,
+                              uint32_t ct_miss_ctx_id,
+                              struct flow_item *fi)
+{
+    struct doca_flow_header_format *dhdr;
+    const struct ct_match *ct_match;
+    struct doca_flow_actions dacts;
+    struct doca_flow_match dspec;
+    struct doca_eswitch_ctx *ctx;
+    enum ct_action_type ct_type;
+    struct doca_flow_pipe *pipe;
+    struct rte_flow_error error;
+    struct reg_field *ct_reg;
+    enum ct_nw_type nw_type;
+    enum ct_tp_type tp_type;
+    unsigned int queue_id;
+    bool is_ct;
+
+    ct_match = &ct_offload->ct_match;
+
+    tp_type = ct_match->key.nw_proto == IPPROTO_TCP ? CT_TP_TCP : CT_TP_UDP;
+    if (ct_match->key.dl_type == htons(ETH_TYPE_IP)) {
+        nw_type = CT_NW_IP4;
+    } else {
+        VLOG_DBG_RL(&rl, "Unsupported CT network type.");
+        return -1;
+    }
+
+    dhdr = &dspec.outer;
+
+    /* IPv4 */
+    if (nw_type == CT_NW_IP4) {
+        dhdr->ip4.src_ip = ct_match->key.src.addr.ipv4;
+        dhdr->ip4.dst_ip = ct_match->key.dst.addr.ipv4;
+        dhdr->ip4.next_proto = ct_match->key.nw_proto;
+    }
+
+    if (tp_type == CT_TP_TCP) {
+        dhdr->tcp.l4_port.src_port = ct_match->key.src.port;
+        dhdr->tcp.l4_port.dst_port = ct_match->key.dst.port;
+    } else {
+        dhdr->udp.l4_port.src_port = ct_match->key.src.port;
+        dhdr->udp.l4_port.dst_port = ct_match->key.dst.port;
+    }
+
+    ct_reg = &reg_fields[REG_FIELD_CT_ZONE];
+    dspec.meta.u32[ct_reg->index] = ct_match_zone_id << ct_reg->offset;
+
+    dhdr = &dacts.outer;
+
+    /* NAT */
+    if (ct_offload->nat.mod_flags) {
+        is_ct = false;
+
+        /* IPv4 */
+        if (nw_type == CT_NW_IP4) {
+            if (ct_offload->nat.mod_flags & NAT_ACTION_SRC) {
+                dhdr->l3_type = DOCA_FLOW_L3_TYPE_IP4;
+                dhdr->ip4.src_ip = ct_offload->nat.key.src.addr.ipv4;
+                dhdr->ip4.dst_ip = 0;
+            } else if (ct_offload->nat.mod_flags & NAT_ACTION_DST) {
+                dhdr->l3_type = DOCA_FLOW_L3_TYPE_IP4;
+                dhdr->ip4.src_ip = 0;
+                dhdr->ip4.dst_ip = ct_offload->nat.key.dst.addr.ipv4;
+            } else {
+                dhdr->l3_type = 0;
+            }
+        }
+        if (ct_offload->nat.mod_flags & NAT_ACTION_SRC_PORT) {
+            if (tp_type == CT_TP_TCP) {
+                dhdr->l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_TCP;
+                dhdr->tcp.l4_port.src_port = ct_offload->nat.key.src.port;
+                dhdr->tcp.l4_port.dst_port = 0;
+            } else {
+                dhdr->l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_UDP;
+                dhdr->udp.l4_port.src_port = ct_offload->nat.key.src.port;
+                dhdr->udp.l4_port.dst_port = 0;
+            }
+        } else if (ct_offload->nat.mod_flags & NAT_ACTION_DST_PORT) {
+            if (tp_type == CT_TP_TCP) {
+                dhdr->l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_TCP;
+                dhdr->tcp.l4_port.src_port = 0;
+                dhdr->tcp.l4_port.dst_port = ct_offload->nat.key.dst.port;
+            } else {
+                dhdr->l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_UDP;
+                dhdr->udp.l4_port.src_port = 0;
+                dhdr->udp.l4_port.dst_port = ct_offload->nat.key.dst.port;
+            }
+        } else {
+            dhdr->l4_type_ext = 0;
+        }
+    } else {
+        is_ct = true;
+    }
+
+    memset(dacts.meta.u32, 0, sizeof dacts.meta.u32);
+
+    /* CT MARK */
+    ct_reg = &reg_fields[REG_FIELD_CT_MARK];
+    dacts.meta.u32[ct_reg->index] |= ct_offload->mark_key << ct_reg->offset;
+
+    /* CT LABEL */
+    ct_reg = &reg_fields[REG_FIELD_CT_LABEL_ID];
+    dacts.meta.u32[ct_reg->index] |= ct_action_label_id << ct_reg->offset;
+
+    /* CT STATE */
+    ct_reg = &reg_fields[REG_FIELD_CT_STATE];
+    dacts.meta.u32[ct_reg->index] |= ct_offload->ct_state << ct_reg->offset;
+
+    /* CT CTX */
+    ct_reg = &reg_fields[REG_FIELD_CT_CTX];
+    dacts.meta.pkt_meta = ct_miss_ctx_id << ct_reg->offset;
+
+    ctx = doca_eswitch_ctx_get(netdev);
+    queue_id = netdev_offload_thread_id();
+    memset(fi, 0, sizeof *fi);
+
+    ct_type = CT_ACTION_NULL;
+    if (netdev_offload_ct_on_ct_nat || !is_ct) {
+        int pos = netdev_offload_ct_on_ct_nat;
+
+        ct_type = get_ct_action_type(CTNAT_TABLE_ID, &dacts);
+        /* In case that netdev_offload_ct_on_ct_nat flag is on, and the
+         * connection is plain, we need to offload only on the plain pipe.
+         */
+        if (ct_type == CT_ACTION_PLAIN) {
+            pos = 0;
+        }
+        pipe = ctx->ct_pipes[nw_type][tp_type][ct_type].pipe;
+        if (create_doca_basic_flow_entry(netdev, queue_id, pipe, &dspec,
+                                         &dacts, NULL, NULL, &fi->doh[pos],
+                                         &error)) {
+            VLOG_WARN_RL(&rl, "%s: Failed to create ct entry: Error %d (%s)",
+                         netdev_get_name(netdev), error.type, error.message);
+            return -1;
+        }
+        fi->doh[pos].valid = true;
+    }
+
+    if ((netdev_offload_ct_on_ct_nat || is_ct) &&
+        (ct_type != CT_ACTION_PLAIN)) {
+        /* In case that netdev_offload_ct_on_ct_nat flag is on, and the
+         * connection is plain, already offloaded on the plain pipe above.
+         */
+        ct_type = get_ct_action_type(CT_TABLE_ID, &dacts);
+        pipe = ctx->ct_pipes[nw_type][tp_type][ct_type].pipe;
+        if (create_doca_basic_flow_entry(netdev, queue_id, pipe, &dspec,
+                                         &dacts, NULL, NULL, &fi->doh[0],
+                                         &error)) {
+            VLOG_WARN_RL(&rl, "%s: Failed to create ct entry: Error %d (%s)",
+                         netdev_get_name(netdev), error.type, error.message);
+            goto ct_err;
+        }
+        fi->doh[0].valid = true;
+    }
+
+    return 0;
+
+ct_err:
+    if (fi->doh[1].valid) {
+        destroy_dpdk_offload_handle(netdev, &fi->doh[1], queue_id, &error);
+    }
+    return -1;
+}
+
 struct dpdk_offload_api dpdk_offload_api_doca = {
     .upkeep = dpdk_offload_doca_upkeep,
     .create = dpdk_offload_doca_create,
     .destroy = dpdk_offload_doca_destroy,
     .query_count = dpdk_offload_doca_query_count,
     .get_packet_recover_info = dpdk_offload_doca_get_pkt_recover_info,
+    .insert_conn = dpdk_offload_doca_insert_conn,
     .reg_fields = dpdk_offload_doca_get_reg_fields,
     .netdev_data_destroy = dpdk_offload_doca_netdev_data_destroy,
     .update_stats = dpdk_offload_doca_update_stats,
