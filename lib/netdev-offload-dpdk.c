@@ -4805,13 +4805,11 @@ create_ct_conn(struct netdev *netdev,
     bool is_ct;
 
     fi->doh[0].rte_flow = fi->doh[1].rte_flow = NULL;
-    fi->doh[0].has_count = fi->doh[1].has_count = false;
 
     split_ct_conn_actions(flow_actions->actions, &ct_actions, &nat_actions,
                           &ct_state, &ctnat_state);
     is_ct = ct_actions.cnt == nat_actions.cnt;
 
-    fi->doh[0].has_count = true;
     put_table_id(act_resources->self_table_id);
     act_resources->self_table_id = 0;
     pos = netdev_offload_ct_on_ct_nat;
@@ -4904,7 +4902,6 @@ create_pre_post_ct(struct netdev *netdev,
     add_flow_action(&post_ct_actions, RTE_FLOW_ACTION_TYPE_END, NULL);
     ret = create_rte_flow(netdev, &post_ct_attr, &post_ct_patterns,
                           &post_ct_actions, &fi->doh[1], error);
-    fi->doh[1].has_count = true;
     if (ret) {
         goto out;
     }
@@ -4972,7 +4969,6 @@ netdev_offload_dpdk_flow_create(struct netdev *netdev,
     case CT_MODE_NONE:
         ret = create_rte_flow(netdev, attr, flow_patterns, flow_actions,
                               &fi->doh[0], error);
-        fi->doh[0].has_count = true;
         break;
     case CT_MODE_CT:
         /* fallthrough */
