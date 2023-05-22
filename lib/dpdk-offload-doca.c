@@ -2493,6 +2493,81 @@ dpdk_offload_doca_aux_tables_init(struct netdev *netdev)
     return 0;
 }
 
+static void
+log_conn_rule(uint32_t group,
+              enum ct_tp_type tp_type,
+              struct doca_flow_match *dspec,
+              struct doca_flow_actions *dacts)
+{
+    struct doca_flow_header_format *dhdr;
+    struct reg_field *ct_reg;
+    uint16_t sport, dport;
+    struct ds s;
+
+    if (VLOG_DROP_DBG(&rl)) {
+        return;
+    }
+
+    ds_init(&s);
+
+    dhdr = &dspec->outer;
+
+    if (tp_type == CT_TP_TCP) {
+        sport = dhdr->tcp.l4_port.src_port;
+        dport = dhdr->tcp.l4_port.dst_port;
+    } else {
+        sport = dhdr->udp.l4_port.src_port;
+        dport = dhdr->udp.l4_port.dst_port;
+    }
+    ds_put_format(&s, IP_FMT":%"PRIu16"->"IP_FMT":%"PRIu16,
+                  IP_ARGS(dhdr->ip4.src_ip), ntohs(sport),
+                  IP_ARGS(dhdr->ip4.dst_ip), ntohs(dport));
+
+    ct_reg = &reg_fields[REG_FIELD_CT_ZONE];
+    ds_put_format(&s, " zone_map=%d",
+        (dspec->meta.u32[ct_reg->index] >> ct_reg->offset) & ct_reg->mask);
+
+    /* CT MARK */
+    ct_reg = &reg_fields[REG_FIELD_CT_MARK];
+    ds_put_format(&s, " mark=0x%08x",
+        (dacts->meta.u32[ct_reg->index] >> ct_reg->offset) & ct_reg->mask);
+
+    /* CT LABEL */
+    ct_reg = &reg_fields[REG_FIELD_CT_LABEL_ID];
+    ds_put_format(&s, " label=0x%08x",
+        (dacts->meta.u32[ct_reg->index] >> ct_reg->offset) & ct_reg->mask);
+
+    /* CT STATE */
+    ct_reg = &reg_fields[REG_FIELD_CT_STATE];
+    ds_put_format(&s, " state=0x%02x",
+        (dacts->meta.u32[ct_reg->index] >> ct_reg->offset) & ct_reg->mask);
+
+    /* CT CTX */
+    ct_reg = &reg_fields[REG_FIELD_CT_CTX];
+    ds_put_format(&s, " ctx=0x%02x",
+        (dacts->meta.pkt_meta >> ct_reg->offset) & ct_reg->mask);
+
+    dhdr = &dacts->outer;
+
+    if (group == CTNAT_TABLE_ID) {
+        ds_put_format(&s, " NAT: ");
+        if (tp_type == CT_TP_TCP) {
+            sport = dhdr->tcp.l4_port.src_port;
+            dport = dhdr->tcp.l4_port.dst_port;
+        } else {
+            sport = dhdr->udp.l4_port.src_port;
+            dport = dhdr->udp.l4_port.dst_port;
+        }
+        ds_put_format(&s, IP_FMT":%"PRIu16"->"IP_FMT":%"PRIu16,
+                      IP_ARGS(dhdr->ip4.src_ip), ntohs(sport),
+                      IP_ARGS(dhdr->ip4.dst_ip), ntohs(dport));
+    }
+
+    VLOG_DBG("conn create: %s", ds_cstr(&s));
+
+    ds_destroy(&s);
+}
+
 static int
 dpdk_offload_doca_insert_conn(struct netdev *netdev,
                               struct ct_flow_offload_item ct_offload[1],
@@ -2627,6 +2702,7 @@ dpdk_offload_doca_insert_conn(struct netdev *netdev,
             pos = 0;
         }
         pipe = ctx->ct_pipes[nw_type][tp_type][ct_type].pipe;
+        log_conn_rule(CTNAT_TABLE_ID, tp_type, &dspec, &dacts);
         if (create_doca_basic_flow_entry(netdev, queue_id, pipe, &dspec,
                                          &dacts, NULL, NULL, &fi->doh[pos],
                                          &error)) {
@@ -2644,6 +2720,7 @@ dpdk_offload_doca_insert_conn(struct netdev *netdev,
          */
         ct_type = get_ct_action_type(CT_TABLE_ID, &dacts);
         pipe = ctx->ct_pipes[nw_type][tp_type][ct_type].pipe;
+        log_conn_rule(CT_TABLE_ID, tp_type, &dspec, &dacts);
         if (create_doca_basic_flow_entry(netdev, queue_id, pipe, &dspec,
                                          &dacts, NULL, NULL, &fi->doh[0],
                                          &error)) {
