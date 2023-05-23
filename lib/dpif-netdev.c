@@ -471,9 +471,8 @@ struct dp_offload_thread {
     );
 };
 
-#define HW_OFFLOAD_DEFAULT_QUEUE_SIZE 50000
-static unsigned int offload_queue_size =
-    HW_OFFLOAD_DEFAULT_QUEUE_SIZE;
+#define CT_ADD_DEFAULT_QUEUE_SIZE 50000
+static unsigned int offload_ct_add_queue_size = CT_ADD_DEFAULT_QUEUE_SIZE;
 
 enum {
     E2E_UFID_MSG_PUT = 1,
@@ -553,7 +552,7 @@ dp_netdev_offload_queue_full(void)
             atomic_count_get64(&dp_offload_threads[tid].enqueued_ct_add);
     }
 
-    return total_add > offload_queue_size;
+    return total_add > offload_ct_add_queue_size;
 }
 
 static struct conntrack_offload_class dpif_ct_offload_class = {
@@ -6634,13 +6633,16 @@ dpif_netdev_set_static_config(struct dpif *dpif,
         return;
     }
 
-    offload_queue_size = smap_get_uint(other_config, "hw-offload-queue-size",
-                                       HW_OFFLOAD_DEFAULT_QUEUE_SIZE);
-    if (offload_queue_size == 0) {
-        offload_queue_size = HW_OFFLOAD_DEFAULT_QUEUE_SIZE;
-        VLOG_WARN("The size of hw-offload-queue-size must be greater than 0");
+    offload_ct_add_queue_size = smap_get_uint(other_config,
+                                              "hw-offload-ct-add-queue-size",
+                                              CT_ADD_DEFAULT_QUEUE_SIZE);
+    if (offload_ct_add_queue_size == 0) {
+        offload_ct_add_queue_size = CT_ADD_DEFAULT_QUEUE_SIZE;
+        VLOG_WARN("The size of hw-offload-ct-add-queue-size must be greater "
+                  "than 0");
     }
-    VLOG_INFO("hw-offload-queue-size = %"PRIi32, offload_queue_size);
+    VLOG_INFO("hw-offload-ct-add-queue-size = %"PRIi32,
+              offload_ct_add_queue_size);
 
     ctd_init(dp->conntrack, other_config);
 
