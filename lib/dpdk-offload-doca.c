@@ -438,6 +438,10 @@ doca_ctl_pipe_ctx_ref(struct netdev *netdev, uint32_t group_id)
 static void
 doca_ctl_pipe_ctx_unref(struct doca_ctl_pipe_ctx *ctx)
 {
+    if (ctx == NULL) {
+        return;
+    }
+
     doca_ctl_pipe_md_init();
     offload_metadata_priv_unref(doca_ctl_pipe_md,
                                 netdev_offload_thread_id(),
@@ -1512,9 +1516,7 @@ create_doca_flow_handle(struct netdev *netdev,
     return hndl;
 
 err_insert:
-    if (pipe_ctx) {
-        doca_ctl_pipe_ctx_unref(pipe_ctx);
-    }
+    doca_ctl_pipe_ctx_unref(pipe_ctx);
 err_pipe:
     return NULL;
 }
@@ -1568,9 +1570,7 @@ dpdk_offload_doca_create(struct netdev *netdev,
                                    &flow_res, doh, error);
     if (!hndl) {
         /* change to free doca flow resources function */
-        if (flow_res.next_pipe_ctx) {
-            doca_ctl_pipe_ctx_unref(flow_res.next_pipe_ctx);
-        }
+        doca_ctl_pipe_ctx_unref(flow_res.next_pipe_ctx);
         return -1;
     }
 
@@ -1616,10 +1616,7 @@ destroy_dpdk_offload_handle(struct netdev *netdev,
         dpdk_offload_counter_dec(netdev);
     }
 
-    if (doh->dfh.flow_res.next_pipe_ctx) {
-        doca_ctl_pipe_ctx_unref(doh->dfh.flow_res.next_pipe_ctx);
-    }
-
+    doca_ctl_pipe_ctx_unref(doh->dfh.flow_res.next_pipe_ctx);
     doca_ctl_pipe_ctx_unref(doh->dfh.flow_res.self_pipe_ctx);
 
     return 0;
@@ -2336,9 +2333,7 @@ doca_eswitch_ctx_uninit(void *ctx_)
      */
     doca_ct_zones_uninit(NULL, ctx);
     doca_ct_pipes_destroy(ctx);
-    if (ctx->root_pipe_ctx != NULL) {
-        doca_ctl_pipe_ctx_unref(ctx->root_pipe_ctx);
-    }
+    doca_ctl_pipe_ctx_unref(ctx->root_pipe_ctx);
     ctx->root_pipe_ctx = NULL;
     ctx->esw_port = NULL;
 }
