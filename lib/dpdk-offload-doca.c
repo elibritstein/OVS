@@ -120,6 +120,8 @@ COVERAGE_DEFINE(doca_async_add_failed);
 #define MAX_OFFLOAD_QUEUE_NB MAX_OFFLOAD_THREAD_NB
 #define AUX_QUEUE 0
 
+#define MAX_GENEVE_OPT 1
+
 VLOG_DEFINE_THIS_MODULE(dpdk_offload_doca);
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(600, 600);
 
@@ -193,9 +195,15 @@ struct doca_async_state {
     );
 };
 
+struct gnv_opt_parser {
+    struct ovsthread_once once;
+    struct doca_flow_parser *parser;
+};
+
 OVS_ASSERT_PACKED(struct doca_eswitch_ctx,
     struct doca_flow_port *esw_port;
     struct doca_ctl_pipe_ctx *root_pipe_ctx;
+    struct gnv_opt_parser gnv_opt_parser;
     struct doca_async_state async_state[MAX_OFFLOAD_QUEUE_NB];
     struct doca_basic_pipe_ctx ct_pipes[NUM_CT_NW][NUM_CT_TP];
     struct fixed_rule zone_flows[2][NUM_ZONE_FLOWS][MAX_ZONE_ID + 1];
@@ -547,6 +555,89 @@ doca_translate_geneve_item(const struct rte_flow_item *item,
         get_unaligned_be32(ALIGNED_CAST(ovs_be32 *, gnv_mask->vni));
 }
 
+static int
+doca_init_geneve_opt_parser(struct netdev *netdev,
+                            const struct rte_flow_item *item)
+{
+    struct doca_flow_parser_geneve_opt_cfg opt_cfg[MAX_GENEVE_OPT];
+    const struct rte_flow_item_geneve_opt *geneve_opt_spec;
+    const struct rte_flow_item_geneve_opt *geneve_opt_mask;
+    struct doca_eswitch_ctx *esw_ctx;
+    int ret;
+
+    esw_ctx = doca_eswitch_ctx_get(netdev);
+    if (!esw_ctx) {
+        VLOG_ERR("%s: Failed to create geneve_opt parser - esw_ctx is NULL",
+                 netdev_get_name(netdev));
+        return -1;
+    }
+
+    if (!ovsthread_once_start(&esw_ctx->gnv_opt_parser.once)) {
+        return 0;
+    }
+    geneve_opt_spec = item->spec;
+    geneve_opt_mask = item->mask;
+
+    memset(&opt_cfg[0], 0, sizeof(opt_cfg[0]));
+    opt_cfg[0].match_on_class_mode =
+        DOCA_FLOW_PARSER_GENEVE_OPT_MODE_MATCHABLE;
+    opt_cfg[0].option_len = geneve_opt_spec->option_len;
+    opt_cfg[0].option_class = geneve_opt_spec->option_class;
+    opt_cfg[0].option_type = geneve_opt_spec->option_type;
+    BUILD_ASSERT_DECL(sizeof(opt_cfg[0].data_mask[0]) ==
+                      sizeof(geneve_opt_mask->data[0]));
+    memset(&opt_cfg[0].data_mask[0], UINT32_MAX,
+           sizeof(opt_cfg[0].data_mask[0]) * geneve_opt_spec->option_len);
+
+    ret = doca_flow_parser_geneve_opt_create(esw_ctx->esw_port, opt_cfg,
+                                             MAX_GENEVE_OPT,
+                                             &esw_ctx->gnv_opt_parser.parser);
+    if (ret) {
+        VLOG_DBG_RL(&rl, "%s: Create geneve_opt parser failed - doca call failure "
+                         "rc %d, (%s)",netdev_get_name(netdev), ret,
+                         doca_get_error_string(ret));
+        ovsthread_once_reset(&esw_ctx->gnv_opt_parser.once);
+        return -1;
+    }
+    ovsthread_once_done(&esw_ctx->gnv_opt_parser.once);
+    return 0;
+}
+
+static void
+doca_translate_geneve_opt_item(const struct rte_flow_item *item,
+                               struct doca_flow_match *doca_spec,
+                               struct doca_flow_match *doca_mask)
+{
+    union doca_flow_geneve_option *doca_opt_spec, *doca_opt_mask;
+    const struct rte_flow_item_geneve_opt *geneve_opt_spec;
+    const struct rte_flow_item_geneve_opt *geneve_opt_mask;
+
+    geneve_opt_spec = item->spec;
+    geneve_opt_mask = item->mask;
+    doca_opt_spec = &doca_spec->tun.geneve_options[0];
+    doca_opt_mask = &doca_mask->tun.geneve_options[0];
+
+    doca_opt_spec->length = geneve_opt_spec->option_len;
+    doca_opt_spec->class_id = geneve_opt_spec->option_class;
+    doca_opt_spec->type = geneve_opt_spec->option_type;
+    doca_opt_mask->length = geneve_opt_mask->option_len;
+    doca_opt_mask->class_id = geneve_opt_mask->option_class;
+    doca_opt_mask->type = geneve_opt_mask->option_type;
+
+    /* doca_flow represents the geneve option header as an array of a union of
+     * 32 bits, the array's first element is the type/class/len and this
+     * option's data starts from the next element in the array up to option_len
+     */
+    doca_opt_spec++;
+    doca_opt_mask++;
+    BUILD_ASSERT_DECL(sizeof(doca_opt_spec->data) ==
+                      sizeof(geneve_opt_spec->data[0]));
+    memcpy(&doca_opt_spec->data, &geneve_opt_spec->data[0],
+           sizeof(doca_opt_spec->data) * geneve_opt_spec->option_len);
+    memcpy(&doca_opt_mask->data, &geneve_opt_mask->data[0],
+           sizeof(doca_opt_mask->data) * geneve_opt_spec->option_len);
+}
+
 static void
 doca_translate_vxlan_item(const struct rte_flow_item *item,
                           struct doca_flow_match *doca_spec,
@@ -737,6 +828,11 @@ doca_translate_items(struct netdev *netdev OVS_UNUSED,
 
             doca_hdr_spec = &doca_spec->inner;
             doca_hdr_mask = &doca_mask->inner;
+        } else if (item_type == RTE_FLOW_ITEM_TYPE_GENEVE_OPT) {
+            if (doca_init_geneve_opt_parser(netdev, items)) {
+                return -1;
+            }
+            doca_translate_geneve_opt_item(items, doca_spec, doca_mask);
         } else if (item_type == RTE_FLOW_ITEM_TYPE_ICMP) {
             const struct rte_flow_item_icmp *spec = items->spec;
             const struct rte_flow_item_icmp *mask = items->mask;
@@ -2502,6 +2598,12 @@ doca_eswitch_ctx_uninit(void *ctx_)
     doca_ct_zones_uninit(NULL, ctx);
     doca_ct_pipes_destroy(ctx);
     doca_ctl_pipe_ctx_unref(ctx->root_pipe_ctx);
+    if (ctx->gnv_opt_parser.parser) {
+        doca_flow_parser_geneve_opt_destroy(ctx->gnv_opt_parser.parser);
+        ctx->gnv_opt_parser.parser = NULL;
+        ovsthread_once_reset(&ctx->gnv_opt_parser.once);
+        ovs_mutex_destroy(&ctx->gnv_opt_parser.once.mutex);
+    }
     ctx->root_pipe_ctx = NULL;
     ctx->esw_port = NULL;
 }
@@ -2536,6 +2638,8 @@ doca_eswitch_ctx_init(void *ctx_, void *arg_, uint32_t id OVS_UNUSED)
 
     doca_port = netdev_dpdk_doca_port_get(netdev);
     ctx->esw_port = doca_flow_port_switch_get(doca_port);
+    ctx->gnv_opt_parser.once =
+        (struct ovsthread_once) OVSTHREAD_ONCE_INITIALIZER;
 
     return 0;
 
