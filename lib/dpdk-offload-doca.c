@@ -994,6 +994,7 @@ doca_translate_raw_encap(const struct rte_flow_action *action,
         outer->l3_type = DOCA_FLOW_L3_TYPE_IP4;
         outer->ip4.dst_ip = get_16aligned_be32(&ip->ip_dst);
         outer->ip4.ttl = ip->ip_ttl;
+        outer->ip4.dscp_ecn = ip->ip_tos;
         l4 = ip + 1;
     } else if (proto == htons(ETH_TYPE_IPV6)) {
         ip6 = find_raw_encap_spec(data, RTE_FLOW_ITEM_TYPE_IPV6);
@@ -1006,6 +1007,7 @@ doca_translate_raw_encap(const struct rte_flow_action *action,
         outer->l3_type = DOCA_FLOW_L3_TYPE_IP6;
         memcpy(&outer->ip6.dst_ip, &ip6->ip6_dst, sizeof ip6->ip6_dst);
         outer->ip6.hop_limit = ip6->ip6_hlim;
+        outer->ip6.dscp_ecn = ntohl(get_16aligned_be32(&ip6->ip6_flow)) >> 20;
         l4 = ip6 + 1;
     } else {
         return -1;
@@ -1051,6 +1053,8 @@ doca_translate_vxlan_encap(const struct rte_flow_action *action,
             memcpy(&outer->ip4.src_ip, &ip->ip_src, sizeof ip->ip_src);
             outer->l3_type = DOCA_FLOW_L3_TYPE_IP4;
             memcpy(&outer->ip4.dst_ip, &ip->ip_dst, sizeof ip->ip_dst);
+            outer->ip4.ttl = ip->ip_ttl;
+            outer->ip4.dscp_ecn = ip->ip_tos;
         } else if (item_type == RTE_FLOW_ITEM_TYPE_IPV6) {
             const struct ovs_16aligned_ip6_hdr *ip6 = items->spec;
 
@@ -1058,6 +1062,9 @@ doca_translate_vxlan_encap(const struct rte_flow_action *action,
             memcpy(&outer->ip4.src_ip, &ip6->ip6_src, sizeof ip6->ip6_src);
             outer->l3_type = DOCA_FLOW_L3_TYPE_IP6;
             memcpy(&outer->ip4.dst_ip, &ip6->ip6_dst, sizeof ip6->ip6_dst);
+            outer->ip6.hop_limit = ip6->ip6_hlim;
+            outer->ip6.dscp_ecn =
+                ntohl(get_16aligned_be32(&ip6->ip6_flow)) >> 20;
         } else if (item_type == RTE_FLOW_ITEM_TYPE_UDP) {
             /* doca adds UDP encap automatically */
             continue;
