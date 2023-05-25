@@ -1227,6 +1227,14 @@ netdev_dpdk_doca_port_get(struct netdev *netdev)
     return dev->doca_port;
 }
 
+bool
+netdev_dpdk_is_esw_mgr(struct netdev *netdev)
+{
+    return netdev_dpdk_get_esw_mgr_port_id(netdev) ==
+           netdev_dpdk_get_port_id(netdev) &&
+           netdev_dpdk_get_esw_mgr_port_id(netdev) != -1;
+}
+
 static int
 dpdk_eth_dev_init(struct netdev_dpdk *dev)
     OVS_REQUIRES(dev->mutex)

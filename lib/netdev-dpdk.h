@@ -90,6 +90,8 @@ int netdev_dpdk_rte_flow_tunnel_item_release(struct netdev *,
                                              struct rte_flow_item *,
                                              uint32_t num_of_items,
                                              struct rte_flow_error *);
+bool
+netdev_dpdk_is_esw_mgr(struct netdev *netdev);
 
 #else
 
@@ -227,6 +229,12 @@ netdev_dpdk_meter_del(ofproto_meter_id meter_id OVS_UNUSED,
                       uint16_t n_bands OVS_UNUSED)
 {
     return EOPNOTSUPP;
+}
+
+static inline bool
+netdev_dpdk_is_esw_mgr(struct netdev *netdev OVS_UNUSED)
+{
+    return false;
 }
 
 #endif

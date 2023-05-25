@@ -5941,8 +5941,7 @@ netdev_offload_dpdk_flow_flush(struct netdev *netdev)
     if (!netdev_vport_is_vport_class(netdev->netdev_class)) {
         /* If the flushed netdev is an ESW manager, flush its members too. */
         aux.esw_mgr_pid = netdev_dpdk_get_esw_mgr_port_id(netdev);
-        if (aux.esw_mgr_pid != -1 &&
-            aux.esw_mgr_pid == netdev_dpdk_get_port_id(netdev)) {
+        if (netdev_dpdk_is_esw_mgr(netdev)) {
             netdev_ports_traverse(netdev->dpif_type, flush_esw_members_cb,
                                   &aux);
         }
