@@ -556,6 +556,8 @@ static int netdev_dpdk_get_sw_custom_stats(const struct netdev *,
                                            struct netdev_custom_stats *);
 static void netdev_dpdk_configure_xstats(struct netdev_dpdk *dev);
 static void netdev_dpdk_clear_xstats(struct netdev_dpdk *dev);
+static struct netdev_dpdk *
+netdev_dpdk_lookup_by_port_id(dpdk_port_t port_id);
 
 int netdev_dpdk_get_vid(const struct netdev_dpdk *dev);
 
@@ -1610,6 +1612,32 @@ common_destruct(struct netdev_dpdk *dev)
 }
 
 static void
+netdev_dpdk_stop_representors(dpdk_port_t esw_mgr_id)
+    OVS_REQUIRES(dpdk_mutex)
+{
+    struct rte_eth_dev_info info;
+    struct netdev_dpdk *dev;
+    uint16_t domain_id;
+
+    rte_eth_dev_info_get(esw_mgr_id, &info);
+    domain_id = info.switch_info.domain_id;
+    LIST_FOR_EACH (dev, list_node, &dpdk_list) {
+        rte_eth_dev_info_get(dev->port_id, &info);
+        if (info.switch_info.domain_id != domain_id ||
+            !(*info.dev_flags & RTE_ETH_DEV_REPRESENTOR)) {
+            continue;
+        }
+        ovs_mutex_lock(&dev->mutex);
+        rte_eth_dev_stop(dev->port_id);
+        dev->started = false;
+        dev->reset_needed = true;
+        dev->esw_mgr_port_id = -1;
+        ovs_mutex_unlock(&dev->mutex);
+        netdev_request_reconfigure(&dev->up);
+    }
+}
+
+static void
 netdev_dpdk_destruct(struct netdev *netdev)
 {
     struct netdev_dpdk *dev = netdev_dpdk_cast(netdev);
@@ -1617,6 +1645,9 @@ netdev_dpdk_destruct(struct netdev *netdev)
     ovs_mutex_lock(&dpdk_mutex);
 
     if (dev->started) {
+        if (netdev_dpdk_get_esw_mgr_port_id(netdev) == dev->port_id) {
+            netdev_dpdk_stop_representors(dev->port_id);
+        }
         rte_eth_dev_stop(dev->port_id);
         dev->started = false;
     }
