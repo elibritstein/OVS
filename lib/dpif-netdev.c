@@ -531,9 +531,7 @@ dp_netdev_offload_queue_full(void)
 
     dp_netdev_offload_init();
 
-    /* Queue size of 0 disables burst limit.
-     *
-     * E2E code depends on MT path executing in conntrack module.
+    /* E2E code depends on MT path executing in conntrack module.
      * If the queue is full, some offloads info will be missing from
      * the e2e trace. Do not enforce the queue limit if e2e is enabled.
      * This workaround should be fixed by making the e2e code independent.
@@ -546,7 +544,7 @@ dp_netdev_offload_queue_full(void)
      *    e2e_cache_trace_add_ct()
      *    +--> Without the above info, corrupted data are used in the trace.
      */
-    if (offload_queue_size == 0 || dp_netdev_e2e_cache_enabled) {
+    if (dp_netdev_e2e_cache_enabled) {
         return false;
     }
 
@@ -6638,6 +6636,10 @@ dpif_netdev_set_static_config(struct dpif *dpif,
 
     offload_queue_size = smap_get_uint(other_config, "hw-offload-queue-size",
                                        HW_OFFLOAD_DEFAULT_QUEUE_SIZE);
+    if (offload_queue_size == 0) {
+        offload_queue_size = HW_OFFLOAD_DEFAULT_QUEUE_SIZE;
+        VLOG_WARN("The size of hw-offload-queue-size must be greater than 0");
+    }
     VLOG_INFO("hw-offload-queue-size = %"PRIi32, offload_queue_size);
 
     ctd_init(dp->conntrack, other_config);
