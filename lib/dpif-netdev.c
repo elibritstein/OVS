@@ -471,7 +471,7 @@ struct dp_offload_thread {
     );
 };
 
-#define CT_ADD_DEFAULT_QUEUE_SIZE 50000
+#define CT_ADD_DEFAULT_QUEUE_SIZE 200000
 static unsigned int offload_ct_add_queue_size = CT_ADD_DEFAULT_QUEUE_SIZE;
 
 enum {
