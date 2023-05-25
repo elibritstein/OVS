@@ -3192,12 +3192,6 @@ ctd_conn_clean(struct ctd_msg_conn_clean *msg)
 void
 ctd_init(struct conntrack *ct, const struct smap *ovs_other_config)
 {
-    static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
-
-    if (!ovsthread_once_start(&once)) {
-        return;
-    }
-
     ctd_n_threads = smap_get_ullong(ovs_other_config, "n-ct-threads",
                                 DEFAULT_CT_DIST_THREAD_NB);
     if (ctd_n_threads > MAX_CT_DIST_THREAD_NB) {
@@ -3210,8 +3204,6 @@ ctd_init(struct conntrack *ct, const struct smap *ovs_other_config)
     if (ctd_n_threads) {
         ctd_thread_create(ct);
     }
-
-    ovsthread_once_done(&once);
 }
 
 bool

@@ -472,7 +472,7 @@ struct dp_offload_thread {
 };
 
 #define HW_OFFLOAD_DEFAULT_QUEUE_SIZE 50000
-static unsigned long long int offload_queue_size =
+static unsigned int offload_queue_size =
     HW_OFFLOAD_DEFAULT_QUEUE_SIZE;
 
 enum {
@@ -6625,6 +6625,26 @@ set_pmd_auto_lb(struct dp_netdev *dp, bool state, bool always_log)
     }
 }
 
+static void
+dpif_netdev_set_static_config(struct dpif *dpif,
+                              const struct smap *other_config)
+{
+    static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
+    struct dp_netdev *dp = get_dp_netdev(dpif);
+
+    if (!ovsthread_once_start(&once)) {
+        return;
+    }
+
+    offload_queue_size = smap_get_uint(other_config, "hw-offload-queue-size",
+                                       HW_OFFLOAD_DEFAULT_QUEUE_SIZE);
+    VLOG_INFO("hw-offload-queue-size = %"PRIi32, offload_queue_size);
+
+    ctd_init(dp->conntrack, other_config);
+
+    ovsthread_once_done(&once);
+}
+
 /* Applies datapath configuration from the database. Some of the changes are
  * actually applied in dpif_netdev_run(). */
 static int
@@ -6833,10 +6853,7 @@ dpif_netdev_set_config(struct dpif *dpif, const struct smap *other_config)
         }
     }
 
-    offload_queue_size = smap_get_ullong(other_config, "hw-offload-queue-size",
-                                         HW_OFFLOAD_DEFAULT_QUEUE_SIZE);
-
-    ctd_init(dp->conntrack, other_config);
+    dpif_netdev_set_static_config(dpif, other_config);
 
     return 0;
 }
