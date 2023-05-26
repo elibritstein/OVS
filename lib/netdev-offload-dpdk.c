@@ -5620,13 +5620,13 @@ netdev_offload_dpdk_remove_flows(struct ufid_to_rte_flow_data *rte_flow_data)
             data->conn_counters[tid]--;
         }
         put_action_resources(&rte_flow_data->act_resources);
-        ufid_to_rte_flow_disassociate(rte_flow_data);
         VLOG_DBG_RL(&rl, "%s/%s: removed flows 0x%"PRIxPTR"/0x%"PRIxPTR
                     " associated with ufid " UUID_FMT,
                     netdev_get_name(netdev), netdev_get_name(physdev),
                     (intptr_t) rte_flow_data->flow_item.doh[0].rte_flow,
                     (intptr_t) rte_flow_data->flow_item.doh[1].rte_flow,
                     UUID_ARGS((struct uuid *) ufid));
+        ufid_to_rte_flow_disassociate(rte_flow_data);
     } else {
         VLOG_ERR("Failed flow destroy: %s/%s ufid " UUID_FMT,
                  netdev_get_name(netdev), netdev_get_name(physdev),
