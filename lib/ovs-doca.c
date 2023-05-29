@@ -31,7 +31,7 @@ static atomic_bool doca_initialized = ATOMIC_VAR_INIT(false);
 static FILE *log_stream = NULL;       /* Stream for DOCA log redirection */
 static struct doca_logger_backend *doca_logger = NULL;
 
-bool ovs_doca_async = false;
+bool ovs_doca_async = true;
 
 /* Estimated maximum number of megaflows */
 #define OVS_DOCA_MAX_MEGAFLOWS_COUNTERS (1 << 16)
@@ -191,7 +191,7 @@ ovs_doca_dynamic_config(const struct smap *config)
         return;
     }
 
-    req_doca_async = smap_get_bool(config, "doca-async", false);
+    req_doca_async = smap_get_bool(config, "doca-async", true);
     if (req_doca_async != ovs_doca_async) {
         const char *mode_names[] = {
             [0] = "synchronous",
