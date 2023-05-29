@@ -785,11 +785,11 @@ netdev_ports_upkeep(bool quiescing)
 {
     struct port_to_netdev_data *data;
 
-    ovs_rwlock_rdlock(&netdev_hmap_rwlock);
+    ovs_rwlock_rdlock(&port_to_netdev_rwlock);
     HMAP_FOR_EACH (data, portno_node, &port_to_netdev) {
         netdev_offload_upkeep(data->netdev, quiescing);
     }
-    ovs_rwlock_unlock(&netdev_hmap_rwlock);
+    ovs_rwlock_unlock(&port_to_netdev_rwlock);
 }
 
 void
