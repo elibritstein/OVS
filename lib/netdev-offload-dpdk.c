@@ -3667,7 +3667,7 @@ parse_flow_match(struct netdev *netdev,
 
         if (act_vars->proto && act_vars->proto != IPPROTO_UDP &&
             act_vars->proto != IPPROTO_TCP) {
-            VLOG_DBG_RL(&rl, "Unsupported CT offload for L4 protocol: 0x02%"
+            VLOG_DBG_RL(&rl, "Unsupported CT offload for L4 protocol: 0x%02"
                         PRIx8, act_vars->proto);
             return -1;
         }
