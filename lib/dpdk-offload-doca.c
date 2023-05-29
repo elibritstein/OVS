@@ -1161,6 +1161,10 @@ dpdk_offload_doca_upkeep_queue(struct netdev *netdev, bool quiescing,
     struct doca_eswitch_ctx *esw_ctx;
     doca_error_t err;
 
+    if (!ovs_doca_async) {
+        return;
+    }
+
     if (netdev == NULL) {
         return;
     }
