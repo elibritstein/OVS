@@ -1172,11 +1172,8 @@ dpdk_offload_doca_upkeep_queue(struct netdev *netdev, bool quiescing,
                                unsigned int qid)
 {
     struct doca_eswitch_ctx *esw_ctx;
+    unsigned int n_entries;
     doca_error_t err;
-
-    if (!ovs_doca_async) {
-        return;
-    }
 
     if (netdev == NULL) {
         return;
@@ -1188,10 +1185,10 @@ dpdk_offload_doca_upkeep_queue(struct netdev *netdev, bool quiescing,
         return;
     }
 
-    if (!quiescing &&
-        esw_ctx->async_state[qid].n_entries < OVS_DOCA_QUEUE_DEPTH) {
-        /* Early bail-out if the queue is not full and
-         * we are not preparing for a long sleep. */
+    n_entries = esw_ctx->async_state[qid].n_entries;
+    if (n_entries == 0 || (!quiescing && n_entries < OVS_DOCA_QUEUE_DEPTH)) {
+        /* Early bail-out if the queue has no entry or if
+         * it is not full and we are not preparing for a long sleep. */
         return;
     }
 
@@ -1611,6 +1608,12 @@ destroy_dpdk_offload_handle(struct netdev *netdev,
         return -1;
     }
 
+    /* Deletion is always synchronous.
+     *
+     * If async deletion is implemented, aux-table uninit calls deleting
+     * entries will use the offload queues in conflict with offload threads
+     * polling them during upkeep. It should result in a crash or
+     * in a lockup of the queues. */
     err = doca_flow_pipe_rm_entry(queue_id, DOCA_FLOW_NO_WAIT, doh->dfh.flow);
     if (err) {
         if (error) {
