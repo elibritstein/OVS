@@ -65,6 +65,7 @@
 #include "netdev-offload.h"
 #include "netdev-provider.h"
 #include "netdev-vport.h"
+#include "netdev-dpdk.h"
 #include "netlink.h"
 #include "odp-execute.h"
 #include "odp-util.h"
@@ -707,6 +708,7 @@ struct dp_netdev_port {
     char *type;                 /* Port type as requested by user. */
     char *rxq_affinity_list;    /* Requested affinity of rx queues. */
     enum txq_req_mode txq_requested_mode;
+    bool disabled;
 };
 
 static int dpif_netdev_flow_from_nlattrs(const struct nlattr *, uint32_t,
@@ -2982,6 +2984,26 @@ out:
     return error;
 }
 
+static void
+dp_netdev_esw_ports_set_disabled(struct dp_netdev *dp, struct netdev *esw_mgr, bool value)
+    OVS_REQ_WRLOCK(dp->port_rwlock)
+{
+    struct dp_netdev_port *port;
+    int esw_mgr_pid;
+
+    esw_mgr_pid = netdev_dpdk_get_esw_mgr_port_id(esw_mgr);
+
+    if (esw_mgr_pid == -1) {
+        return;
+    }
+
+    HMAP_FOR_EACH (port, node, &dp->ports) {
+        if (esw_mgr_pid == netdev_dpdk_get_esw_mgr_port_id(port->netdev)) {
+            port->disabled = value;
+        }
+    }
+}
+
 static int
 do_add_port(struct dp_netdev *dp, const char *devname, const char *type,
             odp_port_t port_no, struct netdev **datapath_netdev)
@@ -3002,6 +3024,11 @@ do_add_port(struct dp_netdev *dp, const char *devname, const char *type,
     }
     if (datapath_netdev) {
         *datapath_netdev = port->netdev;
+    }
+    /* If the netdev is an ESW manager, remove the
+     * disabled marking for its representors. */
+    if (netdev_dpdk_is_esw_mgr(port->netdev)) {
+        dp_netdev_esw_ports_set_disabled(dp, port->netdev, false);
     }
 
     hmap_insert(&dp->ports, &port->node, hash_port_no(port_no));
@@ -3193,6 +3220,17 @@ static void
 do_del_port(struct dp_netdev *dp, struct dp_netdev_port *port)
     OVS_REQ_WRLOCK(dp->port_rwlock)
 {
+    /* If the netdev is an ESW manager, disable its members.
+     * They will be kept in the datapath but won't be polled by the PMDs.
+     * The ESW manager must be added back to re-enable them.
+     *
+     * This setting must be set before calling 'reconfigure_datapath' to
+     * properly allocate queues and balance them between PMDs. */
+
+    if (netdev_dpdk_is_esw_mgr(port->netdev)) {
+        dp_netdev_esw_ports_set_disabled(dp, port->netdev, true);
+    }
+
     hmap_remove(&dp->ports, &port->node);
     seq_change(dp->port_seq);
 
@@ -8391,7 +8429,8 @@ pmd_remove_stale_ports(struct dp_netdev *dp,
         struct dp_netdev_port *port = poll->rxq->port;
 
         if (port->need_reconfigure
-            || !hmap_contains(&dp->ports, &port->node)) {
+            || !hmap_contains(&dp->ports, &port->node)
+            || port->disabled) {
             dp_netdev_del_rxq_from_pmd(pmd, poll);
         }
     }
@@ -8399,7 +8438,8 @@ pmd_remove_stale_ports(struct dp_netdev *dp,
         struct dp_netdev_port *port = tx->port;
 
         if (port->need_reconfigure
-            || !hmap_contains(&dp->ports, &port->node)) {
+            || !hmap_contains(&dp->ports, &port->node)
+            || port->disabled) {
             dp_netdev_del_port_tx_from_pmd(pmd, tx);
         }
     }
@@ -8557,7 +8597,7 @@ reconfigure_datapath(struct dp_netdev *dp)
 
     /* Step 6: Add queues from scheduling, if they're not there already. */
     HMAP_FOR_EACH (port, node, &dp->ports) {
-        if (!netdev_is_pmd(port->netdev)) {
+        if (!netdev_is_pmd(port->netdev) || port->disabled) {
             continue;
         }
 
@@ -8582,6 +8622,9 @@ reconfigure_datapath(struct dp_netdev *dp)
             struct tx_bond *bond;
 
             HMAP_FOR_EACH (port, node, &dp->ports) {
+                if (port->disabled) {
+                    continue;
+                }
                 dp_netdev_add_port_tx_to_pmd(pmd, port);
             }
 

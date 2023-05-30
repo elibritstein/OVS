@@ -237,6 +237,12 @@ netdev_dpdk_is_esw_mgr(struct netdev *netdev OVS_UNUSED)
     return false;
 }
 
+static inline int
+netdev_dpdk_get_esw_mgr_port_id(struct netdev *netdev OVS_UNUSED)
+{
+    return -1;
+}
+
 #endif
 
 #endif /* netdev-dpdk.h */
