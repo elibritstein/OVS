@@ -324,8 +324,8 @@ ufid_to_rte_flow_data_find(struct netdev *netdev,
     }
 
     if (warn) {
-        VLOG_WARN("ufid "UUID_FMT" is not associated with an rte flow",
-                  UUID_ARGS((struct uuid *) ufid));
+        VLOG_WARN_RL(&rl, "ufid "UUID_FMT" is not associated with an rte flow",
+                     UUID_ARGS((struct uuid *) ufid));
     }
 
     return NULL;
