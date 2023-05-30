@@ -229,7 +229,13 @@ dpdk_offload_counter_dec(struct netdev *netdev)
 
     data = (struct netdev_offload_dpdk_data *)
         ovsrcu_get(void *, &netdev->hw_info.offload_data);
-    data->offload_counters[tid]--;
+    /* Decrement can be done during delayed unref of flow resources,
+     * which can be executed after the port has been uninit already.
+     * In that case, the offload data is not available and there is
+     * nothing to count. */
+    if (data) {
+        data->offload_counters[tid]--;
+    }
 }
 
 #endif /* DPDK_OFFLOAD_PROVIDER_H */
