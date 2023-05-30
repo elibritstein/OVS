@@ -911,6 +911,21 @@ doca_translate_geneve_encap(const struct genevehdr *geneve,
     encap->tun.geneve.next_proto = geneve->proto_type;
     encap->tun.geneve.vni = get_16aligned_be32(&geneve->vni);
 
+    if (geneve->options[0].length) {
+        encap->tun.geneve_options[0].class_id = geneve->options[0].opt_class;
+        encap->tun.geneve_options[0].type = geneve->options[0].type;
+        encap->tun.geneve_options[0].length = geneve->options[0].length;
+
+        /* doca_flow represents the geneve option header as an array of a union
+         * of 32 bits, the array's first element is the type/class/len and this
+         * option's data starts from the next element in the array up to option_len
+         */
+        BUILD_ASSERT_DECL(sizeof(encap->tun.geneve_options[1].data) ==
+                          sizeof(geneve->options[1]));
+        memcpy(&encap->tun.geneve_options[1].data, &geneve->options[1],
+               sizeof(encap->tun.geneve_options[1].data) * geneve->options[0].length);
+    }
+
     dacts->has_encap = true;
 
     return 0;
