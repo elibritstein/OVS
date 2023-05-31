@@ -88,7 +88,6 @@ struct netdev_offload_dpdk_data {
     uint64_t *flow_counters;
     uint64_t *conn_counters;
     struct ovs_mutex map_lock;
-    struct ovsthread_once aux_tables_once;
     struct fixed_rule ct_nat_miss;
     struct fixed_rule zone_flows[2][2][MAX_ZONE_ID + 1];
     struct fixed_rule hairpin;
