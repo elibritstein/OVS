@@ -32,6 +32,8 @@ static FILE *log_stream = NULL;       /* Stream for DOCA log redirection */
 static struct doca_logger_backend *doca_logger = NULL;
 
 bool ovs_doca_async = true;
+/* Size of control pipes. If zero, DOCA uses its default value. */
+uint32_t ctl_pipe_size = 0;
 
 /* Estimated maximum number of megaflows */
 #define OVS_DOCA_MAX_MEGAFLOWS_COUNTERS (1 << 16)
@@ -189,6 +191,7 @@ ovs_doca_dynamic_config(const struct smap *config)
         [0] = "synchronous",
         [1] = "asynchronous",
     };
+    uint32_t req_ctl_pipe_size;
     bool req_doca_async;
 
     if (!smap_get_bool(config, "doca-init", false)) {
@@ -204,6 +207,16 @@ ovs_doca_dynamic_config(const struct smap *config)
     } else {
         VLOG_INFO_ONCE("DOCA insertion mode is %s",
                        mode_names[!!ovs_doca_async]);
+    }
+
+    req_ctl_pipe_size = smap_get_uint(config, "ctl-pipe-size", 0);
+    if (req_ctl_pipe_size != ctl_pipe_size) {
+        VLOG_INFO("Changing DOCA ctl-pipe size from %"PRIu32" to %"PRIu32,
+                  ctl_pipe_size, req_ctl_pipe_size);
+
+        ctl_pipe_size = req_ctl_pipe_size;
+    } else {
+        VLOG_INFO_ONCE("DOCA ctl-pipe-size is %"PRIu32, ctl_pipe_size);
     }
 }
 

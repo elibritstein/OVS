@@ -371,6 +371,8 @@ doca_ctl_pipe_ctx_init(void *ctx_, void *arg_, uint32_t id OVS_UNUSED)
         cfg.attr.nb_flows = 1;
     } else if (group_id == CT_TABLE_ID || group_id == CTNAT_TABLE_ID) {
         cfg.attr.nb_flows = OVS_DOCA_MAX_CT_RULES;
+    } else {
+        cfg.attr.nb_flows = ctl_pipe_size;
     }
 
     ret = doca_flow_pipe_create(&cfg, NULL, NULL, &ctx->pipe);

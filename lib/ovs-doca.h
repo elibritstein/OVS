@@ -35,6 +35,7 @@
 #define OVS_DOCA_QUEUE_DEPTH 32
 
 extern bool ovs_doca_async;
+extern uint32_t ctl_pipe_size;
 
 void
 ovs_doca_entry_process_cb(struct doca_flow_pipe_entry *entry, uint16_t qid,
