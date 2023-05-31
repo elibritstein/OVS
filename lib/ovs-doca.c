@@ -185,6 +185,10 @@ ovs_doca_log_dump(FILE *stream)
 static void
 ovs_doca_dynamic_config(const struct smap *config)
 {
+    static const char *mode_names[] = {
+        [0] = "synchronous",
+        [1] = "asynchronous",
+    };
     bool req_doca_async;
 
     if (!smap_get_bool(config, "doca-init", false)) {
@@ -193,15 +197,13 @@ ovs_doca_dynamic_config(const struct smap *config)
 
     req_doca_async = smap_get_bool(config, "doca-async", true);
     if (req_doca_async != ovs_doca_async) {
-        const char *mode_names[] = {
-            [0] = "synchronous",
-            [1] = "asynchronous",
-        };
-
         VLOG_INFO("Changing DOCA insertion mode from %s to %s.",
                   mode_names[!!ovs_doca_async], mode_names[!!req_doca_async]);
 
         ovs_doca_async = req_doca_async;
+    } else {
+        VLOG_INFO_ONCE("DOCA insertion mode is %s",
+                       mode_names[!!ovs_doca_async]);
     }
 }
 
