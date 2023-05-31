@@ -1202,8 +1202,12 @@ netdev_set_flow_api_enabled(const struct smap *ovs_other_config)
         static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
 
         if (ovsthread_once_start(&once)) {
-            disable_zone_tables = true;
-            VLOG_INFO("CT offloads: zone tables disabled");
+            if (!smap_get_bool(ovs_other_config, "doca-init", false)) {
+                disable_zone_tables = true;
+                VLOG_INFO("CT offloads: zone tables disabled");
+            } else {
+                VLOG_WARN("disable-zone-tables flag is ignored with doca");
+            }
             ovsthread_once_done(&once);
         }
     }

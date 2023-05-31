@@ -1773,6 +1773,7 @@ doca_ct_zones_uninit(struct netdev *netdev, struct doca_eswitch_ctx *ctx)
     int nat, i;
 
     if (netdev_is_zone_tables_disabled()) {
+        VLOG_ERR("Disabling ct zones is not supported with doca");
         return;
     }
 
@@ -1941,7 +1942,8 @@ doca_ct_zones_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx)
     int nat;
 
     if (netdev_is_zone_tables_disabled()) {
-        return 0;
+        VLOG_ERR("Disabling ct zones is not supported with doca");
+        return -1;
     }
 
     /* Merge the tag match for zone and state only if they are
