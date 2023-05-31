@@ -413,7 +413,7 @@ fi
 %{_libdir}/lib*.a
 %else
 %{_libdir}/lib*.so
-%endif #!static
+%endif
 %{_libdir}/pkgconfig/*.pc
 %{_includedir}/openvswitch/*
 %{_includedir}/openflow/*
@@ -477,7 +477,7 @@ fi
 %{_bindir}/vtep-ctl
 %if ! %{with static}
 %{_libdir}/lib*.so.*
-%endif #!static
+%endif
 %{_sbindir}/ovs-bugtool
 %{_sbindir}/ovs-vswitchd
 %{_sbindir}/ovsdb-server
