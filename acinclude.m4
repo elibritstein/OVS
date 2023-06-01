@@ -450,7 +450,7 @@ AC_DEFUN([OVS_CHECK_DOCA], [
          PKG_CHECK_MODULES_STATIC([DOCA], [doca], [
              DOCA_INCLUDE="$DOCA_CFLAGS -DDOCA_ALLOW_EXPERIMENTAL_API"
              DOCA_LIB="$DOCA_LIBS"],
-             [AC_MSG_ERROR([unable to use doca-flow.pc for static build])])
+             [AC_MSG_ERROR([unable to use doca.pc for static build])])
          ;;
     esac
 
@@ -461,12 +461,21 @@ AC_DEFUN([OVS_CHECK_DOCA], [
     ovs_save_LDFLAGS="$LDFLAGS"
     CFLAGS="$CFLAGS $DOCA_INCLUDE"
 
+    AC_MSG_CHECKING([for doca_flow.h])
     AC_COMPILE_IFELSE(
       [AC_LANG_PROGRAM([#include <doca_flow.h>], [struct doca_flow_port *port = NULL ;])],
-      [], [AC_MSG_ERROR([unable to include doca_flow.h from '$DOCA_INCLUDE'])])
+       [AC_MSG_RESULT([yes])],
+       [AC_MSG_RESULT([no])
+        AC_MSG_ERROR(m4_normalize([
+          Unable to include doca_flow.h, check the config.log for more details.
+          As a DOCA library was found in the current search path, a missing doca_flow.h
+          usually means that it was built without DOCA-flow support.
+          Verify that you fullfilled all DOCA-flow build dependencies and that it
+          was not automatically disabled.]))]
+    )
 
     LIBS="$DOCA_LIB $ovs_save_libs_before_dpdk"
-    AC_MSG_CHECKING([for doca_flow.h])
+    AC_MSG_CHECKING([for DOCA-flow link])
     AC_LINK_IFELSE(
       [AC_LANG_PROGRAM([#include <doca_flow_net.h>
                         #include <doca_flow.h>],
@@ -476,10 +485,9 @@ AC_DEFUN([OVS_CHECK_DOCA], [
         DOCALIB_FOUND=true],
        [AC_MSG_RESULT([no])
        AC_MSG_ERROR(m4_normalize([
-          Failed to link with DOCA, check the config.log for more details.
-          If a working DOCA library was not found in the default search path,
-          update PKG_CONFIG_PATH for pkg-config to find the .pc file in a
-          non-standard location.]))
+          Unable to link with DOCA-flow, check the config.log for more details.
+          If a working DOCA-flow library was not found in the current search path,
+          update PKG_CONFIG_PATH for pkg-config to find the .pc file in a proper location.]))
       ])
     CFLAGS="$ovs_save_CFLAGS"
     LDFLAGS="$ovs_save_LDFLAGS"
