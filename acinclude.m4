@@ -455,7 +455,7 @@ AC_DEFUN([OVS_CHECK_DOCA], [
     esac
 
     USED_PATH=`$PKG_CONFIG --variable=prefix doca`
-    echo "Using '$USED_PATH'"
+    echo "Using DOCA release: '$USED_PATH'"
 
     ovs_save_CFLAGS="$CFLAGS"
     ovs_save_LDFLAGS="$LDFLAGS"
@@ -600,7 +600,7 @@ AC_DEFUN([OVS_CHECK_DPDK], [
     esac
 
     USED_PATH=`$PKG_CONFIG --variable=prefix libdpdk`
-    echo "Using '$USED_PATH'"
+    echo "Using DPDK release: '$USED_PATH'"
 
     ovs_save_CFLAGS="$CFLAGS"
     ovs_save_LDFLAGS="$LDFLAGS"
