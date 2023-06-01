@@ -448,7 +448,7 @@ AC_DEFUN([OVS_CHECK_DOCA], [
     case "$DOCA_LINK" in
        ""|"static")
          PKG_CHECK_MODULES_STATIC([DOCA], [doca], [
-             DOCA_INCLUDE="$DOCA_CFLAGS"
+             DOCA_INCLUDE="$DOCA_CFLAGS -DDOCA_ALLOW_EXPERIMENTAL_API"
              DOCA_LIB="$DOCA_LIBS"],
              [AC_MSG_ERROR([unable to use doca-flow.pc for static build])])
          ;;

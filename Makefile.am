@@ -45,6 +45,10 @@ else
 DPDKSTRIP_FLAGS = --nodpdk
 endif
 
+if DOCA_OFFLOAD
+AM_CFLAGS += -DDOCA_ALLOW_EXPERIMENTAL_API
+endif
+
 if NDEBUG
 AM_CPPFLAGS += -DNDEBUG
 AM_CFLAGS += -fomit-frame-pointer
