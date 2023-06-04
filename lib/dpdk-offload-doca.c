@@ -987,7 +987,7 @@ doca_translate_vxlan_encap(const struct rte_flow_action *action,
 }
 
 static int
-doca_translate_actions(struct netdev *netdev OVS_UNUSED,
+doca_translate_actions(struct netdev *netdev,
                        struct doca_flow_match *spec,
                        const struct rte_flow_action *actions,
                        struct doca_flow_actions *dacts,
