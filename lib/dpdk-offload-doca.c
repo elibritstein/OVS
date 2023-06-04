@@ -160,10 +160,45 @@ enum ct_action_type ct_action_next[] = {
     [CT_ACTION_NULL] = CT_ACTION_SNAT, /* Chains start here. */
 };
 
+enum hash_pipe_type {
+    HASH_TYPE_IPV4_UDP,
+    HASH_TYPE_IPV4_TCP,
+    HASH_TYPE_IPV4_L3,
+    NUM_HASH_PIPE_TYPE,
+};
+
 struct doca_basic_pipe_ctx {
     struct doca_flow_pipe *pipe;
     struct doca_ctl_pipe_ctx *fwd_pipe_ctx;
     struct doca_ctl_pipe_ctx *miss_pipe_ctx;
+};
+
+/* ┌────────┐   ┌─────────────┐
+ * │IPv4-UDP│──►│HASH-IPv4-UDP│
+ * │        │   └─────────────┘
+ * │        │   ┌─────────────┐
+ * │IPv4-TCP│──►│HASH-IPv4-TCP│
+ * └───┬────┘   └─────────────┘
+ *     │ miss   ┌─────────────┐
+ *     └───────►│HASH-IPv4-L3 │
+ *              └─────────────┘
+ * OVS always matches on ether type. Only 0x0800 (IPv4) is currently offloaded.
+ * We only need to know TCP/UDP, or miss to simple L3.
+ */
+enum hash_tp_type {
+    HASH_TP_UDP,
+    HASH_TP_TCP,
+    NUM_HASH_TP,
+};
+
+struct doca_hash_pipe_ctx {
+    struct {
+        struct doca_flow_pipe *pipe;
+        struct doca_flow_pipe_entry *entry;
+    } hashes[NUM_HASH_PIPE_TYPE];
+    struct doca_flow_pipe *classifier;
+    struct doca_flow_pipe_entry *tcpudp[NUM_HASH_TP];
+    struct netdev *netdev;
 };
 
 struct doca_ctl_pipe_ctx {
@@ -384,6 +419,41 @@ doca_ctl_pipe_ctx_init(void *ctx_, void *arg_, uint32_t id OVS_UNUSED)
 }
 
 static void
+doca_hash_pipe_ctx_uninit(struct doca_hash_pipe_ctx *ctx)
+{
+    unsigned int queue_id = netdev_offload_thread_id();
+    int i;
+
+    if (ctx == NULL) {
+        return;
+    }
+
+    for (i = 0; i < NUM_HASH_PIPE_TYPE; i++) {
+        if (ctx->hashes[i].entry) {
+            doca_flow_pipe_rm_entry(queue_id, DOCA_FLOW_NO_WAIT,
+                                    ctx->hashes[i].entry);
+            dpdk_offload_counter_dec(ctx->netdev);
+        }
+        if (ctx->hashes[i].pipe) {
+            doca_flow_pipe_destroy(ctx->hashes[i].pipe);
+        }
+    }
+
+    for (i = 0; i < NUM_HASH_TP; i++) {
+        if (ctx->tcpudp[i]) {
+            doca_flow_pipe_rm_entry(queue_id, DOCA_FLOW_NO_WAIT,
+                                    ctx->tcpudp[i]);
+            dpdk_offload_counter_dec(ctx->netdev);
+        }
+    }
+    if (ctx->classifier) {
+        doca_flow_pipe_destroy(ctx->classifier);
+    }
+
+    free(ctx);
+}
+
+static void
 doca_ctl_pipe_ctx_uninit(void *ctx_)
 {
     struct doca_ctl_pipe_ctx *ctx = ctx_;
@@ -494,7 +564,7 @@ static struct reg_field reg_fields[] = {
         .type = REG_TYPE_META,
         .index = 0,
         .offset = 0,
-        .mask = 0x0000FFFF,
+        .mask = 0x00000FFF,
     },
     /* Since sFlow and CT will not work concurrently is it safe
      * to have the reg_fields use the same bits for SFLOW_CTX and CT_CTX.
@@ -510,6 +580,12 @@ static struct reg_field reg_fields[] = {
         .index = 0,
         .offset = 16,
         .mask = 0x0000FFFF,
+    },
+    [REG_FIELD_DP_HASH] = {
+        .type = REG_TYPE_META,
+        .index = 0,
+        .offset = 12,
+        .mask = 0x0000000F,
     },
 };
 
@@ -984,6 +1060,229 @@ doca_translate_vxlan_encap(const struct rte_flow_action *action,
     dacts->has_encap = true;
 
     return 0;
+}
+
+static int
+doca_hash_pipe_init(struct netdev *netdev,
+                    unsigned int queue_id,
+                    struct doca_hash_pipe_ctx *hash_pipe_ctx,
+                    struct doca_flow_pipe *next_pipe,
+                    enum hash_pipe_type type,
+                    uint32_t group_id)
+{
+    uint32_t reg_offset = reg_fields[REG_FIELD_DP_HASH].offset;
+    struct doca_flow_match hash_matches[NUM_HASH_PIPE_TYPE] = {
+        [HASH_TYPE_IPV4_UDP] = {
+            .outer.l3_type = DOCA_FLOW_L3_TYPE_IP4,
+            .outer.ip4.src_ip = UINT32_MAX,
+            .outer.ip4.dst_ip = UINT32_MAX,
+            .outer.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_UDP,
+            .outer.udp.l4_port.src_port = UINT16_MAX,
+            .outer.udp.l4_port.dst_port = UINT16_MAX,
+        },
+        [HASH_TYPE_IPV4_TCP] = {
+            .outer.l3_type = DOCA_FLOW_L3_TYPE_IP4,
+            .outer.ip4.src_ip = UINT32_MAX,
+            .outer.ip4.dst_ip = UINT32_MAX,
+            .outer.l4_type_ext = DOCA_FLOW_L4_TYPE_EXT_TCP,
+            .outer.tcp.l4_port.src_port = UINT16_MAX,
+            .outer.tcp.l4_port.dst_port = UINT16_MAX,
+        },
+        [HASH_TYPE_IPV4_L3] = {
+            .outer.l3_type = DOCA_FLOW_L3_TYPE_IP4,
+            .outer.ip4.src_ip = UINT32_MAX,
+            .outer.ip4.dst_ip = UINT32_MAX,
+        },
+    };
+    uint32_t reg_mask = reg_fields[REG_FIELD_DP_HASH].mask;
+    struct doca_flow_actions actions, *actions_arr[1];
+    struct doca_flow_action_descs *descs_arr[1];
+    struct doca_flow_pipe_entry **pentry;
+    struct doca_flow_action_descs descs;
+    struct doca_flow_action_desc desc;
+    struct doca_eswitch_ctx *esw_ctx;
+    struct doca_flow_fwd fwd, miss;
+    struct doca_flow_pipe_cfg cfg;
+    struct doca_flow_pipe **ppipe;
+    char pipe_name[50];
+    int ret;
+
+    esw_ctx = doca_eswitch_ctx_get(netdev);
+
+    ppipe = &hash_pipe_ctx->hashes[type].pipe;
+    pentry = &hash_pipe_ctx->hashes[type].entry;
+
+    snprintf(pipe_name, sizeof pipe_name, "OVS_HASH_PIPE_%"PRIu32"_type_%u",
+             group_id, type);
+
+    memset(&cfg, 0, sizeof cfg);
+    memset(&fwd, 0, sizeof(fwd));
+    memset(&miss, 0, sizeof(miss));
+    memset(&descs, 0, sizeof(descs));
+    memset(&actions, 0, sizeof(actions));
+    memset(&desc, 0, sizeof desc);
+
+    cfg.attr.name = pipe_name;
+    cfg.attr.type = DOCA_FLOW_PIPE_HASH;
+    cfg.port = esw_ctx->esw_port;
+    cfg.match_mask = &hash_matches[type];
+    cfg.attr.nb_flows = 1;
+    descs_arr[0] = &descs;
+    cfg.action_descs = descs_arr;
+    descs.desc_array = &desc;
+    descs.nb_action_desc = 1;
+    cfg.actions = actions_arr;
+    cfg.attr.nb_actions = 1;
+    actions_arr[0] = &actions;
+
+    desc.type = DOCA_FLOW_ACTION_COPY;
+    desc.copy.src.field_string = "meta.hash";
+    desc.copy.src.bit_offset = 0;
+    desc.copy.dst.field_string = "meta.data";
+    desc.copy.dst.bit_offset = reg_offset;
+    desc.copy.width = ffs(~reg_mask) - 1;
+
+    fwd.type = DOCA_FLOW_FWD_PIPE;
+    fwd.next_pipe = next_pipe;
+    miss.type = DOCA_FLOW_FWD_DROP;
+
+    ret = doca_flow_pipe_create(&cfg, &fwd, &miss, ppipe);
+    if (ret) {
+        VLOG_ERR("Failed to create hash pipe: %d (%s)", ret,
+                 doca_get_error_string(ret));
+        return ret;
+    }
+
+    ret = doca_flow_pipe_hash_add_entry(queue_id, *ppipe, 0, NULL, NULL, NULL,
+                                        DOCA_FLOW_NO_WAIT, NULL, pentry);
+    if (ret) {
+        VLOG_ERR("Failed to create hash pipe entry. Error: %d (%s)", ret,
+                 doca_get_error_string(ret));
+        return ret;
+    }
+    dpdk_offload_counter_inc(netdev);
+
+    ret = doca_flow_entries_process(cfg.port, queue_id,
+                                    ENTRY_PROCESS_TIMEOUT_MS, 0);
+    if (ret) {
+        VLOG_ERR("Failed to process hash pipe entry. Error: %d (%s)", ret,
+                 doca_get_error_string(ret));
+        return ret;
+    }
+
+    return 0;
+}
+
+OVS_UNUSED
+static struct doca_hash_pipe_ctx *
+doca_hash_pipe_ctx_init(struct doca_flow_pipe *next_pipe,
+                        struct netdev *netdev,
+                        uint32_t group_id)
+{
+    unsigned int queue_id = netdev_offload_thread_id();
+    struct doca_hash_pipe_ctx *hash_pipe_ctx;
+    struct doca_flow_pipe_entry **pentry;
+    struct doca_eswitch_ctx *esw_ctx;
+    struct doca_flow_pipe_cfg cfg;
+    struct doca_flow_match spec;
+    struct doca_flow_match mask;
+    struct doca_flow_fwd miss;
+    struct doca_flow_fwd fwd;
+    char pipe_name[50];
+    doca_error_t err;
+    int type;
+
+    esw_ctx = doca_eswitch_ctx_get(netdev);
+    if (esw_ctx == NULL) {
+        return NULL;
+    }
+
+    hash_pipe_ctx = xzalloc(sizeof *hash_pipe_ctx);
+    hash_pipe_ctx->netdev = netdev;
+    for (type = 0; type < NUM_HASH_PIPE_TYPE; type++) {
+        int ret;
+
+        ret = doca_hash_pipe_init(netdev, queue_id, hash_pipe_ctx, next_pipe,
+                                  type, group_id);
+        if (ret) {
+            VLOG_ERR("%s: Failed to create hash pipe ctx",
+                     netdev_get_name(netdev));
+            goto err;
+        }
+    }
+
+    /* Classifier pipe. */
+    snprintf(pipe_name, sizeof pipe_name, "OVS_HASH_CLASSIFIER_PIPE_%" PRIu32,
+             group_id);
+
+    memset(&cfg, 0, sizeof cfg);
+    memset(&mask, 0, sizeof mask);
+    memset(&fwd, 0, sizeof fwd);
+    memset(&miss, 0, sizeof miss);
+
+    cfg.attr.type = DOCA_FLOW_PIPE_BASIC;
+    cfg.port = esw_ctx->esw_port;
+    cfg.attr.nb_flows = 2;
+    cfg.match = &mask;
+    cfg.match_mask = &mask;
+
+    mask.outer.l3_type = DOCA_FLOW_L3_TYPE_IP4;
+    mask.outer.ip4.next_proto = 0xFF;
+
+    fwd.type = DOCA_FLOW_FWD_PIPE;
+    miss.type = DOCA_FLOW_FWD_PIPE;
+    miss.next_pipe = hash_pipe_ctx->hashes[HASH_TYPE_IPV4_L3].pipe;
+
+    err = doca_flow_pipe_create(&cfg, &fwd, &miss, &hash_pipe_ctx->classifier);
+    if (err) {
+        VLOG_ERR("%s: Failed to create ctl pipe: %d (%s)",
+                 netdev_get_name(netdev), err, doca_get_error_string(err));
+        goto err;
+    }
+
+    /* TCP/UDP entries. */
+    memset(&spec, 0, sizeof spec);
+    spec.outer.l3_type = DOCA_FLOW_L3_TYPE_IP4;
+
+    spec.outer.ip4.next_proto = IPPROTO_UDP;
+    pentry = &hash_pipe_ctx->tcpudp[HASH_TP_UDP];
+    fwd.next_pipe = hash_pipe_ctx->hashes[HASH_TYPE_IPV4_UDP].pipe;
+    err = doca_flow_pipe_add_entry(queue_id, hash_pipe_ctx->classifier, &spec,
+                                   NULL, NULL, &fwd, DOCA_FLOW_NO_WAIT, NULL,
+                                   pentry);
+    if (err) {
+        VLOG_ERR("%s: Failed to create UDP classifier entry: %d (%s)",
+                 netdev_get_name(netdev), err, doca_get_error_string(err));
+        goto err;
+    }
+    dpdk_offload_counter_inc(netdev);
+
+    spec.outer.ip4.next_proto = IPPROTO_TCP;
+    pentry = &hash_pipe_ctx->tcpudp[HASH_TP_TCP];
+    fwd.next_pipe = hash_pipe_ctx->hashes[HASH_TYPE_IPV4_TCP].pipe;
+    err = doca_flow_pipe_add_entry(queue_id, hash_pipe_ctx->classifier, &spec,
+                                   NULL, NULL, &fwd, DOCA_FLOW_NO_WAIT, NULL,
+                                   pentry);
+    if (err) {
+        VLOG_ERR("%s: Failed to create TCP classifier entry: %d (%s)",
+                 netdev_get_name(netdev), err, doca_get_error_string(err));
+        goto err;
+    }
+    dpdk_offload_counter_inc(netdev);
+
+    err = doca_flow_entries_process(esw_ctx->esw_port, queue_id,
+                                    ENTRY_PROCESS_TIMEOUT_MS, 0);
+    if (err) {
+        VLOG_ERR("%s: Failed to poll classifier completion: queue %u. "
+                 "Error: %d (%s)", netdev_get_name(netdev), queue_id, err,
+                 doca_get_error_string(err));
+        goto err;
+    }
+
+    return hash_pipe_ctx;
+err:
+    doca_hash_pipe_ctx_uninit(hash_pipe_ctx);
+    return NULL;
 }
 
 static int

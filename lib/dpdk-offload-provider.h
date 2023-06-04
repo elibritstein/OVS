@@ -128,6 +128,7 @@ enum dpdk_reg_id {
     REG_FIELD_CT_CTX,
     REG_FIELD_SFLOW_CTX,
     REG_FIELD_FLOW_INFO,
+    REG_FIELD_DP_HASH,
     REG_FIELD_NUM,
 };
 
