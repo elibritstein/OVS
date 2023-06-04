@@ -1311,10 +1311,22 @@ err:
 static struct doca_flow_pipe *
 get_ctl_pipe_root(struct doca_ctl_pipe_ctx *next_pipe_ctx,
                   struct doca_flow_match *spec,
+                  struct doca_flow_actions *dacts,
                   bool has_dp_hash)
 {
     if (!has_dp_hash) {
         return next_pipe_ctx->pipe;
+    }
+
+    if (dacts->has_encap) {
+        if (dacts->encap.outer.l3_type != DOCA_FLOW_L3_TYPE_IP4) {
+            return NULL;
+        }
+        if (dacts->encap.tun.type == DOCA_FLOW_TUN_VXLAN ||
+            dacts->encap.tun.type == DOCA_FLOW_TUN_GENEVE) {
+            return next_pipe_ctx->hash_pipe_ctx->hashes[HASH_TYPE_IPV4_UDP].pipe;
+        }
+        return next_pipe_ctx->hash_pipe_ctx->hashes[HASH_TYPE_IPV4_L3].pipe;
     }
 
     if (spec->outer.l3_type != DOCA_FLOW_L3_TYPE_IP4) {
@@ -1468,7 +1480,7 @@ doca_translate_actions(struct netdev *netdev,
             }
 
             fwd->type = DOCA_FLOW_FWD_PIPE;
-            fwd->next_pipe = get_ctl_pipe_root(next_pipe_ctx, spec,
+            fwd->next_pipe = get_ctl_pipe_root(next_pipe_ctx, spec, dacts,
                                                has_dp_hash);
             flow_res->next_pipe_ctx = next_pipe_ctx;
             flow_res->next_group = jump->group;
