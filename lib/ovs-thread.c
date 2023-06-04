@@ -514,6 +514,18 @@ ovsthread_once_done(struct ovsthread_once *once)
     once->done = true;
     ovs_mutex_unlock(&once->mutex);
 }
+
+void
+ovsthread_once_reset(struct ovsthread_once *once)
+{
+    /* We need release semantics here, so that the following store may not
+     * be moved ahead of any of the preceding initialization operations.
+     * A release atomic_thread_fence provides that prior memory accesses
+     * will not be reordered to take place after the following store. */
+    atomic_thread_fence(memory_order_release);
+    once->done = false;
+    ovs_mutex_unlock(&once->mutex);
+}
 
 bool
 single_threaded(void)

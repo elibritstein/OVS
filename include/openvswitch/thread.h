@@ -138,6 +138,8 @@ struct ovsthread_once {
 
 static inline bool ovsthread_once_start(struct ovsthread_once *once)
     OVS_TRY_LOCK(true, once->mutex);
+void ovsthread_once_reset(struct ovsthread_once *once)
+    OVS_RELEASES(once->mutex);
 void ovsthread_once_done(struct ovsthread_once *once)
     OVS_RELEASES(once->mutex);
 
