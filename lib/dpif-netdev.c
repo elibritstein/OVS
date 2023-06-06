@@ -3642,7 +3642,7 @@ dp_netdev_flow_offload_put(struct dp_offload_thread_item *item)
     return 0;
 
 err_free:
-    if (!is_e2e_cache_flow && !modification) {
+    if (!is_e2e_cache_flow) {
         megaflow_to_mark_disassociate(&flow->mega_ufid);
         mark_to_flow_disassociate(item);
     }
