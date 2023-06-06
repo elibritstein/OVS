@@ -1228,11 +1228,11 @@ netdev_dpdk_doca_port_get(struct netdev *netdev)
 }
 
 static int
-dpdk_eth_dev_init(struct netdev *netdev)
+dpdk_eth_dev_init(struct netdev_dpdk *dev)
     OVS_REQUIRES(dev->mutex)
 {
-    struct netdev_dpdk *dev = netdev_dpdk_cast(netdev);
     struct rte_pktmbuf_pool_private *mbp_priv;
+    struct netdev *netdev = &dev->up;
     struct rte_eth_dev_info info;
     struct rte_ether_addr eth_addr;
     int diag;
@@ -5252,7 +5252,7 @@ netdev_dpdk_reconfigure(struct netdev *netdev)
         }
     }
 
-    err = dpdk_eth_dev_init(netdev);
+    err = dpdk_eth_dev_init(dev);
     if (dev->hw_ol_features & NETDEV_TX_TSO_OFFLOAD) {
         netdev->ol_flags |= NETDEV_TX_OFFLOAD_TCP_TSO;
         netdev->ol_flags |= NETDEV_TX_OFFLOAD_TCP_CKSUM;
