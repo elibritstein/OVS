@@ -249,6 +249,7 @@ ovs_doca_init(const struct smap *ovs_other_config)
         /* Create a logger backend that prints to the redirected log */
         err = doca_log_create_file_backend(log_stream, &doca_logger);
         if (err != DOCA_SUCCESS) {
+            ovsthread_once_done(&once_enable);
             return EXIT_FAILURE;
         }
     }
@@ -288,6 +289,7 @@ ovs_doca_init(const struct smap *ovs_other_config)
             VLOG_ERR("Error initializing doca flow offload. Error %d (%s)\n",
                     err, doca_get_error_string(err));
 
+            ovsthread_once_done(&once_enable);
             ovs_abort(err, "Cannot init DOCA");
             return err;
         }
