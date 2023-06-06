@@ -508,6 +508,14 @@ static bool
 flush_esw_members_op(struct netdev *netdev,
                      odp_port_t odp_port OVS_UNUSED,
                      void *aux_);
+static bool
+init_esw_members_op(struct netdev *netdev,
+                    odp_port_t odp_port OVS_UNUSED,
+                    void *aux_ OVS_UNUSED);
+static bool
+uninit_esw_members_op(struct netdev *netdev,
+                      odp_port_t odp_port OVS_UNUSED,
+                      void *aux_ OVS_UNUSED);
 
 static uint32_t
 label_id_alloc(void)
@@ -5740,6 +5748,10 @@ static int
 netdev_offload_dpdk_init_flow_api(struct netdev *netdev)
 {
     int ret = EOPNOTSUPP;
+    struct esw_members_aux aux = {
+        .esw_netdev = netdev,
+        .op = init_esw_members_op,
+    };
 
     if (netdev_vport_is_vport_class(netdev->netdev_class)
         && !strcmp(netdev_get_dpif_type(netdev), "system")) {
@@ -5762,6 +5774,11 @@ netdev_offload_dpdk_init_flow_api(struct netdev *netdev)
         ret = offload_data_init(netdev);
     }
 
+    /* If the netdev is an ESW manager, init its members too. */
+    if (netdev_dpdk_is_esw_mgr(netdev)) {
+        netdev_ports_traverse(netdev->dpif_type, esw_members_cb, &aux);
+    }
+
     netdev_offload_dpdk_ct_labels_mapping = netdev_is_ct_labels_mapping_enabled();
     netdev_offload_dpdk_disable_zone_tables = netdev_is_zone_tables_disabled();
 
@@ -5771,6 +5788,16 @@ netdev_offload_dpdk_init_flow_api(struct netdev *netdev)
 static void
 netdev_offload_dpdk_uninit_flow_api(struct netdev *netdev)
 {
+    struct esw_members_aux aux = {
+        .esw_netdev = netdev,
+        .op = uninit_esw_members_op,
+    };
+
+    /* If the netdev is an ESW manager, uninit its members too. */
+    if (netdev_dpdk_is_esw_mgr(netdev)) {
+        netdev_ports_traverse(netdev->dpif_type, esw_members_cb, &aux);
+    }
+
     if (netdev_dpdk_flow_api_supported(netdev)) {
         offload_data_destroy(netdev);
     }
@@ -5929,6 +5956,26 @@ esw_members_cb(struct netdev *netdev,
     }
 
     return aux->op(netdev, odp_port, aux);
+}
+
+static bool
+uninit_esw_members_op(struct netdev *netdev,
+                      odp_port_t odp_port OVS_UNUSED,
+                      void *aux_ OVS_UNUSED)
+{
+    netdev_uninit_flow_api(netdev);
+
+    return false;
+}
+
+static bool
+init_esw_members_op(struct netdev *netdev,
+                    odp_port_t odp_port OVS_UNUSED,
+                    void *aux_ OVS_UNUSED)
+{
+    netdev_init_flow_api(netdev);
+
+    return false;
 }
 
 static bool
