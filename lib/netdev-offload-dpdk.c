@@ -184,6 +184,13 @@ struct act_resources {
     uint32_t meter_id;
 };
 
+struct esw_members_aux {
+    struct netdev *esw_netdev;
+    int ret;
+    /* Operation to perform on ESW members */
+    bool (*op)(struct netdev *, odp_port_t, void *);
+};
+
 struct ufid_to_rte_flow_data {
     struct cmap_node node;
     ovs_u128 ufid;
@@ -492,6 +499,15 @@ static struct id_fpool *label_id_pool = NULL;
 static struct offload_metadata *label_id_md;
 
 static void label_id_init(void);
+
+static bool
+esw_members_cb(struct netdev *netdev,
+               odp_port_t odp_port OVS_UNUSED,
+               void *aux_);
+static bool
+flush_esw_members_op(struct netdev *netdev,
+                     odp_port_t odp_port OVS_UNUSED,
+                     void *aux_);
 
 static uint32_t
 label_id_alloc(void)
@@ -5869,27 +5885,36 @@ flush_netdev_flows_in_related(struct netdev *netdev, struct netdev *related)
     return 0;
 }
 
-struct flush_esw_members_aux {
-    struct netdev *esw_netdev;
-    int esw_mgr_pid;
-    int ret;
-};
-
 /* Upon flushing the ESW manager, its members netdevs should be flushed too,
  * as their offloads are done on it.
  */
 static bool
-flush_esw_members_cb(struct netdev *netdev,
+flush_esw_members_op(struct netdev *netdev,
                      odp_port_t odp_port OVS_UNUSED,
                      void *aux_)
 {
-    struct flush_esw_members_aux *aux = aux_;
+    struct esw_members_aux *aux = aux_;
+
+    if (flush_netdev_flows_in_related(netdev, netdev)) {
+        aux->ret = -1;
+        return true;
+    }
+
+    return false;
+}
+
+static bool
+esw_members_cb(struct netdev *netdev,
+               odp_port_t odp_port OVS_UNUSED,
+               void *aux_)
+{
+    struct esw_members_aux *aux = aux_;
     struct netdev *esw_netdev;
     int netdev_esw_mgr_pid;
     int esw_mgr_pid;
 
     esw_netdev = aux->esw_netdev;
-    esw_mgr_pid = aux->esw_mgr_pid;
+    esw_mgr_pid = netdev_dpdk_get_esw_mgr_port_id(aux->esw_netdev);
 
     /* Skip the ESW netdev itself. */
     if (netdev == esw_netdev) {
@@ -5903,12 +5928,7 @@ flush_esw_members_cb(struct netdev *netdev,
         return false;
     }
 
-    if (flush_netdev_flows_in_related(netdev, netdev)) {
-        aux->ret = -1;
-        return true;
-    }
-
-    return false;
+    return aux->op(netdev, odp_port, aux);
 }
 
 static bool
@@ -5929,9 +5949,10 @@ flush_in_vport_cb(struct netdev *vport,
 static int
 netdev_offload_dpdk_flow_flush(struct netdev *netdev)
 {
-    struct flush_esw_members_aux aux = {
+    struct esw_members_aux aux = {
         .esw_netdev = netdev,
         .ret = 0,
+        .op = flush_esw_members_op,
     };
 
     if (flush_netdev_flows_in_related(netdev, netdev)) {
@@ -5940,10 +5961,8 @@ netdev_offload_dpdk_flow_flush(struct netdev *netdev)
 
     if (!netdev_vport_is_vport_class(netdev->netdev_class)) {
         /* If the flushed netdev is an ESW manager, flush its members too. */
-        aux.esw_mgr_pid = netdev_dpdk_get_esw_mgr_port_id(netdev);
         if (netdev_dpdk_is_esw_mgr(netdev)) {
-            netdev_ports_traverse(netdev->dpif_type, flush_esw_members_cb,
-                                  &aux);
+            netdev_ports_traverse(netdev->dpif_type, esw_members_cb, &aux);
         }
         netdev_ports_traverse(netdev->dpif_type, flush_in_vport_cb, netdev);
     }
