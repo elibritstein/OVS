@@ -283,6 +283,7 @@ struct dp_netdev {
      * through 'ports' requires taking 'port_rwlock'. */
     struct ovs_rwlock port_rwlock;
     struct hmap ports;
+    struct hmap port_status;
     struct seq *port_seq;       /* Incremented whenever a port changes. */
 
     /* The time that a packet can wait in output batch for sending. */
@@ -682,6 +683,14 @@ enum txq_mode {
     TXQ_MODE_XPS_HASH,
 };
 
+struct dp_netdev_port_status {
+    /* Upon port_reconfigure failure the port is removed from the ports hmap,
+     * so its status cannot be propagated. */
+    int status;
+    odp_port_t port_no;
+    struct hmap_node node;      /* Node in dp_netdev's 'port_status'. */
+};
+
 /* A port in a netdev-based datapath. */
 struct dp_netdev_port {
     odp_port_t port_no;
@@ -1058,6 +1067,18 @@ static bool dp_netdev_simple_match_enabled(const struct dp_netdev_pmd_thread *,
 static struct dp_netdev_flow *dp_netdev_simple_match_lookup(
     const struct dp_netdev_pmd_thread *,
     odp_port_t in_port, ovs_be16 dp_type, uint8_t nw_frag, ovs_be16 vlan_tci);
+
+static struct dp_netdev_port_status *
+dp_netdev_port_status_lookup(const struct dp_netdev *dp, odp_port_t)
+    OVS_REQ_RDLOCK(dp->port_rwlock);
+
+static void
+port_status_set(struct dp_netdev *dp, struct dp_netdev_port *port, int status)
+    OVS_REQ_RDLOCK(dp->port_rwlock);
+
+static int
+port_status_get(struct dp_netdev *dp, odp_port_t port_no)
+    OVS_REQ_RDLOCK(dp->port_rwlock);
 
 /* Updates the time in PMD threads context and should be called in three cases:
  *
@@ -2268,6 +2289,7 @@ create_dp_netdev(const char *name, const struct dpif_class *class,
 
     ovs_rwlock_init(&dp->port_rwlock);
     hmap_init(&dp->ports);
+    hmap_init(&dp->port_status);
     dp->port_seq = seq_create();
     ovs_mutex_init(&dp->bond_mutex);
     cmap_init(&dp->tx_bonds);
@@ -2383,6 +2405,7 @@ static void
 dp_netdev_free(struct dp_netdev *dp)
     OVS_REQUIRES(dp_netdev_mutex)
 {
+    struct dp_netdev_port_status *ps;
     struct dp_netdev_port *port;
     struct tx_bond *bond;
 
@@ -2391,6 +2414,9 @@ dp_netdev_free(struct dp_netdev *dp)
     ovs_rwlock_wrlock(&dp->port_rwlock);
     HMAP_FOR_EACH_SAFE (port, node, &dp->ports) {
         do_del_port(dp, port);
+    }
+    HMAP_FOR_EACH_SAFE (ps, node, &dp->port_status) {
+        free(ps);
     }
     ovs_rwlock_unlock(&dp->port_rwlock);
 
@@ -2418,6 +2444,7 @@ dp_netdev_free(struct dp_netdev *dp)
 
     seq_destroy(dp->port_seq);
     hmap_destroy(&dp->ports);
+    hmap_destroy(&dp->port_status);
     ovs_rwlock_destroy(&dp->port_rwlock);
 
     cmap_destroy(&dp->tx_bonds);
@@ -2881,6 +2908,37 @@ hash_port_no(odp_port_t port_no)
     return hash_int(odp_to_u32(port_no), 0);
 }
 
+static void
+port_status_set(struct dp_netdev *dp, struct dp_netdev_port *port, int status)
+    OVS_REQ_RDLOCK(dp->port_rwlock)
+{
+    struct dp_netdev_port_status *ps = dp_netdev_port_status_lookup(dp, port->port_no);
+
+    if (ps == NULL) {
+        ps = xzalloc(sizeof *ps);
+        ps->port_no = port->port_no;
+        hmap_insert(&dp->port_status, &ps->node,
+                    hash_port_no(ps->port_no));
+    }
+    ps->status = status;
+}
+
+static int
+port_status_get(struct dp_netdev *dp, odp_port_t port_no)
+    OVS_REQ_RDLOCK(dp->port_rwlock)
+{
+    struct dp_netdev_port_status *ps = dp_netdev_port_status_lookup(dp, port_no);
+    int status;
+
+    if (ps == NULL) {
+        return 0;
+    }
+    hmap_remove(&dp->port_status, &ps->node);
+    status = ps->status;
+    free(ps);
+    return status;
+}
+
 static int
 port_create(const char *devname, const char *type,
             odp_port_t port_no, struct dp_netdev_port **portp)
@@ -2953,7 +3011,9 @@ do_add_port(struct dp_netdev *dp, const char *devname, const char *type,
 
     /* Check that port was successfully configured. */
     if (!dp_netdev_lookup_port(dp, port_no)) {
-        return EINVAL;
+        error = port_status_get(dp, port_no);
+
+        return error ? error : EINVAL;
     }
 
     /* Updating device flags triggers an if_notifier, which triggers a bridge
@@ -3028,6 +3088,22 @@ is_valid_port_number(odp_port_t port_no)
 {
     return port_no != ODPP_NONE;
 }
+
+static struct dp_netdev_port_status *
+dp_netdev_port_status_lookup(const struct dp_netdev *dp, odp_port_t port_no)
+    OVS_REQ_RDLOCK(dp->port_rwlock)
+{
+    struct dp_netdev_port_status *port;
+
+    HMAP_FOR_EACH_WITH_HASH (port, node, hash_port_no(port_no),
+                             &dp->port_status) {
+        if (port->port_no == port_no) {
+            return port;
+        }
+    }
+    return NULL;
+}
+
 
 static struct dp_netdev_port *
 dp_netdev_lookup_port(const struct dp_netdev *dp, odp_port_t port_no)
@@ -3133,6 +3209,7 @@ do_del_port(struct dp_netdev *dp, struct dp_netdev_port *port)
     dp_netdev_offload_flush(dp, port);
     netdev_uninit_flow_api(port->netdev);
 
+    port_status_get(dp, port->port_no);
     port_destroy(port);
 }
 
@@ -8403,6 +8480,8 @@ reconfigure_datapath(struct dp_netdev *dp)
 
         err = port_reconfigure(port);
         if (err) {
+            /* Capture port status to distinguish various errors */
+            port_status_set(dp, port, err);
             hmap_remove(&dp->ports, &port->node);
             seq_change(dp->port_seq);
             port_destroy(port);
