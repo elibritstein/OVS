@@ -7480,8 +7480,10 @@ port_reconfigure(struct dp_netdev_port *port)
     if (netdev_is_reconf_required(netdev) || port->need_reconfigure) {
         err = netdev_reconfigure(netdev);
         if (err && (err != EOPNOTSUPP)) {
-            VLOG_ERR("Failed to set interface %s new configuration",
-                     netdev_get_name(netdev));
+            if (err != EAGAIN) {
+                VLOG_ERR("Failed to set interface %s new configuration",
+                         netdev_get_name(netdev));
+            }
             return err;
         }
     }

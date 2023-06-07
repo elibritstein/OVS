@@ -1309,6 +1309,12 @@ dpdk_eth_dev_init(struct netdev_dpdk *dev)
         return -diag;
     }
 
+    /* Try again if eswitch manager is not UP. */
+    if (!netdev_dpdk_is_esw_mgr(netdev) &&
+        netdev_dpdk_get_esw_mgr_port_id(netdev) == -1) {
+        return EAGAIN;
+    }
+
     if (ovs_doca_enabled()) {
         diag = netdev_dpdk_doca_port_create(netdev);
         if (diag) {
