@@ -1160,24 +1160,25 @@ add_meter_policy(dpdk_port_t port_id, uint32_t policy_id)
 
 static dpdk_port_t
 netdev_dpdk_find_esw_mgr_port_id(uint16_t dev_port_id)
+    OVS_REQUIRES(dpdk_mutex)
 {
     struct rte_eth_dev_info info;
-    dpdk_port_t port_id;
+    struct netdev_dpdk *dev;
     uint16_t domain_id;
 
     rte_eth_dev_info_get(dev_port_id, &info);
     domain_id = info.switch_info.domain_id;
-    RTE_ETH_FOREACH_DEV (port_id) {
-        rte_eth_dev_info_get(port_id, &info);
+    LIST_FOR_EACH (dev, list_node, &dpdk_list) {
+        rte_eth_dev_info_get(dev->port_id, &info);
         if (info.switch_info.domain_id == domain_id &&
             !(*info.dev_flags & RTE_ETH_DEV_REPRESENTOR)) {
             VLOG_INFO("Found ESW manager port "DPDK_PORT_ID_FMT" for device "
-                      DPDK_PORT_ID_FMT, port_id, dev_port_id);
-            return port_id;
+                      DPDK_PORT_ID_FMT, dev->port_id, dev_port_id);
+            return dev->port_id;
         }
     }
 
-    return dev_port_id;
+    return -1;
 }
 
 static struct netdev_dpdk *
