@@ -5962,7 +5962,13 @@ flush_esw_members_op(struct netdev *netdev,
                      odp_port_t odp_port OVS_UNUSED,
                      void *aux_)
 {
+    struct cmap *map = offload_data_map(netdev);
     struct esw_members_aux *aux = aux_;
+
+    if (!cmap_is_empty(map)) {
+        VLOG_ERR("Incomplete flush: %s should have been empty",
+                 netdev_get_name(netdev));
+    }
 
     if (flush_netdev_flows_in_related(netdev, netdev)) {
         aux->ret = -1;

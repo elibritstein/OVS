@@ -1015,6 +1015,9 @@ static void reconfigure_datapath(struct dp_netdev *dp)
 static bool dp_netdev_pmd_try_ref(struct dp_netdev_pmd_thread *pmd);
 static void dp_netdev_pmd_unref(struct dp_netdev_pmd_thread *pmd);
 static void dp_netdev_pmd_flow_flush(struct dp_netdev_pmd_thread *pmd);
+static void
+dp_netdev_port_flow_flush(struct dp_netdev *dp, struct dp_netdev_port *port);
+
 static void pmd_load_cached_ports(struct dp_netdev_pmd_thread *pmd)
     OVS_REQUIRES(pmd->port_mutex);
 static inline void
@@ -3244,6 +3247,7 @@ do_del_port(struct dp_netdev *dp, struct dp_netdev_port *port)
      * revalidator threads are still active and can still enqueue
      * offload modification or deletion. Managing those stray requests
      * is done in the offload threads. */
+    dp_netdev_port_flow_flush(dp, port);
     dp_netdev_offload_flush(dp, port);
     netdev_uninit_flow_api(port->netdev);
 
@@ -4754,18 +4758,52 @@ get_dpif_flow_status(const struct dp_netdev *dp,
                      struct dpif_flow_attrs *attrs);
 
 static void
-dp_netdev_pmd_flow_flush(struct dp_netdev_pmd_thread *pmd)
+dp_netdev_pmd_flow_flush__(struct dp_netdev_pmd_thread *pmd, struct dp_netdev_port *port)
 {
     struct dp_netdev_flow *netdev_flow;
 
     ovs_mutex_lock(&pmd->flow_mutex);
     CMAP_FOR_EACH (netdev_flow, node, &pmd->flow_table) {
+        odp_port_t flow_port_no = netdev_flow->flow.in_port.odp_port;
         struct dpif_flow_attrs attrs;
+
+        if (port != NULL && flow_port_no != port->port_no) {
+            continue;
+        }
 
         get_dpif_flow_status(pmd->dp, netdev_flow, NULL, &attrs);
         dp_netdev_pmd_remove_flow(pmd, netdev_flow, attrs.offloaded);
     }
     ovs_mutex_unlock(&pmd->flow_mutex);
+}
+
+static void
+dp_netdev_pmd_flow_flush(struct dp_netdev_pmd_thread *pmd)
+{
+    dp_netdev_pmd_flow_flush__(pmd, NULL);
+}
+
+static void
+dp_netdev_port_flow_flush(struct dp_netdev *dp, struct dp_netdev_port *port)
+{
+    struct dp_netdev_pmd_thread *pmd;
+
+    if (netdev_dpdk_is_esw_mgr(port->netdev)) {
+        struct dp_netdev_port *iter_port;
+        int esw_mgr_pid;
+
+        esw_mgr_pid = netdev_dpdk_get_esw_mgr_port_id(port->netdev);
+
+        HMAP_FOR_EACH (iter_port, node, &dp->ports) {
+            if (esw_mgr_pid == netdev_dpdk_get_esw_mgr_port_id(iter_port->netdev)) {
+                dp_netdev_port_flow_flush(dp, iter_port);
+            }
+        }
+    }
+
+    CMAP_FOR_EACH (pmd, node, &dp->poll_threads) {
+        dp_netdev_pmd_flow_flush__(pmd, port);
+    }
 }
 
 static int
