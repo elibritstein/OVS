@@ -363,7 +363,7 @@ doca_ctl_pipe_ctx_init(void *ctx_, void *arg_, uint32_t id OVS_UNUSED)
     cfg.attr.name = pipe_name;
     cfg.attr.type = DOCA_FLOW_PIPE_CONTROL;
     cfg.attr.is_root = is_root;
-    cfg.port = doca_flow_port_switch_get();
+    cfg.port = doca_flow_port_switch_get(NULL);
 
     if (is_ct_zone_group_id(group_id)) {
         cfg.attr.nb_flows = NUM_ZONE_FLOWS;
@@ -2252,7 +2252,7 @@ doca_ct_pipe_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx,
     cfg.attr.is_root = false;
     cfg.attr.nb_actions = nb_actions,
     cfg.attr.nb_flows = OVS_DOCA_MAX_CT_RULES;
-    cfg.port = doca_flow_port_switch_get();
+    cfg.port = doca_flow_port_switch_get(NULL);
     cfg.match = &ct_matches[nw_type][tp_type];
     cfg.match_mask = &match_mask;
     cfg.actions = actions_list;
@@ -2381,7 +2381,7 @@ doca_eswitch_ctx_init(void *ctx_, void *arg_, uint32_t id OVS_UNUSED)
         goto error;
     }
 
-    ctx->esw_port = doca_flow_port_switch_get();
+    ctx->esw_port = doca_flow_port_switch_get(NULL);
 
     return 0;
 
@@ -2447,7 +2447,7 @@ doca_eswitch_ctx_get(struct netdev *netdev)
 static struct doca_eswitch_ctx *
 doca_eswitch_ctx_ref(struct netdev *netdev)
 {
-    struct doca_flow_port *esw_port = doca_flow_port_switch_get();
+    struct doca_flow_port *esw_port = doca_flow_port_switch_get(NULL);
 
     doca_eswitch_init();
     return offload_metadata_priv_get(doca_eswitch_md, &esw_port, netdev,
