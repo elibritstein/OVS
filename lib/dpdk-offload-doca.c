@@ -376,6 +376,7 @@ doca_ctl_pipe_ctx_init(void *ctx_, void *arg_, uint32_t id OVS_UNUSED)
 {
     struct doca_ctl_pipe_ctx *ctx = ctx_;
     struct doca_ctl_pipe_arg *arg = arg_;
+    struct doca_flow_port *doca_port;
     struct doca_flow_pipe_cfg cfg;
     char pipe_name[50];
     uint32_t group_id;
@@ -388,12 +389,13 @@ doca_ctl_pipe_ctx_init(void *ctx_, void *arg_, uint32_t id OVS_UNUSED)
     group_id = arg->group_id;
     is_root = group_id == 0;
     snprintf(pipe_name, sizeof pipe_name, "OVS_CTL_PIPE_%" PRIu32, group_id);
+    doca_port = netdev_dpdk_doca_port_get(arg->netdev);
 
     memset(&cfg, 0, sizeof cfg);
     cfg.attr.name = pipe_name;
     cfg.attr.type = DOCA_FLOW_PIPE_CONTROL;
     cfg.attr.is_root = is_root;
-    cfg.port = doca_flow_port_switch_get(NULL);
+    cfg.port = doca_flow_port_switch_get(doca_port);
 
     if (is_ct_zone_group_id(group_id)) {
         cfg.attr.nb_flows = NUM_ZONE_FLOWS;
@@ -2452,6 +2454,7 @@ doca_ct_pipe_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx,
     struct doca_basic_pipe_ctx *pipe_ctx;
     struct doca_flow_match match_mask;
     struct doca_flow_pipe *miss_pipe;
+    struct doca_flow_port *doca_port;
     struct doca_flow_monitor monitor;
     struct doca_flow_pipe_cfg cfg;
     enum ct_action_type next_ct;
@@ -2573,15 +2576,15 @@ doca_ct_pipe_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx,
     ct_matches[CT_NW_IP4][CT_TP_TCP].meta.u32[ct_reg->index] = reg_mask;
     /* The mask is identical to the match itself. */
     match_mask = ct_matches[nw_type][tp_type];
+    doca_port = netdev_dpdk_doca_port_get(netdev);
 
     monitor.flags = DOCA_FLOW_MONITOR_COUNT;
-
     cfg.attr.name = ds_cstr(&pipe_name);
     cfg.attr.type = DOCA_FLOW_PIPE_BASIC;
     cfg.attr.is_root = false;
     cfg.attr.nb_actions = nb_actions,
     cfg.attr.nb_flows = OVS_DOCA_MAX_CT_RULES;
-    cfg.port = doca_flow_port_switch_get(NULL);
+    cfg.port = doca_flow_port_switch_get(doca_port);
     cfg.match = &ct_matches[nw_type][tp_type];
     cfg.match_mask = &match_mask;
     cfg.actions = actions_list;
@@ -2688,6 +2691,7 @@ doca_eswitch_ctx_init(void *ctx_, void *arg_, uint32_t id OVS_UNUSED)
 {
     struct netdev *netdev = (struct netdev *) arg_;
     struct doca_eswitch_ctx *ctx = ctx_;
+    struct doca_flow_port *doca_port;
 
     /* Write the constant offsets of each async entries of the eswitch,
      * used to back reference this context from any entry. */
@@ -2710,7 +2714,8 @@ doca_eswitch_ctx_init(void *ctx_, void *arg_, uint32_t id OVS_UNUSED)
         goto error;
     }
 
-    ctx->esw_port = doca_flow_port_switch_get(NULL);
+    doca_port = netdev_dpdk_doca_port_get(netdev);
+    ctx->esw_port = doca_flow_port_switch_get(doca_port);
 
     return 0;
 
@@ -2776,7 +2781,10 @@ doca_eswitch_ctx_get(struct netdev *netdev)
 static struct doca_eswitch_ctx *
 doca_eswitch_ctx_ref(struct netdev *netdev)
 {
-    struct doca_flow_port *esw_port = doca_flow_port_switch_get(NULL);
+    struct doca_flow_port *doca_port = netdev_dpdk_doca_port_get(netdev);
+    struct doca_flow_port *esw_port;
+
+    esw_port = doca_flow_port_switch_get(doca_port);
 
     doca_eswitch_init();
     return offload_metadata_priv_get(doca_eswitch_md, &esw_port, netdev,
