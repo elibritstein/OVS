@@ -351,12 +351,6 @@ get_ct_action_type(uint32_t group, struct doca_flow_actions *actions)
     OVS_NOT_REACHED();
 }
 
-static inline bool
-is_ct_group(uint32_t group)
-{
-    return group == CT_TABLE_ID || group == CTNAT_TABLE_ID;
-}
-
 static bool
 is_ct_zone_group_id(uint32_t group)
 {
@@ -405,8 +399,6 @@ doca_ctl_pipe_ctx_init(void *ctx_, void *arg_, uint32_t id OVS_UNUSED)
         cfg.attr.nb_flows = NUM_ZONE_FLOWS;
     } else if (group_id == MISS_TABLE_ID) {
         cfg.attr.nb_flows = 1;
-    } else if (group_id == CT_TABLE_ID || group_id == CTNAT_TABLE_ID) {
-        cfg.attr.nb_flows = OVS_DOCA_MAX_CT_RULES;
     } else {
         cfg.attr.nb_flows = ctl_pipe_size;
     }
@@ -1829,46 +1821,22 @@ create_doca_flow_handle(struct netdev *netdev,
 
     hndl = &doh->dfh;
 
-    if (is_ct_group(group)) {
-        struct doca_eswitch_ctx *ctx = doca_eswitch_ctx_get(netdev);
-        struct doca_flow_pipe *pipe;
-
-        if (ctx == NULL) {
-            error->type = RTE_FLOW_ERROR_TYPE_UNSPECIFIED;
-            error->message = "CT offload is not initialized";
-            goto err_pipe;
-        }
-
-        pipe = doca_get_ct_pipe(ctx, group, spec, actions);
-        if (pipe == NULL) {
-            error->type = RTE_FLOW_ERROR_TYPE_UNSPECIFIED;
-            error->message = "Unsupported CT type";
-            goto err_pipe;
-        }
-        if (create_doca_basic_flow_entry(netdev, queue_id, pipe, spec, actions,
-                                         monitor, fwd, doh, error)) {
-            error->type = RTE_FLOW_ERROR_TYPE_HANDLE;
-            error->message = "Failed to post rule insertion request";
-            goto err_insert;
-        }
-    } else {
-        /* get self table pointer */
-        pipe_ctx = doca_ctl_pipe_ctx_ref(netdev, group);
-        if (!pipe_ctx) {
-            error->type = RTE_FLOW_ERROR_TYPE_UNSPECIFIED;
-            error->message = "Could not create table";
-            goto err_pipe;
-        }
-        /* insert rule */
-        hndl->flow = create_doca_ctl_flow_entry(netdev, queue_id, pipe_ctx,
-                                                prio, spec, mask, actions,
-                                                actions_masks, monitor, fwd,
-                                                error);
-        if (!hndl->flow) {
-            error->type = RTE_FLOW_ERROR_TYPE_HANDLE;
-            error->message = "Could not insert rule";
-            goto err_insert;
-        }
+    /* get self table pointer */
+    pipe_ctx = doca_ctl_pipe_ctx_ref(netdev, group);
+    if (!pipe_ctx) {
+        error->type = RTE_FLOW_ERROR_TYPE_UNSPECIFIED;
+        error->message = "Could not create table";
+        goto err_pipe;
+    }
+    /* insert rule */
+    hndl->flow = create_doca_ctl_flow_entry(netdev, queue_id, pipe_ctx,
+                                            prio, spec, mask, actions,
+                                            actions_masks, monitor, fwd,
+                                            error);
+    if (!hndl->flow) {
+        error->type = RTE_FLOW_ERROR_TYPE_HANDLE;
+        error->message = "Could not insert rule";
+        goto err_insert;
     }
 
     memcpy(&hndl->flow_res, flow_res, sizeof *flow_res);
