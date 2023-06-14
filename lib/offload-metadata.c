@@ -57,7 +57,7 @@ struct data_entry {
     uint32_t id;
     struct ovsrcu_gc_node gc_node;
     struct ovs_refcount refcount;
-    bool priv_init_done;
+    struct ovs_refcount priv_refcount;
     void *data;
     void *priv;
 };
@@ -95,12 +95,6 @@ data_entry_destroy(struct offload_metadata *md, struct data_entry *entry,
 
     ovs_mutex_lock(&md->maps_lock);
 
-
-    if (md->priv_uninit) {
-        md->priv_uninit(entry->priv);
-        entry->priv_init_done = false;
-    }
-
     if (entry->id != 0) {
         if (!associated) {
             cmap_remove(&md->i2d_map, &entry->i2d_node, entry->i2d_hash);
@@ -132,6 +126,17 @@ offload_metadata_remove_entry(struct offload_metadata *md, unsigned int uid,
 {
     struct release_item *item;
     struct ovs_list *list;
+
+    if (md->priv_uninit) {
+        if (ovs_refcount_unref(&entry->priv_refcount) == 1) {
+            /* Immediately uninit the priv, while the data
+             * release is delayed. If another object takes a ref
+             * on the data, the priv will be re-initialized. */
+            ovs_mutex_lock(&md->maps_lock);
+            md->priv_uninit(entry->priv);
+            ovs_mutex_unlock(&md->maps_lock);
+        }
+    }
 
     if (md->delay == 0) {
         data_entry_destroy(md, entry, associated);
@@ -329,17 +334,21 @@ offload_metadata_priv_get(struct offload_metadata *md, void *data,
             if (id) {
                 *id = data_cur->id;
             }
-            if (md->priv_init && !data_cur->priv_init_done) {
-                int ret;
+            if (md->priv_init) {
+                if (ovs_refcount_read(&data_cur->priv_refcount) == 0) {
+                    int ret;
 
-                ovs_mutex_lock(&md->maps_lock);
-                ret = md->priv_init(data_cur->priv, priv_arg, data_cur->id);
-                if (ret) {
+                    ovs_mutex_lock(&md->maps_lock);
+                    ret = md->priv_init(data_cur->priv, priv_arg, data_cur->id);
+                    if (ret) {
+                        ovs_mutex_unlock(&md->maps_lock);
+                        return NULL;
+                    }
                     ovs_mutex_unlock(&md->maps_lock);
-                    return NULL;
+                    ovs_refcount_init(&data_cur->priv_refcount);
+                } else if (take_ref) {
+                    ovs_refcount_ref(&data_cur->priv_refcount);
                 }
-                data_cur->priv_init_done = true;
-                ovs_mutex_unlock(&md->maps_lock);
             }
             return data_cur->priv;
         }
@@ -362,11 +371,13 @@ offload_metadata_priv_get(struct offload_metadata *md, void *data,
     ovs_refcount_init(&data_cur->refcount);
     data_cur->id = alloc_id;
     ovs_mutex_lock(&md->maps_lock);
-    if (md->priv_init && md->priv_init(data_cur->priv, priv_arg, alloc_id)) {
-        ovs_mutex_unlock(&md->maps_lock);
-        goto err_priv_init;
+    if (md->priv_init) {
+        if (md->priv_init(data_cur->priv, priv_arg, alloc_id)) {
+            ovs_mutex_unlock(&md->maps_lock);
+            goto err_priv_init;
+        }
+        ovs_refcount_init(&data_cur->priv_refcount);
     }
-    data_cur->priv_init_done = true;
     data_cur->d2i_hash = dhash;
     cmap_insert(&md->d2i_map, &data_cur->d2i_node, dhash);
     if (alloc_id != 0) {
