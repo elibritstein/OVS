@@ -3781,7 +3781,7 @@ parse_flow_match(struct netdev *netdev,
         mask = per_thread_xzalloc(sizeof *mask);
         spec->id = match->flow.dp_hash;
         mask->id = match->wc.masks.dp_hash;
-        add_flow_pattern(patterns, OVS_RTE_FLOW_ITEM_TYPE_HASH, spec, mask,
+        add_flow_pattern(patterns, OVS_RTE_FLOW_ITEM_TYPE(HASH), spec, mask,
                          NULL);
         match->wc.masks.dp_hash = 0;
     }
@@ -5472,7 +5472,7 @@ parse_flow_actions(struct netdev *flowdev,
                                      offload->reg_fields()[REG_FIELD_CT_LABEL_ID].mask);
         } else if (nl_attr_type(nla) == OVS_ACTION_ATTR_HASH) {
             act_vars->has_dp_hash = true;
-            add_flow_action(actions, OVS_RTE_FLOW_ACTION_TYPE_HASH, NULL);
+            add_flow_action(actions, OVS_RTE_FLOW_ACTION_TYPE(HASH), NULL);
             continue;
         } else {
             VLOG_DBG_RL(&rl, "Unsupported action type %d", nl_attr_type(nla));
