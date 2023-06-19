@@ -39,6 +39,7 @@ conntrack_offload_fill_item_common(struct ct_flow_offload_item *item,
                                    int dir)
 {
     item->ufid = conn->offloads.dir_info[dir].ufid;
+    item->offload_data = conn->offloads.dir_info[dir].offload_data;
     item->ct_match.odp_port = conn->offloads.dir_info[dir].port;
     item->dp = conn->offloads.dir_info[dir].dp;
     item->ctid_key = conntrack_offload_get_ctid_key(conn);
@@ -74,8 +75,8 @@ conntrack_offload_del_conn(struct conntrack *ct,
     }
 
     if (!ct_e2e_cache_enabled &&
-        (!conn->offloads.refcnt ||
-         ovs_refcount_unref(conn->offloads.refcnt) > 1)) {
+        (!conn->offloads.coh ||
+         ovs_refcount_unref(&conn->offloads.coh->refcnt) > 1)) {
         return;
     }
 
@@ -105,7 +106,7 @@ conntrack_offload_del_conn(struct conntrack *ct,
         }
     }
     item[CT_DIR_INIT].timestamp = now;
-    item[CT_DIR_INIT].refcnt = conn->offloads.refcnt;
+    item[CT_DIR_INIT].refcnt = &conn->offloads.coh->refcnt;
     item[CT_DIR_REP].refcnt = NULL;
     offload_class->conn_del(item);
 }
@@ -292,8 +293,13 @@ conntrack_offload_add_conn(struct conntrack *ct,
         flags |= conn->master_conn->offloads.flags;
     }
     if ((flags & CT_OFFLOAD_BOTH) == CT_OFFLOAD_BOTH) {
-        struct ovs_refcount *refcnt;
+        struct ct_offload_handle *coh;
 
+        coh = xzalloc(sizeof *coh);
+        ovs_refcount_init(&coh->refcnt);
+        ovs_refcount_ref(&coh->refcnt);
+        item[CT_DIR_INIT].refcnt = &coh->refcnt;
+        item[CT_DIR_REP].refcnt = NULL;
         for (dir = 0; dir < CT_DIR_NUM; dir ++) {
             if (conn->nat_conn &&
                 conn->nat_conn->offloads.dir_info[dir].dp) {
@@ -302,25 +308,21 @@ conntrack_offload_add_conn(struct conntrack *ct,
                        conn->master_conn->offloads.dir_info[dir].dp) {
                 conn = conn->master_conn;
             }
+            conn->offloads.dir_info[dir].offload_data = coh->dir[dir].handle;
             conntrack_offload_fill_item_add(&item[dir], conn, dir, now_us);
             offload_class->conn_get_ufid(&conn->offloads.dir_info[dir].ufid);
             item[dir].ufid = conn->offloads.dir_info[dir].ufid;
         }
-        refcnt = xmalloc(sizeof *refcnt);
-        ovs_refcount_init(refcnt);
-        ovs_refcount_ref(refcnt);
-        item[CT_DIR_INIT].refcnt = refcnt;
-        item[CT_DIR_REP].refcnt = NULL;
         offload_class->conn_add(item);
         conn->offloads.flags |= CT_OFFLOAD_SKIP;
         if (conn->nat_conn) {
             conn->nat_conn->offloads.flags |= CT_OFFLOAD_SKIP;
-            conn->offloads.refcnt = refcnt;
+            conn->offloads.coh = coh;
         } else if (conn->master_conn) {
             conn->master_conn->offloads.flags |= CT_OFFLOAD_SKIP;
-            conn->master_conn->offloads.refcnt = refcnt;
+            conn->master_conn->offloads.coh = coh;
         } else {
-            conn->offloads.refcnt = refcnt;
+            conn->offloads.coh = coh;
         }
     }
 }

@@ -230,7 +230,7 @@ tcp_conn_update(struct conntrack *ct, struct conn *conn_,
     }
     if (tcp_flags & TCP_FIN) {
         conntrack_offload_del_conn(ct, conn_);
-        conn_->offloads.refcnt = NULL;
+        conn_->offloads.coh = NULL;
         /* The ACK for the FIN might not be received due to a race condition
          * between deleting the connection offload and sending the ACK. If the
          * connection offload is not deleted the ACK will not reach SW and the

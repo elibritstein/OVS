@@ -199,6 +199,13 @@ struct ufid_to_rte_flow_data {
     volatile bool dead;
     struct act_resources act_resources;
 };
+BUILD_ASSERT_DECL(sizeof(struct ufid_to_rte_flow_data) <= CT_OFFLOAD_HANDLE_SIZE);
+
+static inline bool
+offload_data_is_conn(struct ufid_to_rte_flow_data *data)
+{
+    return !!data->act_resources.ct_miss_ctx_id;
+}
 
 static void
 offload_data_destroy__(struct netdev_offload_dpdk_data *data)
@@ -256,6 +263,10 @@ offload_data_destroy(struct netdev *netdev)
     }
 
     CMAP_FOR_EACH (node, node, &data->ufid_to_rte_flow) {
+        /* Objects for CT are not allocated, but provided. Skip them. */
+        if (offload_data_is_conn(node)) {
+            continue;
+        }
         ovsrcu_postpone(free, node);
     }
 
@@ -370,6 +381,10 @@ static void
 rte_flow_data_gc(struct ufid_to_rte_flow_data *data)
 {
     ovs_mutex_destroy(&data->lock);
+    /* Objects for CT are not allocated, but provided. Skip them. */
+    if (offload_data_is_conn(data)) {
+        return;
+    }
     free(data);
 }
 
@@ -6960,14 +6975,13 @@ netdev_offload_dpdk_conn_add(struct netdev *netdev,
         ct_action_label_id = ct_offload->label_key.u32[0];
     }
 
-    rte_flow_data = xzalloc(sizeof *rte_flow_data);
+    rte_flow_data = ct_offload->offload_data;
     if (offload->insert_conn(netdev, ct_offload,
                              act_resources.ct_match_zone_id,
                              ct_action_label_id,
                              act_resources.shared_count_ctx,
                              act_resources.ct_miss_ctx_id,
                              &rte_flow_data->flow_item)) {
-        free(rte_flow_data);
         return EINVAL;
     }
 
@@ -6979,7 +6993,6 @@ netdev_offload_dpdk_conn_add(struct netdev *netdev,
                                    rte_flow_data, &act_resources)) {
         /* Only way for insertion to fail is if the netdev has no map anymore,
          * which should never happen. */
-        free(rte_flow_data);
         return ENODATA;
     }
 

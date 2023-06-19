@@ -4113,6 +4113,7 @@ dp_offload_ct(struct dp_offload_thread_item *item)
 {
     struct ct_flow_offload_item *ct_offload = &item->data->ct_offload_item[0];
     struct dp_offload_thread *ofl_thread;
+    struct ct_offload_handle *coh;
     char *op;
     int ret;
     int dir;
@@ -4123,13 +4124,12 @@ dp_offload_ct(struct dp_offload_thread_item *item)
         atomic_count_dec64(&ofl_thread->enqueued_ct_add);
     }
 
+    coh = CONTAINER_OF(ct_offload[CT_DIR_INIT].refcnt,
+                       struct ct_offload_handle, refcnt);
     if (ct_offload[CT_DIR_INIT].op == DP_NETDEV_FLOW_OFFLOAD_OP_ADD &&
         ovs_refcount_unref(ct_offload[CT_DIR_INIT].refcnt) == 1) {
-        free(ct_offload[CT_DIR_INIT].refcnt);
+        free(coh);
         return;
-    }
-    if (ct_offload[CT_DIR_INIT].op == DP_NETDEV_FLOW_OFFLOAD_OP_DEL) {
-        free(ct_offload[CT_DIR_INIT].refcnt);
     }
 
     for (dir = 0; dir < CT_DIR_NUM; dir++) {
@@ -4158,6 +4158,9 @@ dp_offload_ct(struct dp_offload_thread_item *item)
         if (ret) {
             return;
         }
+    }
+    if (ct_offload[CT_DIR_INIT].op == DP_NETDEV_FLOW_OFFLOAD_OP_DEL) {
+       ovsrcu_postpone(free, coh);
     }
 }
 
@@ -4448,10 +4451,13 @@ static void
 dp_netdev_ct_offload_del_item(struct ct_flow_offload_item *ct_offload)
 {
     struct dp_offload_thread_item *item;
+    struct ct_offload_handle *coh;
     int dir;
 
     if (dp_netdev_e2e_cache_enabled) {
-        free(ct_offload[CT_DIR_INIT].refcnt);
+        coh = CONTAINER_OF(ct_offload[CT_DIR_INIT].refcnt,
+                           struct ct_offload_handle, refcnt);
+        free(coh);
         return;
     }
     item = xzalloc(sizeof *item + CT_DIR_NUM * sizeof *ct_offload);

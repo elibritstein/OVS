@@ -134,6 +134,7 @@ struct ct_dir_info {
     ovs_u128 pkt_ct_label;
     bool e2e_flow;
     uint8_t e2e_seen_pkts;
+    void *offload_data;
 };
 
 enum ct_offload_flag {
@@ -145,9 +146,11 @@ enum ct_offload_flag {
     CT_OFFLOAD_TERMINATED = 0x1 << 3,
 };
 
+struct ct_offload_handle;
+
 struct ct_offloads {
     uint8_t flags;
-    struct ovs_refcount *refcnt;
+    struct ct_offload_handle *coh;
     struct ct_dir_info dir_info[CT_DIR_NUM];
 };
 

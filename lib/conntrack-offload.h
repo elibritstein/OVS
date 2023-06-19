@@ -20,11 +20,20 @@
 #include "conntrack.h"
 #include "openvswitch/types.h"
 
+#define CT_OFFLOAD_HANDLE_SIZE 344
+
 enum ct_timeout;
 struct conn;
 struct conntrack;
 struct conntrack_offload_class;
 struct dp_packet;
+
+struct ct_offload_handle {
+    struct ovs_refcount refcnt;
+    struct {
+        OVS_ALIGNED_VAR(8) char handle[CT_OFFLOAD_HANDLE_SIZE];
+    } dir[CT_DIR_NUM];
+};
 
 struct ct_flow_offload_item {
     int  op;
@@ -55,6 +64,7 @@ struct ct_flow_offload_item {
      * offload request and was removed before the offload request is processed.
      */
     struct ovs_refcount *refcnt;
+    void *offload_data;
 };
 
 /* hw-offload callbacks */
