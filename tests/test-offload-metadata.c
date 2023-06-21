@@ -411,6 +411,113 @@ test_offload_metadata_id_priv(long long int delay)
 }
 
 static void
+test_offload_metadata_id_set_priv(long long int delay)
+{
+    struct offload_metadata_parameters params = {
+        .id_alloc = id_alloc,
+        .id_free = id_free,
+        .priv_size = sizeof(struct priv),
+        .priv_init = priv_init,
+        .priv_uninit = priv_uninit,
+        .release_delay_ms = delay,
+    };
+    struct offload_metadata *md;
+    long long int release_start;
+    struct priv *privs[N];
+    struct data datas[N];
+    uint32_t override[N];
+    uint32_t ids[N];
+
+    /* Test an offload metadata map that uses
+     * IDs and privs, but also specifically choose
+     * some IDs. */
+    md = offload_metadata_create(test_params.n_threads, "test-md-id-set-priv",
+                                 sizeof(struct data), data_format,
+                                 params);
+
+    for (int i = 0; i < N; i++) {
+        struct arg arg = {
+            .ptr = &datas[i],
+        };
+
+        datas[i].idx = i;
+        override[i] = N + i + 1;
+        ovs_assert(0 == offload_metadata_id_ref(md, &datas[i], &arg, &ids[i]));
+    }
+
+    for (int i = 0; i < N; i++) {
+        struct priv *priv;
+        struct data cur;
+        uint32_t id;
+
+        priv = offload_metadata_priv_get(md, &datas[i], NULL, &id, false);
+        ovs_assert(ids[i] == id);
+
+        offload_metadata_id_set(md, &datas[i], override[i]);
+
+        /* The shallow reference associated should not have a priv for it. */
+        cur.idx = override[i];
+        ovs_assert(NULL == offload_metadata_priv_get(md, &cur, NULL, NULL,
+                                                     false));
+
+        /* Verify that we find the same priv if we use the original id. */
+        ovs_assert(priv == offload_metadata_priv_get(md, &datas[i],
+                                                     NULL, &id, false));
+
+        ovs_assert(ids[i] == id);
+        ovs_assert(priv->hdl != NULL);
+        ovs_assert(id != 0);
+
+        ovs_assert(0 == offload_metadata_data_from_id(md, override[i], &cur));
+        ovs_assert(0 == memcmp(&cur, &datas[i], sizeof cur));
+
+        ovs_assert(priv == offload_metadata_priv_get(md, &datas[i], NULL,
+                                                     NULL, false));
+
+        /* We have already taken the first reference on this priv when
+         * calling 'offload_metadata_id_ref()' above. */
+
+        privs[i] = priv;
+    }
+
+    release_start = time_msec();
+    for (int i = 0; i < N; i++) {
+        offload_metadata_id_unset(md, 0, override[i]);
+        if (i % 2 == 0) {
+            offload_metadata_priv_unref(md, 0, privs[i]);
+        } else {
+            offload_metadata_id_unref(md, 0, ids[i]);
+        }
+    }
+
+    if (delay) {
+        xnanosleep(delay * 1e6 + 1);
+    }
+    offload_metadata_upkeep(md, 0, time_msec());
+
+    for (int i = 0; i < N; i++) {
+        struct data ff;
+        struct data cur;
+
+        memset(&cur, 0xff, sizeof cur);
+        memset(&ff, 0xff, sizeof ff);
+
+        ovs_assert(0 != offload_metadata_data_from_id(md, override[i], &cur));
+        ovs_assert(0 != offload_metadata_data_from_id(md, ids[i], &cur));
+        /* Verify that 'cur' was not written to. */
+        ovs_assert(0 == memcmp(&cur, &ff, sizeof cur));
+    }
+
+    if (delay != 0) {
+        for (int i = 0; i < N; i++) {
+            ovs_assert(id_free_timestamp[i] - release_start >= delay);
+        }
+    }
+
+    offload_metadata_destroy(md);
+}
+
+static void
 test_offload_metadata_priv(long long int delay)
 {
     struct offload_metadata_parameters params = {
@@ -492,6 +599,8 @@ run_tests(struct ovs_cmdl_context *ctx OVS_UNUSED)
     test_offload_metadata_id_set(5);
     test_offload_metadata_id_priv(0);
     test_offload_metadata_id_priv(5);
+    test_offload_metadata_id_set_priv(0);
+    test_offload_metadata_id_set_priv(5);
     test_offload_metadata_priv(0);
     test_offload_metadata_priv(5);
 }

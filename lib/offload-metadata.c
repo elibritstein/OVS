@@ -127,7 +127,12 @@ offload_metadata_remove_entry(struct offload_metadata *md, unsigned int uid,
     struct release_item *item;
     struct ovs_list *list;
 
-    if (md->priv_uninit) {
+    /* 'Associated' nodes only exist as shallow
+     * references to the original entry in the d2i map,
+     * and they do not hold priv references. In such
+     * case, do nothing. */
+
+    if (md->priv_uninit && entry->d2i_hash != 0) {
         if (ovs_refcount_unref(&entry->priv_refcount) == 1) {
             /* Immediately uninit the priv, while the data
              * release is delayed. If another object takes a ref
