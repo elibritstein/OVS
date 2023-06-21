@@ -1176,13 +1176,13 @@ netdev_set_flow_api_enabled(const struct smap *ovs_other_config)
     }
 
     {
-        bool prev_conf = netdev_offload_ct_on_ct_nat;
+        bool req_conf = smap_get_bool(ovs_other_config,
+                                      "ct-action-on-nat-conns", false);
 
-        netdev_offload_ct_on_ct_nat = smap_get_bool(ovs_other_config,
-                                                    "ct-action-on-nat-conns",
-                                                    false);
-
-        if (prev_conf != netdev_offload_ct_on_ct_nat) {
+        if (req_conf && smap_get_bool(ovs_other_config, "doca-init", false)) {
+            VLOG_WARN_ONCE("ct-action-on-nat-conns is not supported by OVS-DOCA.");
+        } else if (netdev_offload_ct_on_ct_nat != req_conf) {
+            netdev_offload_ct_on_ct_nat = req_conf;
             VLOG_INFO("offloads CT on NAT connections: %s",
                       netdev_offload_ct_on_ct_nat ? "enabled" : "disabled");
         }
