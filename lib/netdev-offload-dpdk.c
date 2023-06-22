@@ -6957,8 +6957,11 @@ netdev_offload_dpdk_conn_add(struct netdev *netdev,
     struct netdev_offload_dpdk_data *data;
     uint32_t ct_action_label_id;
 
-    rte_flow_data = ufid_to_rte_flow_data_find(netdev, ufid, false);
-    if (rte_flow_data && rte_flow_data->flow_item.doh[0].rte_flow) {
+    rte_flow_data = ct_offload->offload_data;
+    if (!rte_flow_data) {
+        return EINVAL;
+    }
+    if (rte_flow_data->flow_item.doh[0].rte_flow) {
         /* Conn offload modification is not supported. */
         return EEXIST;
     }
@@ -6975,7 +6978,6 @@ netdev_offload_dpdk_conn_add(struct netdev *netdev,
         ct_action_label_id = ct_offload->label_key.u32[0];
     }
 
-    rte_flow_data = ct_offload->offload_data;
     if (offload->insert_conn(netdev, ct_offload,
                              act_resources.ct_match_zone_id,
                              ct_action_label_id,
@@ -7000,13 +7002,12 @@ netdev_offload_dpdk_conn_add(struct netdev *netdev,
 }
 
 static int
-netdev_offload_dpdk_conn_del(struct netdev *netdev,
+netdev_offload_dpdk_conn_del(struct netdev *netdev OVS_UNUSED,
                              struct ct_flow_offload_item ct_offload[1])
 {
     struct ufid_to_rte_flow_data *rte_flow_data;
-    const ovs_u128 *ufid = &ct_offload->ufid;
 
-    rte_flow_data = ufid_to_rte_flow_data_find(netdev, ufid, true);
+    rte_flow_data = ct_offload->offload_data;
     if (!rte_flow_data || !rte_flow_data->flow_item.doh[0].valid) {
         return ENODATA;
     }
@@ -7029,7 +7030,7 @@ netdev_offload_dpdk_conn_stats(struct netdev *netdev,
     struct indirect_ctx *ctx;
     int ret = 0;
 
-    rte_flow_data = ufid_to_rte_flow_data_find(netdev, ufid, false);
+    rte_flow_data = ct_offload->offload_data;
     if (!rte_flow_data || !rte_flow_data->flow_item.doh[0].rte_flow ||
         rte_flow_data->dead || ovs_mutex_trylock(&rte_flow_data->lock)) {
         return ENODATA;
