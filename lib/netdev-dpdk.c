@@ -5890,16 +5890,18 @@ struct netdev_dpdk_meter {
 
 enum { NETDEV_DPDK_MAX_METERS = 65536 };    /* Maximum number of meters. */
 
+/* meter with index [0] is never used */
 struct netdev_dpdk_meter netdev_dpdk_meters[NETDEV_DPDK_MAX_METERS];
 
 int
 netdev_dpdk_meter_set(ofproto_meter_id meter_id,
                       struct ofputil_meter_config *config)
 {
-    uint32_t profile_id = meter_id.uint32;
-    uint32_t mtr_id = meter_id.uint32;
+    /* Compensate for ovs-ofctl (meter_ID - 1) adjustment */
+    uint32_t mtr_id = meter_id.uint32 + 1;
     struct netdev_dpdk_meter *meter;
     struct rte_mtr_error mtr_error;
+    uint32_t profile_id = mtr_id;
     int ret;
 
     if (ovs_doca_enabled()) {
@@ -5916,6 +5918,10 @@ netdev_dpdk_meter_set(ofproto_meter_id meter_id,
         VLOG_WARN("cannot add meter profile, error: %s",
                   mtr_error.message);
         return ret;
+    }
+
+    if (mtr_id < 1 || mtr_id >= NETDEV_DPDK_MAX_METERS) {
+        return -1;
     }
 
     ret = create_meter(mtr_id, profile_id, &mtr_error);
@@ -5938,7 +5944,8 @@ netdev_dpdk_meter_get(ofproto_meter_id meter_id,
                       uint16_t n_bands OVS_UNUSED)
 {
     uint16_t port_id = NETDEV_DPDK_METER_PORT_ID;
-    uint32_t mtr_id = meter_id.uint32;
+    /* Compensate for ovs-ofctl (meter_ID - 1) adjustment */
+    uint32_t mtr_id = meter_id.uint32 + 1;
     struct netdev_dpdk_meter *meter;
     struct rte_mtr_stats mtr_stats;
     struct rte_mtr_error error;
@@ -5949,7 +5956,7 @@ netdev_dpdk_meter_get(ofproto_meter_id meter_id,
         return -1;
     }
 
-    if (mtr_id >= NETDEV_DPDK_MAX_METERS) {
+    if (mtr_id < 1 || mtr_id >= NETDEV_DPDK_MAX_METERS) {
         return -1;
     }
     /* If a meter's DPDK object was not created, do not attempt to query it.
@@ -5993,7 +6000,8 @@ netdev_dpdk_meter_del(ofproto_meter_id meter_id,
                       uint16_t n_bands OVS_UNUSED)
 {
     uint16_t port_id = NETDEV_DPDK_METER_PORT_ID;
-    uint32_t mtr_id = meter_id.uint32;
+    /* Compensate for ovs-ofctl (meter_ID - 1) adjustment */
+    uint32_t mtr_id = meter_id.uint32 + 1;
     struct netdev_dpdk_meter *meter;
     uint32_t profile_id = mtr_id;
     int ret = 0;
@@ -6003,7 +6011,7 @@ netdev_dpdk_meter_del(ofproto_meter_id meter_id,
         return -1;
     }
 
-    if (mtr_id >= NETDEV_DPDK_MAX_METERS) {
+    if (mtr_id < 1 || mtr_id >= NETDEV_DPDK_MAX_METERS) {
         return -1;
     }
     /* If a meter's DPDK object was not created, do not attempt to destroy it.
@@ -6051,7 +6059,7 @@ netdev_dpdk_meter_ref(uint32_t meter_id)
         return false;
     }
 
-    if (meter_id >= NETDEV_DPDK_MAX_METERS) {
+    if (meter_id < 1 || meter_id >= NETDEV_DPDK_MAX_METERS) {
         return false;
     }
 

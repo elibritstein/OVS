@@ -9169,7 +9169,7 @@ static void
 dpif_netdev_meter_get_features(const struct dpif * dpif OVS_UNUSED,
                                struct ofputil_meter_features *features)
 {
-    features->max_meters = MAX_METERS;
+    features->max_meters = MAX_METERS - 1; /* meter ID 0 is not used */
     features->band_types = DP_SUPPORTED_METER_BAND_TYPES;
     features->capabilities = DP_SUPPORTED_METER_FLAGS_MASK;
     features->max_bands = MAX_BANDS;

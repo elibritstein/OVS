@@ -1466,7 +1466,7 @@ put_action_resources(struct act_resources *act_resources)
     free_indirect_age_ctx(act_resources->shared_age_ctx);
     free_indirect_count_ctx(act_resources->shared_count_ctx);
     put_sflow_id(act_resources->sflow_id);
-    netdev_dpdk_meter_unref(act_resources->meter_id - 1);
+    netdev_dpdk_meter_unref(act_resources->meter_id);
 }
 
 static int
@@ -4347,7 +4347,8 @@ add_meter_action(struct flow_actions *actions,
                  const struct nlattr *nla,
                  struct act_resources *act_resources)
 {
-    uint32_t mtr_id = nl_attr_get_u32(nla);
+    /* Compensate for ovs-ofctl (meter_ID - 1) adjustment */
+    uint32_t mtr_id = nl_attr_get_u32(nla) + 1;
     struct rte_flow_action_meter *meter;
 
     /* Support single meter per flow. */
@@ -4358,8 +4359,7 @@ add_meter_action(struct flow_actions *actions,
     if (!netdev_dpdk_meter_ref(mtr_id)) {
         return -1;
     }
-    act_resources->meter_id = mtr_id + 1; /* Keep +1 to diffrenciate with no
-                                             meter where it's 0. */
+    act_resources->meter_id = mtr_id;
     meter = per_thread_xzalloc(sizeof *meter);
     meter->mtr_id = mtr_id;
     add_flow_action(actions, RTE_FLOW_ACTION_TYPE_METER, meter);
