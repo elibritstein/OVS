@@ -13,11 +13,14 @@
 
 #include <config.h>
 
+#include <rte_mtr.h>
+
 #include <doca_flow.h>
 #include <doca_log.h>
 #include <doca_version.h>
 
 #include "dpdk.h"
+#include "dpif-netdev.h"
 #include "netdev-offload.h"
 #include "netdev-offload-provider.h"
 #include "openvswitch/vlog.h"
@@ -282,6 +285,7 @@ ovs_doca_init(const struct smap *ovs_other_config)
         cfg.cb = ovs_doca_entry_process_cb;
         /* Set the sum of counters we want for both ports */
         cfg.nr_shared_resources[DOCA_FLOW_SHARED_RESOURCE_COUNT] = OVS_DOCA_MAX_CT_COUNTERS;
+        cfg.nr_shared_resources[DOCA_FLOW_SHARED_RESOURCE_METER] = MAX_METERS;
 
         VLOG_INFO("DOCA Enabled - initializing...");
         err = doca_flow_init(&cfg);
@@ -358,4 +362,51 @@ void
 print_doca_version(void)
 {
     printf("DOCA %s\n", doca_version_runtime());
+}
+
+static void
+fill_meter_profile(struct doca_flow_shared_resource_cfg *doca_cfg,
+                   struct ofputil_meter_config *config)
+{
+    doca_cfg->domain = DOCA_FLOW_PIPE_DOMAIN_DEFAULT;
+
+    if (config->flags & OFPMF13_PKTPS) {
+        doca_cfg->meter_cfg.limit_type = DOCA_FLOW_METER_LIMIT_TYPE_PACKETS;
+        doca_cfg->meter_cfg.cir = config->bands[0].rate;
+        doca_cfg->meter_cfg.cbs = config->bands[0].burst_size;
+    } else {
+        doca_cfg->meter_cfg.limit_type = DOCA_FLOW_METER_LIMIT_TYPE_BYTES;
+        /* Convert from kilobits per second to bytes per second */
+        doca_cfg->meter_cfg.cir = ((uint64_t) config->bands[0].rate) * 125;
+        doca_cfg->meter_cfg.cbs = ((uint64_t) config->bands[0].burst_size) * 125;
+    }
+}
+
+int
+ovs_doca_create_meter(uint32_t meter_id,
+                      struct ofputil_meter_config *config,
+                      struct rte_mtr_error *error)
+{
+    struct doca_flow_shared_resource_cfg meter_cfg;
+    int ret;
+
+    if (config->n_bands != 1) {
+        return -1;
+    }
+
+    memset(&meter_cfg, 0, sizeof(meter_cfg));
+    fill_meter_profile(&meter_cfg, config);
+
+    ret = doca_flow_shared_resource_cfg(DOCA_FLOW_SHARED_RESOURCE_METER,
+                                        meter_id, &meter_cfg);
+    if (ret != DOCA_SUCCESS) {
+        VLOG_ERR("Failed to configure shared meter id %d, err %d - %s",
+                 meter_id, ret, doca_get_error_string(ret));
+        if (error) {
+            error->type = RTE_FLOW_ERROR_TYPE_UNSPECIFIED;
+            error->message = doca_get_error_string(ret);
+        }
+    }
+
+    return ret;
 }

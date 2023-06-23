@@ -4349,7 +4349,7 @@ add_meter_action(struct flow_actions *actions,
 {
     /* Compensate for ovs-ofctl (meter_ID - 1) adjustment */
     uint32_t mtr_id = nl_attr_get_u32(nla) + 1;
-    struct rte_flow_action_meter *meter;
+    struct meter_data *mtr_data;
 
     /* Support single meter per flow. */
     if (act_resources->meter_id) {
@@ -4360,9 +4360,10 @@ add_meter_action(struct flow_actions *actions,
         return -1;
     }
     act_resources->meter_id = mtr_id;
-    meter = per_thread_xzalloc(sizeof *meter);
-    meter->mtr_id = mtr_id;
-    add_flow_action(actions, RTE_FLOW_ACTION_TYPE_METER, meter);
+    mtr_data = per_thread_xzalloc(sizeof *mtr_data);
+    mtr_data->conf.mtr_id = mtr_id;
+    mtr_data->flow_id = act_resources->flow_id;
+    add_flow_action(actions, RTE_FLOW_ACTION_TYPE_METER, mtr_data);
 
     return 0;
 }

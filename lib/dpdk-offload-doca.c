@@ -25,6 +25,7 @@
 #include "coverage.h"
 #include "dp-packet.h"
 #include "dpdk-offload-provider.h"
+#include "dpif-netdev.h"
 #include "id-fpool.h"
 #include "openvswitch/vlog.h"
 #include "offload-metadata.h"
@@ -1356,7 +1357,8 @@ doca_translate_actions(struct netdev *netdev,
                        struct doca_flow_actions *dacts_masks,
                        struct doca_flow_fwd *fwd,
                        struct doca_flow_monitor *monitor,
-                       struct doca_flow_handle_resources *flow_res)
+                       struct doca_flow_handle_resources *flow_res,
+                       uint32_t *flow_id)
 {
     struct doca_flow_header_format *outer_masks = &dacts_masks->outer;
     struct doca_flow_header_format *outer = &dacts->outer;
@@ -1535,6 +1537,16 @@ doca_translate_actions(struct netdev *netdev,
             continue;
         } else if (act_type == OVS_RTE_FLOW_ACTION_TYPE(HASH)) {
             has_dp_hash = true;
+        } else if (act_type == RTE_FLOW_ACTION_TYPE_METER) {
+            uint32_t reg_offset = reg_fields[REG_FIELD_FLOW_INFO].offset;
+            uint32_t reg_mask = reg_fields[REG_FIELD_FLOW_INFO].mask;
+            const struct meter_data *mtr_data = actions->conf;
+
+            dacts->meta.pkt_meta |= (mtr_data->flow_id & reg_mask) << reg_offset;
+            dacts_masks->meta.pkt_meta |= reg_mask << reg_offset;
+
+            monitor->shared_meter_id = mtr_data->conf.mtr_id;
+            *flow_id = mtr_data->flow_id;
         } else {
             return -1;
         }
@@ -1874,6 +1886,51 @@ err_pipe:
     return NULL;
 }
 
+static struct doca_flow_pipe_entry *
+add_doca_post_meter_green_entry(struct netdev *netdev,
+                                unsigned int queue_id,
+                                uint32_t flow_id,
+                                struct doca_flow_fwd *fwd,
+                                struct rte_flow_error *error)
+{
+    uint32_t flow_info_reg_offset = reg_fields[REG_FIELD_FLOW_INFO].offset;
+    uint32_t flow_info_reg_mask = reg_fields[REG_FIELD_FLOW_INFO].mask;
+
+    struct doca_ctl_pipe_ctx *post_meter_pipe_ctx;
+    struct doca_flow_pipe_entry *entry;
+    struct doca_flow_match green_match;
+    struct doca_flow_match green_mask;
+    struct doca_eswitch_ctx *esw_ctx;
+
+    esw_ctx = doca_eswitch_ctx_get(netdev);
+    post_meter_pipe_ctx = esw_ctx->post_meter_pipe_ctx;
+
+    memset(&green_match, 0, sizeof(green_match));
+    memset(&green_mask, 0, sizeof(green_mask));
+
+    /* Insert green rule with prio 1, which is lower than the fixed red rule
+     * that is added at eswitch init stage with prio 0.
+     */
+    green_match.meta.pkt_meta |= (flow_id & flow_info_reg_mask) <<
+                                 flow_info_reg_offset;
+    green_mask.meta.pkt_meta |= flow_info_reg_mask << flow_info_reg_offset;
+    entry = create_doca_ctl_flow_entry(netdev, queue_id, post_meter_pipe_ctx,
+                                       1, &green_match, &green_mask, NULL,
+                                       NULL, NULL, fwd, error);
+    if (!entry) {
+        VLOG_ERR_RL(&rl, "%s: Failed to create shared meter green rule for flow ID %u",
+                    netdev_get_name(netdev), flow_id);
+        return NULL;
+    }
+
+    /* replace original fwd with the internal meter pipe */
+    memset(fwd, 0x0, sizeof *fwd);
+    fwd->type = DOCA_FLOW_FWD_PIPE;
+    fwd->next_pipe = post_meter_pipe_ctx->pipe;
+
+    return entry;
+}
+
 static int
 dpdk_offload_doca_create(struct netdev *netdev,
                          const struct rte_flow_attr *attr,
@@ -1886,13 +1943,14 @@ dpdk_offload_doca_create(struct netdev *netdev,
     unsigned int tid = netdev_offload_thread_id();
     struct doca_flow_actions dacts, dacts_masks;
     struct doca_flow_handle_resources flow_res;
+    struct doca_flow_pipe_entry *meter_entry;
     struct doca_flow_monitor monitor;
     struct doca_flow_handle *hndl;
     struct doca_flow_match mask;
     struct doca_flow_match spec;
     unsigned int queue_id = tid;
     struct doca_flow_fwd fwd;
-    uint32_t prio;
+    uint32_t prio, flow_id;
 
     /* If it's a post ct rule, check for eswitch ct offload support */
     if (attr->group == POSTCT_TABLE_ID && !esw_ctx->shared_cnt_id_pool) {
@@ -1916,11 +1974,24 @@ dpdk_offload_doca_create(struct netdev *netdev,
 
     /* parse actions */
     if (doca_translate_actions(netdev, &spec, actions, &dacts, &dacts_masks,
-                               &fwd, &monitor, &flow_res)) {
+                               &fwd, &monitor, &flow_res, &flow_id)) {
         error->type = RTE_FLOW_ERROR_TYPE_ACTION;
         error->message = "Could not create actions";
         doh->rte_flow = NULL;
         return -1;
+    }
+
+    if (monitor.shared_meter_id) {
+        meter_entry = add_doca_post_meter_green_entry(netdev, queue_id,
+                                                      flow_id, &fwd, error);
+        if (!meter_entry) {
+            if (error) {
+                error->type = RTE_FLOW_ERROR_TYPE_ACTION;
+                error->message = "Could not create post meter rule";
+            }
+            return -1;
+        }
+        flow_res.post_meter_entry = meter_entry;
     }
 
     prio = flow_res.next_group == MISS_TABLE_ID;
@@ -1930,6 +2001,11 @@ dpdk_offload_doca_create(struct netdev *netdev,
     if (!hndl) {
         /* change to free doca flow resources function */
         doca_ctl_pipe_ctx_unref(flow_res.next_pipe_ctx);
+        if (monitor.shared_meter_id) {
+            doca_flow_pipe_rm_entry(queue_id, DOCA_FLOW_NO_WAIT, meter_entry);
+            dpdk_offload_counter_dec(netdev);
+            flow_res.post_meter_entry = NULL;
+        }
         return -1;
     }
 
@@ -1974,6 +2050,20 @@ destroy_dpdk_offload_handle(struct netdev *netdev,
             error->message = doca_get_error_string(err);
         }
         return -1;
+    }
+
+    if (doh->dfh.flow_res.post_meter_entry) {
+        err = doca_flow_pipe_rm_entry(queue_id, DOCA_FLOW_NO_WAIT,
+                                      doh->dfh.flow_res.post_meter_entry);
+        if (err) {
+            if (error) {
+                error->type = RTE_FLOW_ERROR_TYPE_HANDLE;
+                error->message = doca_get_error_string(err);
+            }
+            return -1;
+        }
+        dpdk_offload_counter_dec(netdev);
+        doh->dfh.flow_res.post_meter_entry = NULL;
     }
 
     /* Netdev can only be NULL during aux tables uninit. */
@@ -2724,6 +2814,54 @@ doca_bind_shared_cntrs(struct doca_eswitch_ctx *ctx)
 }
 
 static int
+doca_bind_shared_meters(struct doca_eswitch_ctx *ctx)
+{
+    struct doca_flow_shared_resource_cfg dummy_cfg = {
+        .domain = DOCA_FLOW_PIPE_DOMAIN_DEFAULT,
+        .meter_cfg.limit_type = DOCA_FLOW_METER_LIMIT_TYPE_BYTES,
+        .meter_cfg.cir = 125000,
+        .meter_cfg.cbs = 12500,
+    };
+    uint32_t ids[MAX_METERS];
+    int i, id, ret;
+
+    /* DOCA allows meter IDs to start from 0, but it's problematic to have a
+     * meter with ID 0 because in such case it will be impossible to disable
+     * shared meter in doca_flow_monitor struct later, so meter with ID 0 is not
+     * configured and not bound to avoid this issue.
+     *
+     * Total number of shared meters is one less than MAX_METERS because meter
+     * ID 0 is not used.
+     */
+    for (i = 0, id = 1; i < MAX_METERS - 1; i++, id++) {
+        ids[i] = id;
+        /* DOCA will fail to bind a shared meter if it's unconfigured, which is
+         * a bug, so a dummy configuration is used as a W/A; actual meter
+         * configuration will be set by the user when OVS meter is added with
+         * `ovs-ofctl add-meter` command.
+         */
+        ret = doca_flow_shared_resource_cfg(DOCA_FLOW_SHARED_RESOURCE_METER,
+                                            ids[i], &dummy_cfg);
+        if (ret != DOCA_SUCCESS) {
+            VLOG_ERR("Failed to init shared meter (id %d), err %d - %s",
+                    ids[i], ret, doca_get_error_string(ret));
+            return -1;
+        }
+    }
+
+    ret = doca_flow_shared_resources_bind(DOCA_FLOW_SHARED_RESOURCE_METER,
+                                          ids, MAX_METERS - 1, ctx->esw_port);
+    if (ret != DOCA_SUCCESS) {
+        VLOG_ERR("Shared meters binding failed, ids %d-%d, err %d - %s",
+                    ids[0], ids[MAX_METERS - 1], ret,
+                    doca_get_error_string(ret));
+        return -1;
+    }
+
+    return 0;
+}
+
+static int
 doca_create_post_meter_red_rule(struct netdev *netdev, uint32_t group,
                                 struct dpdk_offload_handle *doh)
 {
@@ -2765,7 +2903,7 @@ doca_post_meter_pipe_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx)
     struct doca_ctl_pipe_ctx *pipe_ctx;
     struct fixed_rule *fr;
 
-    pipe_ctx = doca_ctl_pipe_ctx_ref(netdev, POSTMETER_TABLE_ID, 0);
+    pipe_ctx = doca_ctl_pipe_ctx_ref(netdev, POSTMETER_TABLE_ID);
     if (!pipe_ctx) {
         return -1;
     }
@@ -2867,6 +3005,10 @@ doca_eswitch_ctx_init(void *ctx_, void *arg_, uint32_t id OVS_UNUSED)
         }
 
         if (doca_bind_shared_cntrs(ctx)) {
+            goto error;
+        }
+
+        if (doca_bind_shared_meters(ctx)) {
             goto error;
         }
 

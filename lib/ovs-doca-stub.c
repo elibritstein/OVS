@@ -68,3 +68,11 @@ void
 print_doca_version(void)
 {
 }
+
+int
+ovs_doca_create_meter(uint32_t meter_id OVS_UNUSED,
+                      struct ofputil_meter_config *config OVS_UNUSED,
+                      struct rte_mtr_error *error OVS_UNUSED)
+{
+    return -1;
+}

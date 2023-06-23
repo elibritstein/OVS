@@ -1145,11 +1145,6 @@ add_meter_policy(dpdk_port_t port_id, uint32_t policy_id)
     struct rte_mtr_error error;
     int rv;
 
-    if (ovs_doca_enabled()) {
-        VLOG_WARN("meter offload is currently not supported with DOCA");
-        return;
-    }
-
     VLOG_INFO("Creating meter policy %u on port "DPDK_PORT_ID_FMT,
               policy_id, port_id);
     rv = rte_mtr_meter_policy_add(port_id, policy_id, &policy, &error);
@@ -2045,7 +2040,7 @@ netdev_dpdk_process_devargs(struct netdev_dpdk *dev,
         VLOG_WARN_BUF(errp, "Error attaching device '%s' to DPDK", devargs);
     }
 
-    if (new_port_id == NETDEV_DPDK_METER_PORT_ID) {
+    if (new_port_id == NETDEV_DPDK_METER_PORT_ID && !ovs_doca_enabled()) {
         add_meter_policy(NETDEV_DPDK_METER_PORT_ID,
                          NETDEV_DPDK_METER_POLICY_ID);
     }
@@ -5904,32 +5899,37 @@ netdev_dpdk_meter_set(ofproto_meter_id meter_id,
     uint32_t profile_id = mtr_id;
     int ret;
 
-    if (ovs_doca_enabled()) {
-        VLOG_WARN("meter offload is currently not supported with DOCA");
-        return -1;
-    }
-
     if (config->n_bands != 1) {
         VLOG_WARN("cannot create meter with more than one band");
         return -1;
-    }
-    ret = add_meter_profile(profile_id, config, &mtr_error);
-    if (ret) {
-        VLOG_WARN("cannot add meter profile, error: %s",
-                  mtr_error.message);
-        return ret;
     }
 
     if (mtr_id < 1 || mtr_id >= NETDEV_DPDK_MAX_METERS) {
         return -1;
     }
 
-    ret = create_meter(mtr_id, profile_id, &mtr_error);
-    if (ret) {
-        VLOG_WARN("cannot create meter: %u with profile: %u, error: %s",
-                  mtr_id, profile_id, mtr_error.message);
-        return ret;
+    if (ovs_doca_enabled()) {
+        ret = ovs_doca_create_meter(mtr_id, config, &mtr_error);
+        if (ret) {
+            VLOG_WARN("cannot create meter: %u, error: %s", mtr_id,
+                      mtr_error.message);
+            return ret;
+        }
+    } else {
+        ret = add_meter_profile(profile_id, config, &mtr_error);
+        if (ret) {
+            VLOG_WARN("cannot add meter profile, error: %s",
+                      mtr_error.message);
+            return ret;
+        }
+        ret = create_meter(mtr_id, profile_id, &mtr_error);
+        if (ret) {
+            VLOG_WARN("cannot create meter: %u with profile: %u, error: %s",
+                      mtr_id, profile_id, mtr_error.message);
+            return ret;
+        }
     }
+
     meter = &netdev_dpdk_meters[mtr_id];
     ovs_mutex_lock(&meter->mutex);
     meter->valid = true;
@@ -5952,7 +5952,8 @@ netdev_dpdk_meter_get(ofproto_meter_id meter_id,
     uint64_t stats_mask;
 
     if (ovs_doca_enabled()) {
-        VLOG_WARN("meter offload is currently not supported with DOCA");
+        /* Implementation requires support for DOCA shared counters in OVS */
+        VLOG_WARN("meter statistics is currently not supported with DOCA");
         return -1;
     }
 
@@ -5988,6 +5989,14 @@ netdev_dpdk_meter_del_(uint16_t port_id, uint32_t mtr_id, uint32_t profile_id)
 {
     struct rte_mtr_error error;
 
+    /* DOCA meter cannot be unbound explicitly, instead DOCA handles it
+     * internally, when the port or the pipe, where the meter has been bound to,
+     * is destroyed.
+     */
+    if (ovs_doca_enabled()) {
+        return 0;
+    }
+
     if (rte_mtr_destroy(port_id, mtr_id, &error)) {
         return -1;
     }
@@ -6005,11 +6014,6 @@ netdev_dpdk_meter_del(ofproto_meter_id meter_id,
     struct netdev_dpdk_meter *meter;
     uint32_t profile_id = mtr_id;
     int ret = 0;
-
-    if (ovs_doca_enabled()) {
-        VLOG_WARN("meter offload is currently not supported with DOCA");
-        return -1;
-    }
 
     if (mtr_id < 1 || mtr_id >= NETDEV_DPDK_MAX_METERS) {
         return -1;
@@ -6036,10 +6040,6 @@ netdev_dpdk_meters_init(void)
     struct netdev_dpdk_meter *meter;
     uint32_t meter_id;
 
-    if (ovs_doca_enabled()) {
-        VLOG_WARN("meter offload is currently not supported with DOCA");
-        return;
-    }
     for (meter_id = 0, meter = netdev_dpdk_meters;
          meter_id < NETDEV_DPDK_MAX_METERS; meter_id++, meter++) {
         ovs_mutex_init(&meter->mutex);
@@ -6053,11 +6053,6 @@ netdev_dpdk_meter_ref(uint32_t meter_id)
 {
     struct netdev_dpdk_meter *meter;
     bool ret = false;
-
-    if (ovs_doca_enabled()) {
-        VLOG_WARN("meter offload is currently not supported with DOCA");
-        return false;
-    }
 
     if (meter_id < 1 || meter_id >= NETDEV_DPDK_MAX_METERS) {
         return false;

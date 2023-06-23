@@ -47,6 +47,9 @@ ovs_doca_entry_process_cb(struct doca_flow_pipe_entry *entry, uint16_t qid,
                           enum doca_flow_entry_op op, void *aux);
 #endif /* DOCA_OFFLOAD */
 
+struct ofputil_meter_config;
+struct rte_mtr_error;
+
 bool
 ovs_doca_enabled(void);
 
@@ -67,4 +70,9 @@ ovs_doca_destroy(void);
 
 void
 print_doca_version(void);
+
+int
+ovs_doca_create_meter(uint32_t meter_id,
+                      struct ofputil_meter_config *config,
+                      struct rte_mtr_error *error);
 #endif
