@@ -209,6 +209,8 @@ OVS_ASSERT_PACKED(struct doca_eswitch_ctx,
     struct doca_basic_pipe_ctx ct_pipes[NUM_CT_NW][NUM_CT_TP];
     struct fixed_rule zone_flows[2][NUM_ZONE_FLOWS][MAX_ZONE_ID + 1];
     struct id_fpool *shared_cnt_id_pool;
+    struct doca_ctl_pipe_ctx *post_meter_pipe_ctx;
+    struct fixed_rule post_meter_red_flow;
 );
 
 OVS_ASSERT_PACKED(struct doca_ctl_pipe_key,
@@ -2721,6 +2723,67 @@ doca_bind_shared_cntrs(struct doca_eswitch_ctx *ctx)
     return 0;
 }
 
+static int
+doca_create_post_meter_red_rule(struct netdev *netdev, uint32_t group,
+                                struct dpdk_offload_handle *doh)
+{
+    struct doca_flow_handle_resources flow_res;
+    struct doca_flow_match red_match;
+    struct doca_flow_handle *hndl;
+    struct rte_flow_error error;
+    struct doca_flow_fwd fwd;
+
+    memset(&flow_res, 0x0, sizeof flow_res);
+    memset(&red_match, 0x0, sizeof red_match);
+    memset(&fwd, 0x0, sizeof fwd);
+
+    fwd.type = DOCA_FLOW_FWD_DROP;
+    red_match.meta.meter_color = DOCA_FLOW_METER_COLOR_RED;
+
+    hndl = create_doca_flow_handle(netdev, AUX_QUEUE, 0, group, &red_match, NULL,
+                                   NULL, NULL, NULL, &fwd, &flow_res, doh,
+                                   &error);
+    if (!hndl) {
+        VLOG_ERR("%s: Failed to create post meter fixed red rule",
+                 netdev_get_name(netdev));
+        return -1;
+    }
+
+    return 0;
+}
+
+static void
+doca_post_meter_pipe_uninit(struct netdev *netdev, struct doca_eswitch_ctx *ctx)
+{
+    doca_fixed_rule_uninit(netdev, &ctx->post_meter_red_flow);
+    doca_ctl_pipe_ctx_unref(ctx->post_meter_pipe_ctx);
+}
+
+static int
+doca_post_meter_pipe_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx)
+{
+    struct doca_ctl_pipe_ctx *pipe_ctx;
+    struct fixed_rule *fr;
+
+    pipe_ctx = doca_ctl_pipe_ctx_ref(netdev, POSTMETER_TABLE_ID, 0);
+    if (!pipe_ctx) {
+        return -1;
+    }
+    ctx->post_meter_pipe_ctx = pipe_ctx;
+
+    fr = &ctx->post_meter_red_flow;
+    if (doca_create_post_meter_red_rule(netdev, POSTMETER_TABLE_ID,
+                                        &fr->doh)) {
+        goto err;
+    }
+
+    return 0;
+
+err:
+    doca_post_meter_pipe_uninit(netdev, ctx);
+    return -1;
+}
+
 static struct offload_metadata *doca_eswitch_md;
 
 static void
@@ -2743,6 +2806,7 @@ doca_eswitch_ctx_uninit(void *ctx_)
      * have been removed once the uninit has finished.
      */
     if (ctx->shared_cnt_id_pool) {
+        doca_post_meter_pipe_uninit(NULL, ctx);
         doca_ct_zones_uninit(NULL, ctx);
         doca_ct_pipes_destroy(ctx);
     }
@@ -2803,6 +2867,10 @@ doca_eswitch_ctx_init(void *ctx_, void *arg_, uint32_t id OVS_UNUSED)
         }
 
         if (doca_bind_shared_cntrs(ctx)) {
+            goto error;
+        }
+
+        if (doca_post_meter_pipe_init(netdev, ctx)) {
             goto error;
         }
     }

@@ -29,6 +29,7 @@
 #define CTNAT_TABLE_ID   0xfc100000
 #define POSTCT_TABLE_ID  0xfd000000
 #define E2E_BASE_TABLE_ID  0xfe000000
+#define POSTMETER_TABLE_ID  0xff000000
 #define MISS_TABLE_ID    (UINT32_MAX - 1)
 #define MIN_TABLE_ID     1
 #define MAX_TABLE_ID     0xf0000000
