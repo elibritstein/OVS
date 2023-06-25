@@ -785,6 +785,7 @@ get_table_id(odp_port_t vport,
         .vport = vport,
         .recirc_id = recirc_id,
     };
+    struct table_id_data priv_arg = table_id_data;
 
     if (vport == ODPP_NONE && recirc_id == 0 &&
         !(netdev_is_e2e_cache_enabled() && !is_e2e_cache)) {
@@ -802,10 +803,8 @@ get_table_id(odp_port_t vport,
     }
 
     table_id_init();
-    return offload_metadata_id_ref(table_id_md,
-                       &table_id_data,
-                       &table_id_data,
-                       table_id);
+    return offload_metadata_id_ref(table_id_md, &table_id_data, &priv_arg,
+                                   table_id);
 }
 
 static void
