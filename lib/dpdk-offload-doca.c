@@ -2616,7 +2616,9 @@ doca_eswitch_ctx_uninit(void *ctx_)
     if (ctx->gnv_opt_parser.parser) {
         doca_flow_parser_geneve_opt_destroy(ctx->gnv_opt_parser.parser);
         ctx->gnv_opt_parser.parser = NULL;
-        ovsthread_once_reset(&ctx->gnv_opt_parser.once);
+        if (ovsthread_once_start(&ctx->gnv_opt_parser.once)) {
+            ovsthread_once_reset(&ctx->gnv_opt_parser.once);
+        }
         ovs_mutex_destroy(&ctx->gnv_opt_parser.once.mutex);
     }
     ctx->root_pipe_ctx = NULL;
