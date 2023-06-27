@@ -361,7 +361,8 @@ enum rxq_cycles_counter_type {
 enum dp_offload_type {
     DP_OFFLOAD_FLOW,
     DP_OFFLOAD_FLUSH,
-    DP_OFFLOAD_CT,
+    DP_OFFLOAD_CT_MEMPOOL,
+    DP_OFFLOAD_CT_HEAP,
     DP_OFFLOAD_STATS_CLEAR,
 };
 
@@ -3579,9 +3580,7 @@ dp_netdev_free_flow_offload(struct dp_offload_thread_item *offload)
 static void
 free_ct_offload_item(struct dp_offload_thread_item *offload)
 {
-    struct ct_flow_offload_item *ct_offload = offload->data->ct_offload_item;
-
-    if (ct_offload[CT_DIR_INIT].op == DP_NETDEV_FLOW_OFFLOAD_OP_ADD) {
+    if (offload->type == DP_OFFLOAD_CT_MEMPOOL) {
         ovs_dpdk_mempool_free(ct_add_msgs_mp, offload);
     } else {
         free(offload);
@@ -3621,7 +3620,9 @@ dp_netdev_free_offload(struct dp_offload_thread_item *offload)
     case DP_OFFLOAD_FLUSH:
         free(offload);
         break;
-    case DP_OFFLOAD_CT:
+    case DP_OFFLOAD_CT_MEMPOOL:
+        /* Fallthrough */
+    case DP_OFFLOAD_CT_HEAP:
         dp_netdev_free_ct_offload(offload);
         break;
     default:
@@ -4303,7 +4304,9 @@ dp_netdev_flow_offload_main(void *arg)
             case DP_OFFLOAD_FLUSH:
                 dp_offload_flush(offload);
                 break;
-            case DP_OFFLOAD_CT:
+            case DP_OFFLOAD_CT_MEMPOOL:
+                /* Fallthrough */
+            case DP_OFFLOAD_CT_HEAP:
                 dp_offload_ct(offload);
                 break;
             default:
@@ -4375,7 +4378,8 @@ dp_netdev_offload_ct_enqueue(struct dp_offload_thread_item *item)
     struct ct_flow_offload_item *ct_offload = &item->data->ct_offload_item[0];
     unsigned int tid;
 
-    ovs_assert(item->type == DP_OFFLOAD_CT);
+    ovs_assert(item->type == DP_OFFLOAD_CT_MEMPOOL ||
+               item->type == DP_OFFLOAD_CT_HEAP);
 
     /* Use a symmetrical ufid hash for the two CT directions,
      * to force-match thread-id on reverse direction. */
@@ -4419,13 +4423,17 @@ dp_netdev_ct_offload_add_item(struct ct_flow_offload_item *ct_offload)
         return;
     }
 
-    ovs_dpdk_mempool_alloc(ct_add_msgs_mp, (void **) &item);
-    if (OVS_UNLIKELY(item == NULL)) {
-        VLOG_ERR("Could not allocate an item from mempool");
-        return;
+    if (OVS_LIKELY(!ovs_dpdk_mempool_alloc(ct_add_msgs_mp, (void **) &item))) {
+        item->type = DP_OFFLOAD_CT_MEMPOOL;
+    } else {
+        item = xzalloc(sizeof *item + CT_DIR_NUM * sizeof *ct_offload);
+        if (item == NULL) {
+            VLOG_ERR("Could not allocate an item from mempool");
+            return;
+        }
+        item->type = DP_OFFLOAD_CT_HEAP;
     }
 
-    item->type = DP_OFFLOAD_CT;
     item->dp = NULL;
     item->timestamp = ct_offload[0].timestamp;
     for (dir = 0; dir < CT_DIR_NUM; dir++) {
@@ -4448,7 +4456,7 @@ dp_netdev_ct_offload_del_item(struct ct_flow_offload_item *ct_offload)
         return;
     }
     item = xzalloc(sizeof *item + CT_DIR_NUM * sizeof *ct_offload);
-    item->type = DP_OFFLOAD_CT;
+    item->type = DP_OFFLOAD_CT_HEAP;
     item->dp = NULL;
     item->timestamp = ct_offload[0].timestamp;
     for (dir = 0; dir < CT_DIR_NUM; dir++) {
