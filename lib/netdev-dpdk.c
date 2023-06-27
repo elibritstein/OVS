@@ -5266,6 +5266,21 @@ netdev_dpdk_reconfigure(struct netdev *netdev)
         goto out;
     }
 
+    /* rte_eth_dev_stop is going to be triggered which will require flushing
+     * any inserted offloads. Offlaods flush can't be handled at this layer
+     * instead block this reconfigure and request a restart as a temporary WA.
+     */
+    if (ovs_doca_enabled() && dev->started && !dev->reset_needed &&
+        (netdev->n_txq != dev->requested_n_txq ||
+         netdev->n_rxq != dev->requested_n_rxq ||
+         dev->mtu != dev->requested_mtu ||
+         dev->lsc_interrupt_mode != dev->requested_lsc_interrupt_mode ||
+         !eth_addr_equals(dev->hwaddr, dev->requested_hwaddr))) {
+        VLOG_WARN("OpenvSwitch restart is required for the settings change "
+                  "to take effect");
+        goto out;
+    }
+
     if (dev->reset_needed) {
         rte_eth_dev_reset(dev->port_id);
         if_notifier_manual_report();
