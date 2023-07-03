@@ -71,20 +71,31 @@ struct per_thread {
 PADDED_MEMBERS(CACHE_LINE_SIZE,
     char scratch[10000];
     struct salloc *s;
+    struct ovs_list conn_list;
 );
 };
 
 static struct per_thread per_threads[MAX_OFFLOAD_THREAD_NB];
+static struct ovsthread_once conn_list_once = OVSTHREAD_ONCE_INITIALIZER;
 
 static void
 per_thread_init(void)
 {
     struct per_thread *pt = &per_threads[netdev_offload_thread_id()];
+    int i;
 
     if (pt->s == NULL) {
         pt->s = salloc_init(pt->scratch, sizeof pt->scratch);
     }
     salloc_reset(pt->s);
+
+    if (!ovsthread_once_start(&conn_list_once)) {
+        return;
+    }
+    for (i = 0; i < MAX_OFFLOAD_THREAD_NB; i++) {
+        ovs_list_init(&per_threads[i].conn_list);
+    }
+    ovsthread_once_done(&conn_list_once);
 }
 
 static void *
@@ -187,7 +198,10 @@ struct esw_members_aux {
 };
 
 struct ufid_to_rte_flow_data {
-    struct cmap_node node;
+    union {
+        struct cmap_node node;
+        struct ovs_list list_node;
+    };
     ovs_u128 ufid;
     struct netdev *netdev;
     struct flow_item flow_item;
@@ -260,14 +274,9 @@ offload_data_destroy(struct netdev *netdev)
     if (!cmap_is_empty(&data->ufid_to_rte_flow)) {
         VLOG_ERR("Incomplete flush: %s contains rte_flow elements",
                  netdev_get_name(netdev));
-    }
-
-    CMAP_FOR_EACH (node, node, &data->ufid_to_rte_flow) {
-        /* Objects for CT are not allocated, but provided. Skip them. */
-        if (offload_data_is_conn(node)) {
-            continue;
+        CMAP_FOR_EACH (node, node, &data->ufid_to_rte_flow) {
+            ovsrcu_postpone(free, node);
         }
-        ovsrcu_postpone(free, node);
     }
 
     offload->aux_tables_uninit(netdev);
@@ -408,6 +417,32 @@ ufid_to_rte_flow_disassociate(struct ufid_to_rte_flow_data *data)
     }
     netdev_close(data->physdev);
     ovsrcu_gc(rte_flow_data_gc, data, gc_node);
+}
+
+static inline void
+conn_unlink(struct ufid_to_rte_flow_data *data)
+    OVS_REQUIRES(data->lock)
+{
+    ovs_list_remove(&data->list_node);
+    netdev_close(data->physdev);
+    ovsrcu_postpone(rte_flow_data_gc, data);
+}
+
+static inline int
+conn_link(struct netdev *netdev,
+          struct ufid_to_rte_flow_data *data,
+          struct act_resources *act_resources)
+{
+    unsigned int tid = netdev_offload_thread_id();
+
+    data->netdev = netdev_ref(netdev);
+    data->physdev = netdev;
+    data->creation_tid = tid;
+    ovs_mutex_init(&data->lock);
+    memcpy(&data->act_resources, act_resources, sizeof data->act_resources);
+    ovs_list_push_back(&per_threads[tid].conn_list, &data->list_node);
+
+    return 0;
 }
 
 static struct reg_field reg_fields[] = {
@@ -5703,7 +5738,11 @@ netdev_offload_dpdk_remove_flows(struct ufid_to_rte_flow_data *rte_flow_data)
                     (intptr_t) rte_flow_data->flow_item.doh[0].rte_flow,
                     (intptr_t) rte_flow_data->flow_item.doh[1].rte_flow,
                     UUID_ARGS((struct uuid *) ufid));
-        ufid_to_rte_flow_disassociate(rte_flow_data);
+        if (offload_data_is_conn(rte_flow_data)) {
+            conn_unlink(rte_flow_data);
+        } else {
+            ufid_to_rte_flow_disassociate(rte_flow_data);
+        }
     } else {
         VLOG_ERR("Failed flow destroy: %s/%s ufid " UUID_FMT,
                  netdev_get_name(netdev), netdev_get_name(physdev),
@@ -5985,6 +6024,12 @@ flush_netdev_flows_in_related(struct netdev *netdev, struct netdev *related)
         if (data->creation_tid == tid) {
             netdev_offload_dpdk_remove_flows(data);
         }
+    }
+    LIST_FOR_EACH_SAFE (data, list_node, &per_threads[tid].conn_list) {
+        if (data->physdev != netdev) {
+            continue;
+        }
+        netdev_offload_dpdk_remove_flows(data);
     }
 
     return 0;
@@ -6953,7 +6998,6 @@ netdev_offload_dpdk_conn_add(struct netdev *netdev,
     struct act_resources act_resources = { .flow_id = INVALID_FLOW_MARK, };
     unsigned int tid = netdev_offload_thread_id();
     struct ufid_to_rte_flow_data *rte_flow_data;
-    const ovs_u128 *ufid = &ct_offload->ufid;
     struct netdev_offload_dpdk_data *data;
     uint32_t ct_action_label_id;
 
@@ -6991,13 +7035,7 @@ netdev_offload_dpdk_conn_add(struct netdev *netdev,
         ovsrcu_get(void *, &netdev->hw_info.offload_data);
     data->conn_counters[tid]++;
 
-    if (ufid_to_rte_flow_associate(ufid, netdev, netdev,
-                                   rte_flow_data, &act_resources)) {
-        /* Only way for insertion to fail is if the netdev has no map anymore,
-         * which should never happen. */
-        return ENODATA;
-    }
-
+    conn_link(netdev, rte_flow_data, &act_resources);
     return 0;
 }
 
