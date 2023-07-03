@@ -5314,6 +5314,7 @@ parse_flow_actions(struct netdev *flowdev,
                     return -1;
                 }
             }
+            act_vars->tnl_push_out_port = ODPP_NONE;
         } else if (nl_attr_type(nla) == OVS_ACTION_ATTR_DROP) {
             add_flow_action(actions, RTE_FLOW_ACTION_TYPE_DROP, NULL);
         } else if (nl_attr_type(nla) == OVS_ACTION_ATTR_SET ||
