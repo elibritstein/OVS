@@ -404,7 +404,7 @@ ovs_doca_create_meter(uint32_t meter_id,
         VLOG_ERR("Failed to configure shared meter id %d, err %d - %s",
                  meter_id, ret, doca_get_error_string(ret));
         if (error) {
-            error->type = RTE_FLOW_ERROR_TYPE_UNSPECIFIED;
+            error->type = RTE_MTR_ERROR_TYPE_UNSPECIFIED;
             error->message = doca_get_error_string(ret);
         }
     }
