@@ -4833,6 +4833,12 @@ split_ct_conn_actions(const struct rte_flow_action *actions,
     const void *ct_conf, *ctnat_conf;
 
     for (; actions && actions->type != RTE_FLOW_ACTION_TYPE_END; actions++) {
+        /* This is only a dummy action used to split pre and post CT. It
+         * should never be actually used.
+         */
+        if (actions->type == OVS_RTE_FLOW_ACTION_TYPE(PRE_CT_END)) {
+            continue;
+        }
         set_ct_ctnat_conf(actions, ct_state, ctnat_state, &ct_conf, &ctnat_conf);
         if (actions->type != RTE_FLOW_ACTION_TYPE_SET_IPV4_SRC &&
             actions->type != RTE_FLOW_ACTION_TYPE_SET_IPV4_DST &&
