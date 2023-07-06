@@ -124,6 +124,8 @@ COVERAGE_DEFINE(doca_async_add_failed);
 
 #define MAX_GENEVE_OPT 1
 
+#define SHARED_CNT_N_IDS OVS_DOCA_MAX_CT_COUNTERS
+
 VLOG_DEFINE_THIS_MODULE(dpdk_offload_doca);
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(600, 600);
 
@@ -2190,10 +2192,7 @@ dpdk_offload_doca_shared_query(struct indirect_ctx *ctx,
     memset(query, 0, sizeof *query);
     memset(&query_results, 0, sizeof query_results);
 
-    /* Doca counter ids are 0 based while internal mapping
-     * is 1 based.
-     */
-    cnt_id = ctx->res_id - 1;
+    cnt_id = ctx->res_id;
     ret = doca_flow_shared_resources_query(DOCA_FLOW_SHARED_RESOURCE_COUNT,
                                            &cnt_id, &query_results, 1);
     if (ret != DOCA_SUCCESS) {
@@ -2749,9 +2748,6 @@ error:
     return -1;
 }
 
-#define MIN_SHARED_CNT_ID 1
-#define MAX_SHARED_CNT_ID OVS_DOCA_MAX_CT_COUNTERS
-
 /* Init the shared counter id map for the first
  * eswitch context that requests it. This is the only
  * eswitch that will support CT offload for now.
@@ -2765,9 +2761,7 @@ shared_cnt_id_init(struct doca_eswitch_ctx *ctx)
     static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
 
     if (ovsthread_once_start(&init_once)) {
-        ctx->shared_cnt_id_pool = id_fpool_create(1,
-                                                  MIN_SHARED_CNT_ID,
-                                                  MAX_SHARED_CNT_ID);
+        ctx->shared_cnt_id_pool = id_fpool_create(1, 0, SHARED_CNT_N_IDS);
         ovsthread_once_done(&init_once);
     }
 }
@@ -2784,10 +2778,7 @@ doca_bind_shared_cntrs(struct doca_eswitch_ctx *ctx)
     uint32_t base_id;
     int i, ret;
 
-    /* DOCA IDs are 0 based therefore the range is shifted by 1
-     * during the config and binding.
-     */
-    for (base_id = 0; base_id < MAX_SHARED_CNT_ID;
+    for (base_id = 0; base_id < SHARED_CNT_N_IDS;
          base_id += SHARED_CNT_IDS_ARR_SZ) {
         for (i = 0; i < SHARED_CNT_IDS_ARR_SZ; i++) {
             ids[i] = base_id + i;
@@ -3310,11 +3301,8 @@ dpdk_offload_doca_insert_conn(struct netdev *netdev,
         is_ct = true;
     }
 
-    /* Doca counter ids are 0 based while internal mapping
-     * is 1 based.
-     */
     memset(&dmon, 0, sizeof dmon);
-    dmon.shared_counter_id = shared_count_ctx->res_id - 1;
+    dmon.shared_counter_id = shared_count_ctx->res_id;
 
     memset(dacts.meta.u32, 0, sizeof dacts.meta.u32);
 
