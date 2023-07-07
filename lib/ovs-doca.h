@@ -34,12 +34,18 @@
  */
 #define OVS_DOCA_MAX_CT_RULES (OVS_DOCA_MAX_CT_CONNS * 2)
 
+/* DOCA requrires everything upfront. As a WA we define max number of ESW. */
+#define OVS_DOCA_MAX_ESW    2
+
 /* Using shared counters we need 1 per connection */
-#define OVS_DOCA_MAX_CT_COUNTERS OVS_DOCA_MAX_CT_CONNS
+#define OVS_DOCA_MAX_CT_COUNTERS_PER_ESW OVS_DOCA_MAX_CT_CONNS
+#define OVS_DOCA_MAX_CT_COUNTERS \
+    (OVS_DOCA_MAX_CT_COUNTERS_PER_ESW * OVS_DOCA_MAX_ESW)
 
 #define OVS_DOCA_QUEUE_DEPTH 32
 
-#define OVS_DOCA_MAX_METERS MAX_METERS
+#define OVS_DOCA_MAX_METERS_PER_ESW MAX_METERS
+#define OVS_DOCA_MAX_METERS (OVS_DOCA_MAX_METERS_PER_ESW * OVS_DOCA_MAX_ESW)
 
 extern bool ovs_doca_async;
 extern uint32_t ctl_pipe_size;

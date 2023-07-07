@@ -123,7 +123,7 @@ COVERAGE_DEFINE(doca_async_add_failed);
 
 #define MAX_GENEVE_OPT 1
 
-#define SHARED_CNT_N_IDS OVS_DOCA_MAX_CT_COUNTERS
+#define SHARED_CNT_N_IDS OVS_DOCA_MAX_CT_COUNTERS_PER_ESW
 
 VLOG_DEFINE_THIS_MODULE(dpdk_offload_doca);
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(600, 600);
@@ -211,6 +211,8 @@ OVS_ASSERT_PACKED(struct doca_eswitch_ctx,
     struct doca_basic_pipe_ctx ct_pipes[NUM_CT_NW][NUM_CT_TP];
     struct fixed_rule zone_flows[2][NUM_ZONE_FLOWS][MAX_ZONE_ID + 1];
     struct id_fpool *shared_cnt_id_pool;
+    uint32_t esw_id;
+    char pad[4];
     struct doca_ctl_pipe_ctx *post_meter_pipe_ctx;
     struct fixed_rule post_meter_red_flow;
 );
@@ -224,6 +226,8 @@ struct doca_ctl_pipe_arg {
     struct netdev *netdev;
     uint32_t group_id;
 };
+
+static struct id_fpool *esw_id_pool;
 
 static struct doca_eswitch_ctx *
 doca_eswitch_ctx_get(struct netdev *netdev);
@@ -1363,9 +1367,11 @@ doca_translate_actions(struct netdev *netdev,
 {
     struct doca_flow_header_format *outer_masks = &dacts_masks->outer;
     struct doca_flow_header_format *outer = &dacts->outer;
+    struct doca_eswitch_ctx *esw_ctx;
     bool vlan_act_push = false;
     bool has_dp_hash = false;
 
+    esw_ctx = doca_eswitch_ctx_get(netdev);
     for (; actions->type != RTE_FLOW_ACTION_TYPE_END; actions++) {
         int act_type = actions->type;
 
@@ -1546,7 +1552,10 @@ doca_translate_actions(struct netdev *netdev,
             dacts->meta.pkt_meta |= (mtr_data->flow_id & reg_mask) << reg_offset;
             dacts_masks->meta.pkt_meta |= reg_mask << reg_offset;
 
-            monitor->shared_meter_id = mtr_data->conf.mtr_id;
+            /* id is determine by both the upper layer id, and the esw_id. */
+            monitor->shared_meter_id =
+                esw_ctx->esw_id * OVS_DOCA_MAX_METERS_PER_ESW +
+                mtr_data->conf.mtr_id;
             *flow_id = mtr_data->flow_id;
         } else {
             return -1;
@@ -2758,15 +2767,23 @@ static void
 shared_cnt_id_init(struct doca_eswitch_ctx *ctx)
 {
     static struct ovsthread_once init_once = OVSTHREAD_ONCE_INITIALIZER;
+    uint32_t base_id;
 
     if (ovsthread_once_start(&init_once)) {
-        ctx->shared_cnt_id_pool = id_fpool_create(1, 0, SHARED_CNT_N_IDS);
+        esw_id_pool = id_fpool_create(1, 0, OVS_DOCA_MAX_ESW);
         ovsthread_once_done(&init_once);
     }
+    if (!esw_id_pool || !id_fpool_new_id(esw_id_pool, 0, &ctx->esw_id)) {
+        VLOG_ERR("Failed to alloc a new esw id");
+        return;
+    }
+    base_id = SHARED_CNT_N_IDS * ctx->esw_id;
+    ctx->shared_cnt_id_pool = id_fpool_create(netdev_offload_thread_nb(),
+                                              base_id, SHARED_CNT_N_IDS);
 }
 
 #define SHARED_CNT_IDS_ARR_SZ 5000
-BUILD_ASSERT_DECL(OVS_DOCA_MAX_CT_COUNTERS % SHARED_CNT_IDS_ARR_SZ == 0);
+BUILD_ASSERT_DECL(OVS_DOCA_MAX_CT_COUNTERS_PER_ESW % SHARED_CNT_IDS_ARR_SZ == 0);
 
 static int
 doca_bind_shared_cntrs(struct doca_eswitch_ctx *ctx)
@@ -2774,13 +2791,14 @@ doca_bind_shared_cntrs(struct doca_eswitch_ctx *ctx)
     struct doca_flow_shared_resource_cfg cfg =
         { .domain = DOCA_FLOW_PIPE_DOMAIN_DEFAULT };
     uint32_t ids[SHARED_CNT_IDS_ARR_SZ];
+    int i, chunk, ret;
     uint32_t base_id;
-    int i, ret;
 
-    for (base_id = 0; base_id < SHARED_CNT_N_IDS;
-         base_id += SHARED_CNT_IDS_ARR_SZ) {
+    base_id = SHARED_CNT_N_IDS * ctx->esw_id;
+    for (chunk = 0; chunk < SHARED_CNT_N_IDS;
+         chunk += SHARED_CNT_IDS_ARR_SZ) {
         for (i = 0; i < SHARED_CNT_IDS_ARR_SZ; i++) {
-            ids[i] = base_id + i;
+            ids[i] = base_id + chunk + i;
             ret = doca_flow_shared_resource_cfg(DOCA_FLOW_SHARED_RESOURCE_COUNT,
                                                 ids[i], &cfg);
             if (ret != DOCA_SUCCESS) {
@@ -2812,19 +2830,19 @@ doca_bind_shared_meters(struct doca_eswitch_ctx *ctx)
         .meter_cfg.cir = 125000,
         .meter_cfg.cbs = 12500,
     };
-    uint32_t ids[OVS_DOCA_MAX_METERS];
+    uint32_t ids[OVS_DOCA_MAX_METERS_PER_ESW];
     int i, id, ret;
 
     /* DOCA allows meter IDs to start from 0, but it's problematic to have a
      * meter with ID 0 because in such case it will be impossible to disable
-     * shared meter in doca_flow_monitor struct later, so meter with ID 0 is not
-     * configured and not bound to avoid this issue.
+     * shared meter in doca_flow_monitor struct later, so meter with ID 0 is
+     * not configured and not bound to avoid this issue.
      *
-     * Total number of shared meters is OVS_DOCA_MAX_METERS-1 because meter
-     * ID 0 is not used.
+     * Total number of shared meters is OVS_DOCA_MAX_METERS_PER_ESW-1 because
+     * meter ID 0 is not used.
      */
-    for (i = 0, id = 1; i < OVS_DOCA_MAX_METERS - 1; i++, id++) {
-        ids[i] = id;
+    for (i = 0, id = 1; i < OVS_DOCA_MAX_METERS_PER_ESW - 1; i++, id++) {
+        ids[i] = ctx->esw_id * OVS_DOCA_MAX_METERS_PER_ESW + id;
         /* DOCA will fail to bind a shared meter if it's unconfigured, which is
          * a bug, so a dummy configuration is used as a W/A; actual meter
          * configuration will be set by the user when OVS meter is added with
@@ -2840,11 +2858,11 @@ doca_bind_shared_meters(struct doca_eswitch_ctx *ctx)
     }
 
     ret = doca_flow_shared_resources_bind(DOCA_FLOW_SHARED_RESOURCE_METER, ids,
-                                          OVS_DOCA_MAX_METERS - 1,
+                                          OVS_DOCA_MAX_METERS_PER_ESW - 1,
                                           ctx->esw_port);
     if (ret != DOCA_SUCCESS) {
         VLOG_ERR("Shared meters binding failed, ids %d-%d, err %d - %s",
-                 ids[0], ids[OVS_DOCA_MAX_METERS - 1], ret,
+                 ids[0], ids[OVS_DOCA_MAX_METERS_PER_ESW - 1], ret,
                  doca_get_error_string(ret));
         return -1;
     }
@@ -2955,6 +2973,7 @@ doca_eswitch_ctx_uninit(void *ctx_)
          */
         id_fpool_destroy(ctx->shared_cnt_id_pool);
         ctx->shared_cnt_id_pool = NULL;
+        id_fpool_free_id(esw_id_pool, 0, ctx->esw_id);
     }
     ctx->esw_port = NULL;
 }
