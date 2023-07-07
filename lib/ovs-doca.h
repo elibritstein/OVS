@@ -16,6 +16,7 @@
 
 #include <config.h>
 
+#include "dpif-netdev.h"
 #include "smap.h"
 #include "vswitch-idl.h"
 
@@ -37,6 +38,8 @@
 #define OVS_DOCA_MAX_CT_COUNTERS OVS_DOCA_MAX_CT_CONNS
 
 #define OVS_DOCA_QUEUE_DEPTH 32
+
+#define OVS_DOCA_MAX_METERS MAX_METERS
 
 extern bool ovs_doca_async;
 extern uint32_t ctl_pipe_size;

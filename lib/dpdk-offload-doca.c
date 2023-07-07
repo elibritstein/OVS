@@ -25,7 +25,6 @@
 #include "coverage.h"
 #include "dp-packet.h"
 #include "dpdk-offload-provider.h"
-#include "dpif-netdev.h"
 #include "id-fpool.h"
 #include "openvswitch/vlog.h"
 #include "offload-metadata.h"
@@ -2813,7 +2812,7 @@ doca_bind_shared_meters(struct doca_eswitch_ctx *ctx)
         .meter_cfg.cir = 125000,
         .meter_cfg.cbs = 12500,
     };
-    uint32_t ids[MAX_METERS];
+    uint32_t ids[OVS_DOCA_MAX_METERS];
     int i, id, ret;
 
     /* DOCA allows meter IDs to start from 0, but it's problematic to have a
@@ -2821,10 +2820,10 @@ doca_bind_shared_meters(struct doca_eswitch_ctx *ctx)
      * shared meter in doca_flow_monitor struct later, so meter with ID 0 is not
      * configured and not bound to avoid this issue.
      *
-     * Total number of shared meters is one less than MAX_METERS because meter
+     * Total number of shared meters is OVS_DOCA_MAX_METERS-1 because meter
      * ID 0 is not used.
      */
-    for (i = 0, id = 1; i < MAX_METERS - 1; i++, id++) {
+    for (i = 0, id = 1; i < OVS_DOCA_MAX_METERS - 1; i++, id++) {
         ids[i] = id;
         /* DOCA will fail to bind a shared meter if it's unconfigured, which is
          * a bug, so a dummy configuration is used as a W/A; actual meter
@@ -2840,12 +2839,13 @@ doca_bind_shared_meters(struct doca_eswitch_ctx *ctx)
         }
     }
 
-    ret = doca_flow_shared_resources_bind(DOCA_FLOW_SHARED_RESOURCE_METER,
-                                          ids, MAX_METERS - 1, ctx->esw_port);
+    ret = doca_flow_shared_resources_bind(DOCA_FLOW_SHARED_RESOURCE_METER, ids,
+                                          OVS_DOCA_MAX_METERS - 1,
+                                          ctx->esw_port);
     if (ret != DOCA_SUCCESS) {
         VLOG_ERR("Shared meters binding failed, ids %d-%d, err %d - %s",
-                    ids[0], ids[MAX_METERS - 1], ret,
-                    doca_get_error_string(ret));
+                 ids[0], ids[OVS_DOCA_MAX_METERS - 1], ret,
+                 doca_get_error_string(ret));
         return -1;
     }
 

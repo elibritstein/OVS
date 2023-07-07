@@ -20,7 +20,6 @@
 #include <doca_version.h>
 
 #include "dpdk.h"
-#include "dpif-netdev.h"
 #include "netdev-offload.h"
 #include "netdev-offload-provider.h"
 #include "openvswitch/vlog.h"
@@ -284,8 +283,10 @@ ovs_doca_init(const struct smap *ovs_other_config)
         cfg.queue_depth = OVS_DOCA_QUEUE_DEPTH;
         cfg.cb = ovs_doca_entry_process_cb;
         /* Set the sum of counters we want for both ports */
-        cfg.nr_shared_resources[DOCA_FLOW_SHARED_RESOURCE_COUNT] = OVS_DOCA_MAX_CT_COUNTERS;
-        cfg.nr_shared_resources[DOCA_FLOW_SHARED_RESOURCE_METER] = MAX_METERS;
+        cfg.nr_shared_resources[DOCA_FLOW_SHARED_RESOURCE_COUNT] =
+            OVS_DOCA_MAX_CT_COUNTERS;
+        cfg.nr_shared_resources[DOCA_FLOW_SHARED_RESOURCE_METER] =
+            OVS_DOCA_MAX_METERS;
 
         VLOG_INFO("DOCA Enabled - initializing...");
         err = doca_flow_init(&cfg);
