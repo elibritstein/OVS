@@ -162,6 +162,7 @@ typedef uint16_t dpdk_port_t;
 
 #define NETDEV_DPDK_METER_PORT_ID 0
 #define NETDEV_DPDK_METER_POLICY_ID 25
+#define NETDEV_DPDK_MAX_METERS MAX_METERS
 
 static const struct rte_eth_conf port_conf = {
     .rxmode = {
@@ -5882,8 +5883,6 @@ struct netdev_dpdk_meter {
     uint32_t refcnt;
     bool valid;
 };
-
-enum { NETDEV_DPDK_MAX_METERS = 65536 };    /* Maximum number of meters. */
 
 /* meter with index [0] is never used */
 struct netdev_dpdk_meter netdev_dpdk_meters[NETDEV_DPDK_MAX_METERS];
