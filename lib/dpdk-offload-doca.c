@@ -227,6 +227,10 @@ struct doca_ctl_pipe_arg {
     uint32_t group_id;
 };
 
+struct doca_act_vars {
+    uint32_t flow_id;
+};
+
 static struct id_fpool *esw_id_pool;
 
 static struct doca_eswitch_ctx *
@@ -1363,7 +1367,7 @@ doca_translate_actions(struct netdev *netdev,
                        struct doca_flow_fwd *fwd,
                        struct doca_flow_monitor *monitor,
                        struct doca_flow_handle_resources *flow_res,
-                       uint32_t *flow_id)
+                       struct doca_act_vars *dact_vars)
 {
     struct doca_flow_header_format *outer_masks = &dacts_masks->outer;
     struct doca_flow_header_format *outer = &dacts->outer;
@@ -1556,7 +1560,7 @@ doca_translate_actions(struct netdev *netdev,
             monitor->shared_meter_id =
                 esw_ctx->esw_id * OVS_DOCA_MAX_METERS_PER_ESW +
                 mtr_data->conf.mtr_id;
-            *flow_id = mtr_data->flow_id;
+            dact_vars->flow_id = mtr_data->flow_id;
         } else {
             return -1;
         }
@@ -1954,12 +1958,13 @@ dpdk_offload_doca_create(struct netdev *netdev,
     struct doca_flow_handle_resources flow_res;
     struct doca_flow_pipe_entry *meter_entry;
     struct doca_flow_monitor monitor;
+    struct doca_act_vars dact_vars;
     struct doca_flow_handle *hndl;
     struct doca_flow_match mask;
     struct doca_flow_match spec;
     unsigned int queue_id = tid;
     struct doca_flow_fwd fwd;
-    uint32_t prio, flow_id;
+    uint32_t prio;
 
     /* If it's a post ct rule, check for eswitch ct offload support */
     if (attr->group == POSTCT_TABLE_ID && !esw_ctx->shared_cnt_id_pool) {
@@ -1973,6 +1978,7 @@ dpdk_offload_doca_create(struct netdev *netdev,
     memset(&mask, 0, sizeof mask);
     memset(&spec, 0, sizeof spec);
     memset(&fwd, 0, sizeof fwd);
+    memset(&dact_vars, 0, sizeof dact_vars);
 
     if (doca_translate_items(netdev, attr, items, &spec, &mask)) {
         error->type = RTE_FLOW_ERROR_TYPE_ITEM;
@@ -1983,7 +1989,7 @@ dpdk_offload_doca_create(struct netdev *netdev,
 
     /* parse actions */
     if (doca_translate_actions(netdev, &spec, actions, &dacts, &dacts_masks,
-                               &fwd, &monitor, &flow_res, &flow_id)) {
+                               &fwd, &monitor, &flow_res, &dact_vars)) {
         error->type = RTE_FLOW_ERROR_TYPE_ACTION;
         error->message = "Could not create actions";
         doh->rte_flow = NULL;
@@ -1992,7 +1998,8 @@ dpdk_offload_doca_create(struct netdev *netdev,
 
     if (monitor.shared_meter_id) {
         meter_entry = add_doca_post_meter_green_entry(netdev, queue_id,
-                                                      flow_id, &fwd, error);
+                                                      dact_vars.flow_id, &fwd,
+                                                      error);
         if (!meter_entry) {
             if (error) {
                 error->type = RTE_FLOW_ERROR_TYPE_ACTION;
