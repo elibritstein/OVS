@@ -229,6 +229,7 @@ struct doca_ctl_pipe_arg {
 
 struct doca_act_vars {
     uint32_t flow_id;
+    uint32_t prio;
 };
 
 static struct id_fpool *esw_id_pool;
@@ -1503,7 +1504,7 @@ doca_translate_actions(struct netdev *netdev,
             fwd->next_pipe = get_ctl_pipe_root(next_pipe_ctx, spec, dacts,
                                                has_dp_hash);
             flow_res->next_pipe_ctx = next_pipe_ctx;
-            flow_res->next_group = jump->group;
+            dact_vars->prio = jump->group == MISS_TABLE_ID;
         } else if (act_type == RTE_FLOW_ACTION_TYPE_VXLAN_ENCAP) {
             if (doca_translate_vxlan_encap(actions, dacts)) {
                 return -1;
@@ -2010,7 +2011,7 @@ dpdk_offload_doca_create(struct netdev *netdev,
         flow_res.post_meter_entry = meter_entry;
     }
 
-    prio = flow_res.next_group == MISS_TABLE_ID;
+    prio = dact_vars.prio;
     hndl = create_doca_flow_handle(netdev, queue_id, prio, attr->group, &spec,
                                    &mask, &dacts, &dacts_masks, &monitor, &fwd,
                                    &flow_res, doh, error);
@@ -2347,7 +2348,6 @@ doca_create_ct_zone_revisit_rule(struct netdev *netdev, uint32_t group,
     fwd.type = DOCA_FLOW_FWD_PIPE;
     fwd.next_pipe = next_pipe_ctx->pipe;
     flow_res.next_pipe_ctx = next_pipe_ctx;
-    flow_res.next_group = POSTCT_TABLE_ID;
 
     hndl = create_doca_flow_handle(netdev, AUX_QUEUE, 0, group, &spec, &mask,
                                    NULL, NULL, NULL, &fwd, &flow_res, doh,
@@ -2361,7 +2361,7 @@ doca_create_ct_zone_revisit_rule(struct netdev *netdev, uint32_t group,
 static int
 doca_create_ct_zone_uphold_rule(struct netdev *netdev,
                                 struct doca_eswitch_ctx *ctx, uint32_t group,
-                                uint16_t zone, int nat, bool match_tcp,
+                                uint16_t zone, bool match_tcp,
                                 struct dpdk_offload_handle *doh)
 {
     struct doca_flow_actions dacts, dacts_masks;
@@ -2372,7 +2372,6 @@ doca_create_ct_zone_uphold_rule(struct netdev *netdev,
     struct rte_flow_error error;
     struct reg_field *reg_field;
     struct doca_flow_fwd fwd;
-    uint32_t next_group;
 
     memset(&dacts_masks, 0, sizeof dacts_masks);
     memset(&flow_res, 0, sizeof flow_res);
@@ -2398,12 +2397,9 @@ doca_create_ct_zone_uphold_rule(struct netdev *netdev,
     dacts.meta.u32[reg_field->index] |= zone << reg_field->offset;
     dacts_masks.meta.u32[reg_field->index] |= reg_field->mask << reg_field->offset;
 
-    next_group = nat ? CTNAT_TABLE_ID : CT_TABLE_ID;
-
     fwd.type = DOCA_FLOW_FWD_PIPE;
     fwd.next_pipe = doca_get_ct_pipe(ctx, &spec);
     flow_res.next_pipe_ctx = NULL;
-    flow_res.next_group = next_group;
 
     hndl = create_doca_flow_handle(netdev, AUX_QUEUE, 1, group, &spec, &mask,
                                    &dacts, &dacts_masks, NULL, &fwd, &flow_res,
@@ -2435,7 +2431,6 @@ doca_create_ct_zone_miss_rule(struct netdev *netdev, uint32_t group,
     fwd.type = DOCA_FLOW_FWD_PIPE;
     fwd.next_pipe = pipe_ctx->pipe;
     flow_res.next_pipe_ctx = pipe_ctx;
-    flow_res.next_group = MISS_TABLE_ID;
 
     hndl = create_doca_flow_handle(netdev, AUX_QUEUE, 2, group, NULL, NULL,
                                    NULL, NULL, NULL, &fwd, &flow_res, doh,
@@ -2481,14 +2476,14 @@ doca_ct_zones_init(struct netdev *netdev, struct doca_eswitch_ctx *ctx)
             fr = &ctx->zone_flows[nat][1][zone_id];
             if (doca_create_ct_zone_uphold_rule(netdev, ctx,
                                                 base_group + zone_id, zone_id,
-                                                nat, false, &fr->doh)) {
+                                                false, &fr->doh)) {
                 goto err;
             }
 
             fr = &ctx->zone_flows[nat][2][zone_id];
             if (doca_create_ct_zone_uphold_rule(netdev, ctx,
                                                 base_group + zone_id,
-                                                zone_id, nat, true, &fr->doh)) {
+                                                zone_id, true, &fr->doh)) {
                 goto err;
             }
 
