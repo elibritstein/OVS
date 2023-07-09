@@ -1886,7 +1886,6 @@ create_doca_flow_handle(struct netdev *netdev,
 
     memcpy(&hndl->flow_res, flow_res, sizeof *flow_res);
     hndl->flow_res.self_pipe_ctx = pipe_ctx;
-    hndl->flow_res.group = group;
 
     return hndl;
 
