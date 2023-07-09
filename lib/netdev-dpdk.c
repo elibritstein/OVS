@@ -5240,6 +5240,68 @@ static const struct dpdk_qos_ops trtcm_policer_ops = {
     .qos_queue_dump_state_init = trtcm_policer_qos_queue_dump_state_init
 };
 
+static bool
+netdev_dpdk_reconfigure_require_restart(struct netdev *netdev)
+{
+    struct netdev_dpdk *dev = netdev_dpdk_cast(netdev);
+    struct ds change_list = DS_EMPTY_INITIALIZER;
+    bool must_restart = false;
+
+    if (netdev->n_txq != dev->requested_n_txq) {
+        ds_put_cstr(&change_list, "txq");
+    }
+
+    if (netdev->n_rxq != dev->requested_n_rxq) {
+        if (change_list.length) {
+            ds_put_cstr(&change_list, ", ");
+        }
+        ds_put_cstr(&change_list, "rxq");
+    }
+
+    if (dev->mtu != dev->requested_mtu) {
+        if (change_list.length) {
+            ds_put_cstr(&change_list, ", ");
+        }
+        ds_put_cstr(&change_list, "MTU");
+    }
+
+    if (dev->lsc_interrupt_mode != dev->requested_lsc_interrupt_mode) {
+        if (change_list.length) {
+            ds_put_cstr(&change_list, ", ");
+        }
+        ds_put_cstr(&change_list, "lsc_interrupt_mode");
+    }
+
+    if (!eth_addr_equals(dev->hwaddr, dev->requested_hwaddr)) {
+        if (change_list.length) {
+            ds_put_cstr(&change_list, ", ");
+        }
+        ds_put_cstr(&change_list, "MAC");
+    }
+
+    /* Some configuration elements require the port to be stopped
+     * to be applied. Calling rte_eth_dev_stop however will not work
+     * while offload rules still exist. While it is not possible to
+     * flush those rules from this module, we must instead ignore
+     * the new configuration. The only way to apply it properly being
+     * to restart the OVS daemon and configure the port in the requested
+     * way from the beginning.
+     *
+     * Warn the user about it.
+     */
+
+    if (change_list.length && dev->started && !dev->reset_needed) {
+        VLOG_WARN("%s: the requested '%s' configuration cannot be applied. "
+                  "The daemon must be restarted for the changes "
+                  "to take effect",
+                  netdev_get_name(netdev), ds_cstr(&change_list));
+        must_restart = true;
+    }
+
+    ds_destroy(&change_list);
+    return must_restart;
+}
+
 static int
 netdev_dpdk_reconfigure(struct netdev *netdev)
 {
@@ -5262,18 +5324,9 @@ netdev_dpdk_reconfigure(struct netdev *netdev)
         goto out;
     }
 
-    /* rte_eth_dev_stop is going to be triggered which will require flushing
-     * any inserted offloads. Offlaods flush can't be handled at this layer
-     * instead block this reconfigure and request a restart as a temporary WA.
-     */
-    if (ovs_doca_enabled() && dev->started && !dev->reset_needed &&
-        (netdev->n_txq != dev->requested_n_txq ||
-         netdev->n_rxq != dev->requested_n_rxq ||
-         dev->mtu != dev->requested_mtu ||
-         dev->lsc_interrupt_mode != dev->requested_lsc_interrupt_mode ||
-         !eth_addr_equals(dev->hwaddr, dev->requested_hwaddr))) {
-        VLOG_WARN("OpenvSwitch restart is required for the settings change "
-                  "to take effect");
+    if (ovs_doca_enabled() &&
+        netdev_dpdk_reconfigure_require_restart(netdev)) {
+        /* Restart is necessary. */
         goto out;
     }
 
