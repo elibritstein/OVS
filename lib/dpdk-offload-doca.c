@@ -1934,7 +1934,7 @@ add_doca_post_meter_green_entry(struct netdev *netdev,
     }
 
     /* replace original fwd with the internal meter pipe */
-    memset(fwd, 0x0, sizeof *fwd);
+    memset(fwd, 0, sizeof *fwd);
     fwd->type = DOCA_FLOW_FWD_PIPE;
     fwd->next_pipe = post_meter_pipe_ctx->pipe;
 
@@ -1967,13 +1967,13 @@ dpdk_offload_doca_create(struct netdev *netdev,
         return -1;
     }
 
-    memset(&dacts_masks, 0x0, sizeof dacts_masks);
-    memset(&flow_res, 0x0, sizeof flow_res);
-    memset(&monitor, 0x0, sizeof monitor);
-    memset(&dacts, 0x0, sizeof dacts);
-    memset(&mask, 0x0, sizeof mask);
-    memset(&spec, 0x0, sizeof spec);
-    memset(&fwd, 0x0, sizeof fwd);
+    memset(&dacts_masks, 0, sizeof dacts_masks);
+    memset(&flow_res, 0, sizeof flow_res);
+    memset(&monitor, 0, sizeof monitor);
+    memset(&dacts, 0, sizeof dacts);
+    memset(&mask, 0, sizeof mask);
+    memset(&spec, 0, sizeof spec);
+    memset(&fwd, 0, sizeof fwd);
 
     if (doca_translate_items(netdev, attr, items, &spec, &mask)) {
         error->type = RTE_FLOW_ERROR_TYPE_ITEM;
@@ -2310,10 +2310,10 @@ doca_create_ct_zone_revisit_rule(struct netdev *netdev, uint32_t group,
     struct reg_field *reg_field;
     struct doca_flow_fwd fwd;
 
-    memset(&flow_res, 0x0, sizeof flow_res);
-    memset(&mask, 0x0, sizeof mask);
-    memset(&spec, 0x0, sizeof spec);
-    memset(&fwd, 0x0, sizeof fwd);
+    memset(&flow_res, 0, sizeof flow_res);
+    memset(&mask, 0, sizeof mask);
+    memset(&spec, 0, sizeof spec);
+    memset(&fwd, 0, sizeof fwd);
 
     /* If the zone is the same, and already visited ct/ct-nat, skip
      * ct/ct-nat and jump directly to post-ct.
@@ -2368,10 +2368,10 @@ doca_create_ct_zone_uphold_rule(struct netdev *netdev,
     struct doca_flow_fwd fwd;
     uint32_t next_group;
 
-    memset(&dacts_masks, 0x0, sizeof dacts_masks);
-    memset(&flow_res, 0x0, sizeof flow_res);
-    memset(&dacts, 0x0, sizeof dacts);
-    memset(&fwd, 0x0, sizeof fwd);
+    memset(&dacts_masks, 0, sizeof dacts_masks);
+    memset(&flow_res, 0, sizeof flow_res);
+    memset(&dacts, 0, sizeof dacts);
+    memset(&fwd, 0, sizeof fwd);
     memset(&spec, 0, sizeof spec);
     memset(&mask, 0, sizeof mask);
 
@@ -2880,9 +2880,9 @@ doca_create_post_meter_red_rule(struct netdev *netdev, uint32_t group,
     struct rte_flow_error error;
     struct doca_flow_fwd fwd;
 
-    memset(&flow_res, 0x0, sizeof flow_res);
-    memset(&red_match, 0x0, sizeof red_match);
-    memset(&fwd, 0x0, sizeof fwd);
+    memset(&flow_res, 0, sizeof flow_res);
+    memset(&red_match, 0, sizeof red_match);
+    memset(&fwd, 0, sizeof fwd);
 
     fwd.type = DOCA_FLOW_FWD_DROP;
     red_match.meta.meter_color = DOCA_FLOW_METER_COLOR_RED;
