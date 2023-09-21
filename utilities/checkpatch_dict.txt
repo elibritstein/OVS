@@ -107,6 +107,7 @@ icmp
 icmp4
 icmpv6
 idl
+ie
 ifdef
 ifindex
 initializer
@@ -232,6 +233,7 @@ rebased
 recirc
 recirculation
 recirculations
+refmap
 revalidate
 revalidation
 revalidator
