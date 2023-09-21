@@ -44,6 +44,11 @@ AT_CHECK([ovstest test-ccmap check 1], [0], [...
 ])
 AT_CLEANUP
 
+AT_SETUP([refmap])
+AT_KEYWORDS([refmap])
+AT_CHECK([ovstest test-refmap check], [0], [])
+AT_CLEANUP
+
 AT_SETUP([atomic operations])
 AT_CHECK([ovstest test-atomic])
 AT_CLEANUP
