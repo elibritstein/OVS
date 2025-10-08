@@ -35,6 +35,8 @@ extern "C" {
 #endif
 
 struct netdev_tnl_build_header_params;
+struct ovsrec_open_vswitch;
+
 #define NETDEV_NUMA_UNSPEC OVS_NUMA_UNSPEC
 
 enum netdev_ol_flags {
@@ -289,6 +291,16 @@ struct netdev_class {
      * 'netdev_class' points to the class.  It is useful in case the same
      * function is used to implement different classes. */
     void (*wait)(const struct netdev_class *netdev_class);
+
+    /* Applies global other_config settings.
+     *
+     * 'netdev_class' points to the class.  It is useful in case the same
+     * function is used to implement different classes. */
+    int (*set_other_config)(const struct netdev_class *netdev_class,
+                            const struct smap *other_config);
+
+    /* Set relevant status in 'cfg'. */
+    void (*class_status)(const struct ovsrec_open_vswitch *cfg);
 
 /* ## ---------------- ## */
 /* ## netdev Functions ## */

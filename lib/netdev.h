@@ -70,6 +70,7 @@ struct in6_addr;
 struct smap;
 struct sset;
 struct ovs_action_push_tnl;
+struct ovsrec_open_vswitch;
 
 enum netdev_pt_mode {
     /* Unknown mode.  The netdev is not configured yet. */
@@ -178,6 +179,8 @@ struct netdev_tunnel_config {
 
 void netdev_run(void);
 void netdev_wait(void);
+void netdev_set_other_config(const struct smap *);
+void netdev_class_status(const struct ovsrec_open_vswitch *);
 
 void netdev_enumerate_types(struct sset *types);
 bool netdev_is_reserved_name(const char *name);

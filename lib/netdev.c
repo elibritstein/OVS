@@ -210,6 +210,34 @@ netdev_wait(void)
     }
 }
 
+void
+netdev_set_other_config(const struct smap *other_config)
+    OVS_EXCLUDED(netdev_mutex)
+{
+    netdev_initialize();
+
+    struct netdev_registered_class *rc;
+    CMAP_FOR_EACH (rc, cmap_node, &netdev_classes) {
+        if (rc->class->set_other_config) {
+            rc->class->set_other_config(rc->class, other_config);
+        }
+    }
+}
+
+void
+netdev_class_status(const struct ovsrec_open_vswitch *cfg)
+    OVS_EXCLUDED(netdev_mutex)
+{
+    netdev_initialize();
+
+    struct netdev_registered_class *rc;
+    CMAP_FOR_EACH (rc, cmap_node, &netdev_classes) {
+        if (rc->class->class_status) {
+            rc->class->class_status(cfg);
+        }
+    }
+}
+
 static struct netdev_registered_class *
 netdev_lookup_class(const char *type)
 {
