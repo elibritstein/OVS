@@ -170,6 +170,13 @@ netdev_initialize(void)
         netdev_register_provider(&netdev_internal_class);
         netdev_vport_tunnel_register();
 #endif
+#ifdef DPDK_NETDEV
+        netdev_register_provider(&dpdk_class);
+        netdev_register_provider(&dpdk_vhost_class);
+        netdev_register_provider(&dpdk_vhost_client_class);
+
+        netdev_register_flow_api_provider(&netdev_offload_dpdk);
+#endif
         ovsthread_once_done(&once);
     }
 }

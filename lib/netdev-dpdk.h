@@ -29,7 +29,6 @@ struct netdev;
 
 #include <rte_flow.h>
 
-void netdev_dpdk_register(const struct smap *);
 void free_dpdk_buf(struct dp_packet *);
 
 bool netdev_dpdk_flow_api_supported(struct netdev *);

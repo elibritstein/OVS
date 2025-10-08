@@ -882,6 +882,11 @@ extern const struct netdev_class netdev_tap_class;
 extern const struct netdev_class netdev_afxdp_class;
 extern const struct netdev_class netdev_afxdp_nonpmd_class;
 #endif
+#ifdef DPDK_NETDEV
+extern const struct netdev_class dpdk_class;
+extern const struct netdev_class dpdk_vhost_class;
+extern const struct netdev_class dpdk_vhost_client_class;
+#endif
 #ifdef  __cplusplus
 }
 #endif

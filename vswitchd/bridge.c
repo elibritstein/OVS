@@ -3261,7 +3261,7 @@ run_status_update(void)
 
             connectivity_seqno = seq;
             status_txn = ovsdb_idl_txn_create(idl);
-            dpdk_status(cfg);
+            netdev_class_status(cfg);
             HMAP_FOR_EACH (br, node, &all_bridges) {
                 struct port *port;
 
@@ -3398,7 +3398,7 @@ bridge_run(void)
 
     if (cfg) {
         netdev_set_flow_api_enabled(&cfg->other_config);
-        dpdk_init(&cfg->other_config);
+        netdev_set_other_config(&cfg->other_config);
         userspace_tso_init(&cfg->other_config);
     }
 
