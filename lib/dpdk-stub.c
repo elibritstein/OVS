@@ -63,8 +63,16 @@ print_dpdk_version(void)
 void
 dpdk_status(const struct ovsrec_open_vswitch *cfg)
 {
-    if (cfg) {
-        ovsrec_open_vswitch_set_dpdk_initialized(cfg, false);
-        ovsrec_open_vswitch_set_dpdk_version(cfg, "none");
+    struct smap new_libraries;
+
+    if (!cfg) {
+        return;
     }
+
+    smap_init(&new_libraries);
+    smap_clone(&new_libraries, &cfg->libraries);
+    smap_replace(&new_libraries, "dpdk-initialized", "false");
+    smap_replace(&new_libraries, "dpdk-version", "none");
+    ovsrec_open_vswitch_set_libraries(cfg, &new_libraries);
+    smap_destroy(&new_libraries);
 }
