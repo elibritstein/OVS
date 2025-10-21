@@ -33,6 +33,7 @@
 #include "dpif.h"
 #include "dummy.h"
 #include "fatal-signal.h"
+#include "lib/library.h"
 #include "memory.h"
 #include "netdev.h"
 #include "openflow/openflow.h"
@@ -120,6 +121,7 @@ main(int argc, char *argv[])
     unixctl_command_register("exit", "[--cleanup]", 0, 1,
                              ovs_vswitchd_exit, NULL);
 
+    library_register();
     bridge_init(remote);
     free(remote);
 

@@ -35,6 +35,7 @@
 #include "if-notifier.h"
 #include "jsonrpc.h"
 #include "lacp.h"
+#include "library.h"
 #include "mac-learning.h"
 #include "mcast-snooping.h"
 #include "netdev.h"
@@ -263,6 +264,7 @@ static uint64_t last_ifaces_changed;
 #define BRIDGE_CONTROLLER_PACKET_QUEUE_MIN_SIZE 1
 #define BRIDGE_CONTROLLER_PACKET_QUEUE_MAX_SIZE 512
 
+static void libraries_config(const struct ovsrec_open_vswitch *);
 static void add_del_bridges(const struct ovsrec_open_vswitch *);
 static void bridge_run__(void);
 static void bridge_create(const struct ovsrec_bridge *);
@@ -895,6 +897,8 @@ bridge_reconfigure(const struct ovsrec_open_vswitch *ovs_cfg)
     ofproto_set_explicit_sampled_drops(
         smap_get_bool(&ovs_cfg->other_config, "explicit-sampled-drops",
                       OFPROTO_EXPLICIT_SAMPLED_DROPS_DEFAULT));
+
+    libraries_config(ovs_cfg);
 
     /* Destroy "struct bridge"s, "struct port"s, and "struct iface"s according
      * to 'ovs_cfg', with only very minimal configuration otherwise.
@@ -2152,6 +2156,20 @@ add_del_bridges(const struct ovsrec_open_vswitch *cfg)
     }
 
     shash_destroy(&new_br);
+}
+
+static void
+libraries_config(const struct ovsrec_open_vswitch *cfg)
+{
+    size_t i;
+
+    /* Collect new libraries' names. */
+    for (i = 0; i < cfg->n_libraries; i++) {
+        const struct ovsrec_library *lib_cfg = cfg->libraries[i];
+
+        library_init(lib_cfg->name, &lib_cfg->config);
+        library_status(lib_cfg);
+    }
 }
 
 /* Configures 'netdev' based on the "options" column in 'iface_cfg'.
