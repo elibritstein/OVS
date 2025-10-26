@@ -63,6 +63,10 @@
         Set of bridges managed by the daemon.
       </column>
 
+      <column name="libraries">
+        Set of libraries managed by the daemon.
+      </column>
+
       <column name="ssl">
         SSL/TLS used globally by the daemon.
       </column>
@@ -6170,6 +6174,21 @@ ovs-vsctl add-port br0 p0 -- set Interface p0 type=patch options:peer=p1 \
 
       <column name="external_ids"/>
     </group>
+  </table>
+
+  <table name="Library">
+      <column name="name">
+        Library name.
+      </column>
+      <column name="initialized">
+        True if the library is successfully initialized.
+      </column>
+      <column name="config">
+        Library configuration.
+      </column>
+      <column name="status">
+        Status about the library initialization.
+      </column>
   </table>
 
   <table name="Datapath">
