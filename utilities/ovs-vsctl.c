@@ -783,6 +783,9 @@ pre_get_info(struct ctl_context *ctx)
 
     ovsdb_idl_add_column(ctx->idl, &ovsrec_interface_col_ofport);
     ovsdb_idl_add_column(ctx->idl, &ovsrec_interface_col_error);
+
+    ovsdb_idl_add_column(ctx->idl, &ovsrec_open_vswitch_col_libraries);
+    ovsdb_idl_add_column(ctx->idl, &ovsrec_library_col_name);
 }
 
 static void
@@ -1883,6 +1886,86 @@ cmd_br_get_external_id(struct ctl_context *ctx)
         get_external_id(&port->port_cfg->external_ids, "fake-bridge-",
                         ctx->argc >= 3 ? ctx->argv[2] : NULL, &ctx->output);
     }
+}
+
+static void
+cmd_add_library(struct ctl_context *ctx)
+{
+    struct vsctl_context *vsctl_ctx = vsctl_context_cast(ctx);
+    struct smap config = SMAP_INITIALIZER(&config);
+    struct ovsrec_library **lib_list;
+    const char *name = ctx->argv[1];
+    struct ovsrec_library *lib;
+    size_t n_libs;
+
+    for (int i = 2; i < ctx->argc; i++) {
+        const char *arg = ctx->argv[i];
+        char *key, *val;
+
+        key = xstrdup(arg);
+        val = strchr(key, '=');
+
+        if (val) {
+            *val = '\0';
+            val++;
+            smap_add(&config, key, val);
+        }
+        free(key);
+    }
+
+    lib = ovsrec_library_insert(ctx->txn);
+
+    ovsrec_library_set_name(lib, name);
+    ovsrec_library_set_config(lib, &config);
+    smap_destroy(&config);
+
+    n_libs = vsctl_ctx->ovs->n_libraries;
+    lib_list = xmalloc(sizeof *lib_list * (n_libs + 1));
+    memcpy(lib_list, vsctl_ctx->ovs->libraries, sizeof *lib_list * n_libs);
+    lib_list[n_libs] = lib;
+    ovsrec_open_vswitch_set_libraries(vsctl_ctx->ovs, lib_list, n_libs + 1);
+    free(lib_list);
+}
+
+static void
+cmd_del_library(struct ctl_context *ctx)
+{
+    bool must_exist = !shash_find(&ctx->options, "--if-exists");
+    struct vsctl_context *vsctl_ctx = vsctl_context_cast(ctx);
+    struct ovsrec_library **orig_lib_list, **new_lib_list;
+    const char *name = ctx->argv[1];
+    struct ovsrec_library *lib;
+    size_t lib_list_idx;
+    size_t n_libs;
+
+    n_libs = vsctl_ctx->ovs->n_libraries;
+    orig_lib_list = vsctl_ctx->ovs->libraries;
+    new_lib_list = xmalloc(sizeof *new_lib_list * (n_libs - 1));
+    lib = NULL;
+    lib_list_idx = 0;
+
+    for (size_t i = 0; i < n_libs; i++) {
+        if (strcmp(orig_lib_list[i]->name, name)) {
+            new_lib_list[lib_list_idx++] = orig_lib_list[i];
+            continue;
+        }
+
+        lib = orig_lib_list[i];
+    }
+
+    if (!lib) {
+        free(new_lib_list);
+        if (must_exist) {
+            ctl_fatal("no library named %s", name);
+        }
+        return;
+    }
+
+    ovsrec_open_vswitch_set_libraries(vsctl_ctx->ovs, new_lib_list,
+                                      n_libs - 1);
+    free(new_lib_list);
+
+    ovsrec_library_delete(lib);
 }
 
 static void
@@ -3247,6 +3330,12 @@ static const struct ctl_command_syntax vsctl_commands[] = {
      pre_cmd_br_set_external_id, cmd_br_set_external_id, NULL, "", RW},
     {"br-get-external-id", 1, 2, "BRIDGE [KEY]", pre_cmd_br_get_external_id,
      cmd_br_get_external_id, NULL, "", RO},
+
+    /* Library commands. */
+    {"add-library", 1, INT_MAX, "LIBRARY [options:KEY=VALUE]...", pre_get_info,
+     cmd_add_library, NULL, "", RW},
+    {"del-library", 1, 1, "LIBRARY", pre_get_info, cmd_del_library,
+     NULL, "--if-exists", RW},
 
     /* Port commands. */
     {"list-ports", 1, 1, "BRIDGE", pre_get_info, cmd_list_ports, NULL, "",
