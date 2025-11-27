@@ -23,8 +23,6 @@
 #include "ovs-lldp.h"
 #include "ovstest.h"
 
-#define ETH_TYPE_LLDP   0x88cc
-
 /* Dummy MAC addresses */
 static const struct eth_addr chassis_mac = ETH_ADDR_C(5e,10,8e,e7,84,ad);
 static const struct eth_addr eth_src = ETH_ADDR_C(5e,10,8e,e7,84,ad);

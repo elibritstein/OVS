@@ -54,7 +54,6 @@ VLOG_DEFINE_THIS_MODULE(ovs_lldp);
 #define LLDP_PROTOCOL_VERSION   0x00
 #define LLDP_TYPE_CONFIG        0x00
 #define LLDP_CHASSIS_TTL        120
-#define ETH_TYPE_LLDP           0x88cc
 #define MINIMUM_ETH_PACKET_SIZE 68
 
 #define AA_STATUS_MULTIPLE \
