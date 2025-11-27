@@ -418,6 +418,7 @@ void add_mpls(struct dp_packet *packet, ovs_be16 ethtype, ovs_be32 lse,
 #define ETH_TYPE_NSH           0x894f
 #define ETH_TYPE_ERSPAN1       0x88be   /* version 1 type II */
 #define ETH_TYPE_ERSPAN2       0x22eb   /* version 2 type III */
+#define ETH_TYPE_LLDP          0x88cc
 
 static inline bool eth_type_mpls(ovs_be16 eth_type)
 {
