@@ -406,18 +406,19 @@ void add_mpls(struct dp_packet *packet, ovs_be16 ethtype, ovs_be32 lse,
 
 #define ETH_TYPE_IP            0x0800
 #define ETH_TYPE_ARP           0x0806
+#define ETH_TYPE_ERSPAN2       0x22eb   /* version 2 type III */
 #define ETH_TYPE_TEB           0x6558
+#define ETH_TYPE_RARP          0x8035
 #define ETH_TYPE_VLAN_8021Q    0x8100
 #define ETH_TYPE_VLAN          ETH_TYPE_VLAN_8021Q
-#define ETH_TYPE_VLAN_8021AD   0x88a8
 #define ETH_TYPE_IPV6          0x86dd
 #define ETH_TYPE_LACP          0x8809
-#define ETH_TYPE_RARP          0x8035
 #define ETH_TYPE_MPLS          0x8847
 #define ETH_TYPE_MPLS_MCAST    0x8848
 #define ETH_TYPE_NSH           0x894f
+#define ETH_TYPE_VLAN_8021AD   0x88a8
 #define ETH_TYPE_ERSPAN1       0x88be   /* version 1 type II */
-#define ETH_TYPE_ERSPAN2       0x22eb   /* version 2 type III */
+#define ETH_TYPE_LLDP          0x88cc
 
 static inline bool eth_type_mpls(ovs_be16 eth_type)
 {
