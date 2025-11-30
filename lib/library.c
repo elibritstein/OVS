@@ -5,6 +5,7 @@
 #include <errno.h>
 
 #include "cmap.h"
+#include "dpdk.h"
 #include "hash.h"
 #include "library.h"
 #include "library-provider.h"
@@ -88,6 +89,10 @@ library_register(void)
     unixctl_command_register("library/list", "",
                              0, 0, library_list,
                              NULL);
+
+#ifdef DPDK_NETDEV
+    library_register_one(&library_class_dpdk);
+#endif
 }
 
 void

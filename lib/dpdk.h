@@ -42,4 +42,6 @@ bool dpdk_available(void);
 void print_dpdk_version(void);
 void dpdk_status(const struct ovsrec_open_vswitch *);
 
+extern const struct library_class library_class_dpdk;
+
 #endif /* dpdk.h */

@@ -30,6 +30,7 @@
 
 #include "dirs.h"
 #include "fatal-signal.h"
+#include "library-provider.h"
 #include "netdev-dpdk.h"
 #include "netdev-offload-provider.h"
 #include "openvswitch/dynamic-string.h"
@@ -600,3 +601,28 @@ dpdk_status(const struct ovsrec_open_vswitch *cfg)
         ovsrec_open_vswitch_set_dpdk_version(cfg, rte_version());
     }
 }
+
+static void
+dpdk_library_init(const struct smap *ovs_other_config)
+{
+    smap_replace(CONST_CAST(struct smap *, ovs_other_config), "dpdk-init",
+                 "true");
+    dpdk_init(ovs_other_config);
+}
+
+static void
+dpdk_library_status(const struct ovsrec_library *lib)
+{
+    if (!lib) {
+        return;
+    }
+
+    ovsrec_library_set_initialized(lib, dpdk_available());
+    ovsrec_library_set_status(lib, rte_version());
+}
+
+const struct library_class library_class_dpdk = {
+    .name = "dpdk",
+    .init = dpdk_library_init,
+    .status = dpdk_library_status,
+};
