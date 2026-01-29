@@ -221,3 +221,19 @@ half
 
 OVS_TRAFFIC_VSWITCHD_STOP
 AT_CLEANUP
+
+AT_SETUP([interface - name too long])
+
+OVS_VSWITCHD_START()
+
+BR_NAME=a234567890b23456
+
+AT_CHECK([
+    ovs-vsctl add-br $BR_NAME -- \
+        set bridge $BR_NAME datapath_type=netdev
+], [65], [ignore], [stderr])
+
+AT_CHECK([grep 'name too long' stderr], [0], [ignore])
+
+OVS_VSWITCHD_STOP(["/could not open network device.*name too long/d"])
+AT_CLEANUP
