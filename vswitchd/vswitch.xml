@@ -337,6 +337,22 @@
         </p>
       </column>
 
+      <column name="other_config" key="doca-init"
+              type='{"type": "boolean"}'>
+        <p>
+          A value of <code>true</code> will cause the ovs-vswitchd process to
+          abort if DOCA cannot be initialized.
+        </p>
+        <p>
+          The default value is <code>false</code>. Changing this value requires
+          restarting the daemon
+        </p>
+        <p>
+          If this value is <code>false</code> at startup, any doca ports which
+          are configured in the bridge will fail due to memory errors.
+        </p>
+      </column>
+
       <column name="other_config" key="dpdk-lcore-mask"
               type='{"type": "integer", "minInteger": 1}'>
         <p>
@@ -510,6 +526,7 @@
 
       <column name="other_config" key="per-port-memory"
               type='{"type": "boolean"}'>
+        <p>NOTE: This option is not available for doca.</p>
         <p>
           By default OVS DPDK uses a shared memory model wherein devices
           that have the same MTU and socket values can share the same
@@ -526,6 +543,7 @@
       </column>
 
       <column name="other_config" key="shared-mempool-config">
+              <p>NOTE: This option is not available for doca.</p>
               <p>Specifies dpdk shared mempool config.</p>
               <p>Value should be set in the following form:</p>
               <p>
@@ -942,7 +960,8 @@
       </column>
 
       <column name="doca_initialized">
-        Always false.
+        True if <ref column="other_config" key="doca-init"/> is set to
+        true and the DOCA library is successfully initialized.
       </column>
 
       <group title="Statistics">

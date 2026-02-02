@@ -1,5 +1,8 @@
 Post-v3.7.0
 --------------------
+   - DOCA:
+     * New netev type "doca", available under "netdev" bridge.
+       other_config:doca-init=true should be configured.
 
 
 v3.7.0 - 16 Feb 2026

@@ -60,6 +60,7 @@ dpctl
 dpdk
 dpif
 dst
+eg
 eip
 enablement
 encap
@@ -228,6 +229,7 @@ recirc
 recirculation
 recirculations
 refmap
+representor
 revalidate
 revalidation
 revalidator
