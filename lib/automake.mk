@@ -520,6 +520,12 @@ lib_libopenvswitch_la_SOURCES += \
 	lib/ovs-doca.c \
 	lib/ovs-doca.h
 
+if DOCA_NETDEV
+lib_libopenvswitch_la_SOURCES += \
+	lib/netdev-doca.c \
+	lib/netdev-doca.h
+endif
+
 if WIN32
 lib_libopenvswitch_la_SOURCES += \
 	lib/dpif-netlink.c \
