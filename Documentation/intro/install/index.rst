@@ -44,6 +44,7 @@ Installation from Source
    windows
    userspace
    dpdk
+   doca
    afxdp
 
 Installation from Packages
