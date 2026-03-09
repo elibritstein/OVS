@@ -681,7 +681,7 @@ jobs:
       uses: actions/checkout@v4
     - name: install dependencies
       run: |
-        dnf install -y rpm-build dnf-plugins-core
+        dnf install -y rpm-build dnf-plugins-core libcap-ng-devel
         sed -e 's/@VERSION@/0.0.1/' rhel/openvswitch-fedora.spec.in \
             > /tmp/ovs.spec
         dnf builddep -y /tmp/ovs.spec
