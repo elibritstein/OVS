@@ -18,11 +18,11 @@
 
 #include <config.h>
 
-#include <dirent.h>
 #include <errno.h>
 #include <infiniband/verbs.h>
 #include <net/if.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 #include <rte_bus.h>
 #include <rte_config.h>
@@ -2305,6 +2305,20 @@ netdev_doca_get_config(const struct netdev *netdev, struct smap *args)
     return 0;
 }
 
+static bool
+iface_exists(const char *name)
+{
+    char path[PATH_MAX];
+    struct stat st;
+    int n;
+
+    n = snprintf(path, sizeof path, "/sys/class/net/%s", name);
+    if (!(n >= 0 && n < sizeof path)) {
+        return false;
+    }
+    return stat(path, &st) == 0;
+}
+
 static char *
 netdev_doca_generate_devargs(const char *name, char *devargs, size_t maxlen,
                              char iface[IFNAMSIZ])
@@ -2319,6 +2333,10 @@ netdev_doca_generate_devargs(const char *name, char *devargs, size_t maxlen,
     char *pci;
     int port;
     int len;
+
+    if (!iface_exists(name)) {
+        return NULL;
+    }
 
     if (get_dpdk_iface_name(name, iface_tmp)) {
         VLOG_ERR("%s: get_dpdk_iface_name failed for %s",
