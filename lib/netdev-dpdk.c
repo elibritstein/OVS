@@ -418,6 +418,7 @@ enum dpdk_rx_steer_flags {
 struct netdev_dpdk {
     struct netdev_dpdk_common common;
 
+    struct dpdk_mp *dpdk_mp;
     enum dpdk_dev_type type;
     int buf_size;
 
@@ -845,7 +846,7 @@ netdev_dpdk_mempool_configure(struct netdev_dpdk *dev)
         /* Check for any pre-existing dpdk_mp for the device before accessing
          * the associated mempool.
          */
-        if (dev->common.dpdk_mp != NULL) {
+        if (dev->dpdk_mp != NULL) {
             /* A new MTU was requested, decrement the reference count for the
              * devices current dpdk_mp. This is required even if a pointer to
              * same dpdk_mp is returned by dpdk_mp_get. The refcount for dmp
@@ -853,9 +854,10 @@ netdev_dpdk_mempool_configure(struct netdev_dpdk *dev)
              * must be decremented to keep an accurate refcount for the
              * dpdk_mp.
              */
-            dpdk_mp_put(dev->common.dpdk_mp);
+            dpdk_mp_put(dev->dpdk_mp);
         }
-        dev->common.dpdk_mp = dmp;
+        dev->dpdk_mp = dmp;
+        dev->common.mp = dmp->mp;
         dev->common.mtu = dev->common.requested_mtu;
         dev->common.socket_id = dev->common.requested_socket_id;
         dev->common.max_packet_len = MTU_TO_FRAME_LEN(dev->common.mtu);
@@ -1096,7 +1098,7 @@ dpdk_eth_dev_port_config(struct netdev_dpdk_common *common,
             diag = rte_eth_rx_queue_setup(common->port_id, i,
                                           common->rxq_size,
                                           common->socket_id, NULL,
-                                          common->dpdk_mp->mp);
+                                          common->mp);
             if (diag) {
                 VLOG_INFO("Interface %s unable to setup rxq(%d): %s",
                           common->up.name, i, rte_strerror(-diag));
@@ -1328,7 +1330,7 @@ dpdk_eth_dev_init(struct netdev_dpdk *dev)
         memset(&dev->common.link, 0, sizeof dev->common.link);
     }
 
-    mbp_priv = rte_mempool_get_priv(dev->common.dpdk_mp->mp);
+    mbp_priv = rte_mempool_get_priv(dev->common.mp);
     dev->buf_size = mbp_priv->mbuf_data_room_size - RTE_PKTMBUF_HEADROOM;
 
     atomic_store(&dev->common.started, true);
@@ -1590,7 +1592,8 @@ common_destruct(struct netdev_dpdk *dev)
     OVS_EXCLUDED(dev->common.mutex)
 {
     rte_free(dev->common.tx_q);
-    dpdk_mp_put(dev->common.dpdk_mp);
+    dpdk_mp_put(dev->dpdk_mp);
+    dev->common.mp = NULL;
 
     ovs_list_remove(&dev->common.list_node);
     free(ovsrcu_get_protected(struct ingress_policer *,
@@ -2811,7 +2814,7 @@ netdev_dpdk_vhost_rxq_recv(struct netdev_rxq *rxq,
         return EAGAIN;
     }
 
-    nb_rx = rte_vhost_dequeue_burst(vid, qid, dev->common.dpdk_mp->mp,
+    nb_rx = rte_vhost_dequeue_burst(vid, qid, dev->common.mp,
                                     (struct rte_mbuf **) batch->packets,
                                     NETDEV_MAX_BURST);
     if (!nb_rx) {
@@ -3121,8 +3124,7 @@ dpdk_copy_batch_to_mbuf(struct netdev_dpdk_common *common,
         } else {
             struct dp_packet *pktcopy;
 
-            pktcopy = dpdk_copy_dp_packet_to_mbuf(
-                common->dpdk_mp->mp, packet);
+            pktcopy = dpdk_copy_dp_packet_to_mbuf(common->mp, packet);
             if (pktcopy) {
                 dp_packet_batch_refill(batch, pktcopy, i);
             }
@@ -4654,11 +4656,11 @@ netdev_dpdk_get_mempool_info(struct unixctl_conn *conn,
         ovs_mutex_lock(&dev->common.mutex);
         ovs_mutex_lock(&dpdk_mp_mutex);
 
-        if (dev->common.dpdk_mp) {
-            rte_mempool_dump(stream, dev->common.dpdk_mp->mp);
+        if (dev->common.mp) {
+            rte_mempool_dump(stream, dev->common.mp);
             fprintf(stream, "    count: avail (%u), in use (%u)\n",
-                    rte_mempool_avail_count(dev->common.dpdk_mp->mp),
-                    rte_mempool_in_use_count(dev->common.dpdk_mp->mp));
+                    rte_mempool_avail_count(dev->common.mp),
+                    rte_mempool_in_use_count(dev->common.mp));
         } else {
             error = "Not allocated";
         }
@@ -4783,7 +4785,7 @@ new_device(int vid)
             if (dev->common.requested_n_txq < qp_num
                 || dev->common.requested_n_rxq < qp_num
                 || dev->common.requested_socket_id != newnode
-                || dev->common.dpdk_mp == NULL) {
+                || dev->common.mp == NULL) {
                 dev->common.requested_socket_id = newnode;
                 dev->common.requested_n_rxq = qp_num;
                 dev->common.requested_n_txq = qp_num;
