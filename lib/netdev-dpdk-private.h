@@ -102,7 +102,7 @@ struct netdev_dpdk_common {
         uint16_t port_id;
         bool attached;
         bool is_representor;
-        bool started;
+        atomic_bool started;
         struct eth_addr hwaddr;
         int mtu;
         int socket_id;
@@ -156,6 +156,15 @@ struct netdev_dpdk_common {
         uint64_t *rte_xstats_ids;
     );
 };
+
+static inline bool
+dpdk_dev_is_started(const struct netdev_dpdk_common *common)
+{
+    bool started;
+
+    atomic_read(CONST_CAST(atomic_bool *, &common->started), &started);
+    return started;
+}
 
 /* Static variables. */
 
