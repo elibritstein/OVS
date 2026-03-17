@@ -116,7 +116,7 @@ struct netdev_dpdk_common {
 
     PADDED_MEMBERS_CACHELINE_MARKER(CACHE_LINE_SIZE, cacheline1,
         struct ovs_mutex mutex;
-        struct dpdk_mp *dpdk_mp;
+        struct rte_mempool *mp;
     );
 
     PADDED_MEMBERS(CACHE_LINE_SIZE,
