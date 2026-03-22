@@ -62,6 +62,7 @@ void unixctl_command_reply_error(struct unixctl_conn *, const char *error);
 void unixctl_command_reply(struct unixctl_conn *, const char *body);
 void unixctl_command_reply_json(struct unixctl_conn *,
                                 struct json *body);
+unixctl_cb_func unixctl_mem_stream;
 
 #ifdef  __cplusplus
 }

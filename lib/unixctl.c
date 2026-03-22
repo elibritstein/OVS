@@ -643,3 +643,27 @@ unixctl_client_transact(struct jsonrpc *client, const char *command, int argc,
     jsonrpc_msg_destroy(reply);
     return error;
 }
+
+void
+unixctl_mem_stream(struct unixctl_conn *conn, int argc OVS_UNUSED,
+                   const char *argv[] OVS_UNUSED, void *aux)
+{
+    void (*callback)(FILE *) = aux;
+    char *response = NULL;
+    FILE *stream;
+    size_t size;
+
+    stream = open_memstream(&response, &size);
+    if (!stream) {
+        response = xasprintf("Unable to open memstream: %s.",
+                             ovs_strerror(errno));
+        unixctl_command_reply_error(conn, response);
+        goto out;
+    }
+
+    callback(stream);
+    fclose(stream);
+    unixctl_command_reply(conn, response);
+out:
+    free(response);
+}
