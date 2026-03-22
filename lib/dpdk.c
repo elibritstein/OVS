@@ -273,30 +273,6 @@ static cookie_io_functions_t dpdk_log_func = {
     .write = dpdk_log_write,
 };
 
-static void
-dpdk_unixctl_mem_stream(struct unixctl_conn *conn, int argc OVS_UNUSED,
-                        const char *argv[] OVS_UNUSED, void *aux)
-{
-    void (*callback)(FILE *) = aux;
-    char *response = NULL;
-    FILE *stream;
-    size_t size;
-
-    stream = open_memstream(&response, &size);
-    if (!stream) {
-        response = xasprintf("Unable to open memstream: %s.",
-                             ovs_strerror(errno));
-        unixctl_command_reply_error(conn, response);
-        goto out;
-    }
-
-    callback(stream);
-    fclose(stream);
-    unixctl_command_reply(conn, response);
-out:
-    free(response);
-}
-
 static int
 dpdk_parse_log_level(const char *s)
 {
@@ -491,16 +467,16 @@ dpdk_init__(const struct smap *ovs_other_config)
     }
 
     unixctl_command_register("dpdk/lcore-list", "", 0, 0,
-                             dpdk_unixctl_mem_stream, rte_lcore_dump);
+                             unixctl_mem_stream, rte_lcore_dump);
     unixctl_command_register("dpdk/log-list", "", 0, 0,
-                             dpdk_unixctl_mem_stream, rte_log_dump);
+                             unixctl_mem_stream, rte_log_dump);
     unixctl_command_register("dpdk/log-set", "{level | pattern:level}", 0,
                              INT_MAX, dpdk_unixctl_log_set, NULL);
     unixctl_command_register("dpdk/get-malloc-stats", "", 0, 0,
-                             dpdk_unixctl_mem_stream,
+                             unixctl_mem_stream,
                              malloc_dump_stats_wrapper);
     unixctl_command_register("dpdk/get-memzone-stats", "", 0, 0,
-                             dpdk_unixctl_mem_stream, rte_memzone_dump);
+                             unixctl_mem_stream, rte_memzone_dump);
 
     /* We are called from the main thread here */
     RTE_PER_LCORE(_lcore_id) = NON_PMD_CORE_ID;
