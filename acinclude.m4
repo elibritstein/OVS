@@ -494,6 +494,10 @@ AC_DEFUN([OVS_CHECK_DPDK], [
           non-standard location.]))
       ])
 
+    AS_IF([test "$ac_cv_func_open_memstream" != yes],
+      [AC_MSG_ERROR(m4_normalize([
+        open_memstream is required when building with DPDK.]))])
+
     CFLAGS="$ovs_save_CFLAGS"
     LDFLAGS="$ovs_save_LDFLAGS"
     # Stripping out possible instruction set specific configuration that DPDK
