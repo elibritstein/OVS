@@ -15,22 +15,26 @@
  */
 
 #include <config.h>
-#include "unixctl.h"
+
 #include <errno.h>
 #include <getopt.h>
+#include <stdio.h>
 #include <unistd.h>
+
 #include "command-line.h"
 #include "coverage.h"
 #include "dirs.h"
-#include "openvswitch/dynamic-string.h"
-#include "openvswitch/json.h"
 #include "jsonrpc.h"
-#include "openvswitch/list.h"
-#include "openvswitch/poll-loop.h"
-#include "openvswitch/shash.h"
 #include "stream.h"
 #include "stream-provider.h"
 #include "svec.h"
+#include "unixctl.h"
+
+#include "openvswitch/dynamic-string.h"
+#include "openvswitch/json.h"
+#include "openvswitch/list.h"
+#include "openvswitch/poll-loop.h"
+#include "openvswitch/shash.h"
 #include "openvswitch/vlog.h"
 
 VLOG_DEFINE_THIS_MODULE(unixctl);
@@ -643,3 +647,33 @@ unixctl_client_transact(struct jsonrpc *client, const char *command, int argc,
     jsonrpc_msg_destroy(reply);
     return error;
 }
+
+#ifdef HAVE_OPEN_MEMSTREAM
+
+void
+unixctl_mem_stream(struct unixctl_conn *conn, int argc OVS_UNUSED,
+                   const char *argv[] OVS_UNUSED, void *aux)
+{
+    void (*callback)(FILE *) = aux;
+    char *response = NULL;
+    FILE *stream;
+    size_t size;
+
+    ovs_assert(callback);
+
+    stream = open_memstream(&response, &size);
+    if (!stream) {
+        response = xasprintf("Unable to open memstream: %s.",
+                             ovs_strerror(errno));
+        unixctl_command_reply_error(conn, response);
+        goto out;
+    }
+
+    callback(stream);
+    fclose(stream);
+    unixctl_command_reply(conn, response);
+out:
+    free(response);
+}
+
+#endif
