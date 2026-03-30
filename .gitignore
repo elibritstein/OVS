@@ -34,6 +34,7 @@
 /aclocal.m4
 /all-gitfiles
 /autom4te.cache
+/build.log
 /build-arch-stamp
 /build-indep-stamp
 /compile
