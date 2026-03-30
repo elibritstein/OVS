@@ -93,6 +93,7 @@ EXTRA_DIST = \
 	.readthedocs.yaml \
 	appveyor.yml \
 	boot.sh \
+	build.sh \
 	$(MAN_FRAGMENTS) \
 	$(MAN_ROOTS) \
 	.mailmap
