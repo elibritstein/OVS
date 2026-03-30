@@ -73,6 +73,7 @@ EXTRA_DIST = \
 	.github/workflows/build-and-test.yml \
 	.readthedocs.yaml \
 	boot.sh \
+	build.sh \
 	$(MAN_FRAGMENTS) \
 	$(MAN_ROOTS) \
 	.mailmap
