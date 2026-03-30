@@ -76,6 +76,7 @@ EXTRA_DIST = \
 	.github/workflows/freebsd.yml \
 	.readthedocs.yaml \
 	boot.sh \
+	build.sh \
 	$(MAN_FRAGMENTS) \
 	$(MAN_ROOTS) \
 	.mailmap
