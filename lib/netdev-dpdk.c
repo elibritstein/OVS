@@ -1311,7 +1311,6 @@ dpdk_eth_dev_init(struct netdev_dpdk *dev)
                  rte_strerror(-diag));
         return -diag;
     }
-    dev->common.started = true;
 
     netdev_dpdk_configure_xstats(&dev->common);
 
@@ -1331,6 +1330,9 @@ dpdk_eth_dev_init(struct netdev_dpdk *dev)
 
     mbp_priv = rte_mempool_get_priv(dev->common.dpdk_mp->mp);
     dev->buf_size = mbp_priv->mbuf_data_room_size - RTE_PKTMBUF_HEADROOM;
+
+    atomic_store(&dev->common.started, true);
+
     return 0;
 }
 
@@ -1399,7 +1401,7 @@ common_construct(struct netdev *netdev, dpdk_port_t port_no,
     dev->vhost_reconfigured = false;
     dev->virtio_features_state = OVS_VIRTIO_F_CLEAN;
     dev->common.attached = false;
-    dev->common.started = false;
+    atomic_init(&dev->common.started, false);
 
     ovsrcu_init(&dev->qos_conf, NULL);
 
@@ -1610,7 +1612,7 @@ netdev_dpdk_destruct(struct netdev *netdev)
     dpdk_rx_steer_unconfigure(dev);
 
     rte_eth_dev_stop(dev->common.port_id);
-    dev->common.started = false;
+    atomic_store(&dev->common.started, false);
 
     if (dev->common.attached) {
         bool dpdk_resources_still_used = false;
@@ -6113,7 +6115,7 @@ netdev_dpdk_reconfigure(struct netdev *netdev)
         && dev->common.txq_size == dev->common.requested_txq_size
         && eth_addr_equals(dev->common.hwaddr, dev->common.requested_hwaddr)
         && dev->common.socket_id == dev->common.requested_socket_id
-        && dev->common.started && !pending_reset) {
+        && dpdk_dev_is_started(&dev->common) && !pending_reset) {
         /* Reconfiguration is unnecessary */
 
         goto out;
@@ -6135,7 +6137,7 @@ retry:
         rte_eth_dev_stop(dev->common.port_id);
     }
 
-    dev->common.started = false;
+    atomic_store(&dev->common.started, false);
 
     err = netdev_dpdk_mempool_configure(dev);
     if (err && err != EEXIST) {

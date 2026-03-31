@@ -109,7 +109,7 @@ struct netdev_dpdk_common {
         uint16_t port_id;
         bool attached;
         bool is_representor;
-        bool started;
+        atomic_bool started;
         struct eth_addr hwaddr;
         int mtu;
         int socket_id;
@@ -168,6 +168,15 @@ static inline struct netdev_dpdk_common *
 netdev_dpdk_common_cast(const struct netdev *netdev)
 {
     return CONTAINER_OF(netdev, struct netdev_dpdk_common, up);
+}
+
+static inline bool
+dpdk_dev_is_started(struct netdev_dpdk_common *common)
+{
+    bool started;
+
+    atomic_read(&common->started, &started);
+    return started;
 }
 
 #endif /* NETDEV_DPDK_PRIVATE_H */
