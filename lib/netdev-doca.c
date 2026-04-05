@@ -982,8 +982,8 @@ get_pci(const char *name, char *pci, size_t maxlen, bool *is_rep)
 
     if (!found) {
         ret = DOCA_ERROR_NOT_FOUND;
-        VLOG_ERR("%s: Not found. Error: %d (%s)", name, ret,
-                 doca_error_get_descr(ret));
+        VLOG_WARN("%s: Not found. Error: %d (%s)", name, ret,
+                  doca_error_get_descr(ret));
     }
 
 out:
@@ -2365,15 +2365,15 @@ netdev_doca_generate_devargs(const char *name, char *devargs, size_t maxlen,
     ovs_strlcpy(iface, name, IFNAMSIZ);
 
     if (get_pci(name, device, sizeof device, &is_rep)) {
-        VLOG_ERR("%s: get_pci failed for %s", OVS_SOURCE_LOCATOR, name);
+        VLOG_WARN("%s: get_pci failed for %s", OVS_SOURCE_LOCATOR, name);
         return NULL;
     }
 
     pci = device;
 
     if (get_phys_port_name(name, phys_port_name_, sizeof phys_port_name_)) {
-        VLOG_ERR("%s: get_phys_port_name failed for %s",
-                 OVS_SOURCE_LOCATOR, name);
+        VLOG_WARN("%s: get_phys_port_name failed for %s",
+                  OVS_SOURCE_LOCATOR, name);
         return NULL;
     }
 
