@@ -29,6 +29,10 @@
 #include "openvswitch/list.h"
 #include "openvswitch/vlog.h"
 
+/* Upper bound on refmap_ref() iterations where ovs_refcount_try_ref_rcu fails
+ * under map_lock after a successful protected lookup (livelock mitigation). */
+#define REFMAP_REF_MAX_RETRIES 1024
+
 VLOG_DEFINE_THIS_MODULE(refmap);
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(600, 600);
 
@@ -323,7 +327,7 @@ refmap_lookup_protected(struct refmap *rfm, void *key, uint32_t hash)
 
     CMAP_FOR_EACH_WITH_HASH_PROTECTED (node, map_node, hash, &rfm->map) {
         if (!memcmp(key, refmap_node_key(node), rfm->key_size) &&
-            ovs_refcount_read(&node->refcount) > 1) {
+            ovs_refcount_read(&node->refcount) >= 1) {
             return node;
         }
     }
@@ -346,13 +350,41 @@ refmap_lookup(struct refmap *rfm, void *key, uint32_t hash)
     return NULL;
 }
 
+/* Fast path (refmap_lookup + try_ref_one) and locked path (protected lookup +
+ * try_ref_one).  refmap_ref calls this first, then may take map_lock again and
+ * use ovs_refcount_try_ref_rcu on the same key before allocating. */
+static struct refmap_node *
+refmap_try_ref__(struct refmap *rfm, void *key, uint32_t hash)
+{
+    struct refmap_node *node;
+
+    node = refmap_lookup(rfm, key, hash);
+    if (node && refmap_refcount_try_ref_one(&node->refcount)) {
+        return node;
+    }
+
+    ovs_mutex_lock(&rfm->map_lock);
+
+    node = refmap_lookup_protected(rfm, key, hash);
+    if (node && refmap_refcount_try_ref_one(&node->refcount)) {
+        ovs_mutex_unlock(&rfm->map_lock);
+        return node;
+    }
+
+    ovs_mutex_unlock(&rfm->map_lock);
+    return NULL;
+}
+
 void *
 refmap_try_ref(struct refmap *rfm, void *key)
 {
     struct refmap_node *node;
+    uint32_t hash;
 
-    node = refmap_lookup(rfm, key, refmap_key_hash(rfm, key));
-    if (!node || !refmap_refcount_try_ref_one(&node->refcount)) {
+    hash = refmap_key_hash(rfm, key);
+
+    node = refmap_try_ref__(rfm, key, hash);
+    if (!node) {
         return NULL;
     }
 
@@ -363,44 +395,67 @@ refmap_try_ref(struct refmap *rfm, void *key)
 void *
 refmap_ref(struct refmap *rfm, void *key, void *arg)
 {
+    unsigned int try_ref_rcu_retries = 0;
     struct refmap_node *node;
     bool error = false;
     uint32_t hash;
     void *value;
+    bool retry;
 
     hash = refmap_key_hash(rfm, key);
+    do {
+        retry = false;
 
-    node = refmap_lookup(rfm, key, hash);
-    if (node && refmap_refcount_try_ref_one(&node->refcount)) {
+        node = refmap_try_ref__(rfm, key, hash);
+        if (node) {
+            value = refmap_node_value(rfm, node);
+            break;
+        }
+
+        ovs_mutex_lock(&rfm->map_lock);
+
+        /* Another thread may have inserted between refmap_try_ref__ and this
+         * lock, or refcount may allow try_ref_rcu where try_ref_one could
+         * not.
+         */
+        node = refmap_lookup_protected(rfm, key, hash);
+        if (node) {
+            if (ovs_refcount_try_ref_rcu(&node->refcount)) {
+                value = refmap_node_value(rfm, node);
+                ovs_mutex_unlock(&rfm->map_lock);
+                break;
+            }
+
+            ovs_mutex_unlock(&rfm->map_lock);
+            if (++try_ref_rcu_retries > REFMAP_REF_MAX_RETRIES) {
+                VLOG_WARN_RL(&rl, "%s: refmap_ref try_ref_rcu retry limit "
+                             "exceeded", rfm->name);
+                ovs_abort(0, "%s: refmap_ref try_ref_rcu retry limit exceeded",
+                          rfm->name);
+            }
+
+            retry = true;
+            continue;
+        }
+
+        node = xzalloc(refmap_node_total_size(rfm));
+        node->hash = hash;
+        ovs_refcount_init(&node->refcount);
+        memcpy(refmap_node_key(node), key, rfm->key_size);
         value = refmap_node_value(rfm, node);
-        goto out;
-    }
+        if (rfm->value_init(value, arg) == 0) {
+            cmap_insert(&rfm->map, &node->map_node, node->hash);
+            ovs_refcount_ref(&node->refcount);
+        } else {
+            value = NULL;
+            error = true;
+            VLOG_WARN("%s: value_init failed", rfm->name);
+        }
 
-    ovs_mutex_lock(&rfm->map_lock);
-
-    node = refmap_lookup_protected(rfm, key, hash);
-    if (node && refmap_refcount_try_ref_one(&node->refcount)) {
         ovs_mutex_unlock(&rfm->map_lock);
-        value = refmap_node_value(rfm, node);
-        goto out;
-    }
+        break;
+    } while (retry);
 
-    node = xzalloc(refmap_node_total_size(rfm));
-    node->hash = hash;
-    ovs_refcount_init(&node->refcount);
-    memcpy(refmap_node_key(node), key, rfm->key_size);
-    value = refmap_node_value(rfm, node);
-    if (rfm->value_init(value, arg) == 0) {
-        cmap_insert(&rfm->map, &node->map_node, node->hash);
-        ovs_refcount_ref(&node->refcount);
-    } else {
-        value = NULL;
-        error = true;
-        VLOG_WARN("%s: value_init failed", rfm->name);
-    }
-    ovs_mutex_unlock(&rfm->map_lock);
-
-out:
     if (error) {
         free(node);
         return NULL;
@@ -421,7 +476,7 @@ refmap_try_ref_value(struct refmap *rfm, void *value)
     }
 
     node = refmap_node_from_value(rfm, value);
-    if (!node || !refmap_refcount_try_ref_one(&node->refcount)) {
+    if (!node || !ovs_refcount_try_ref_rcu(&node->refcount)) {
         return false;
     }
 
@@ -447,13 +502,14 @@ refmap_unref(struct refmap *rfm, void *value)
 
     if (ovs_refcount_unref(&node->refcount) == 2) {
         ovs_mutex_lock(&rfm->map_lock);
-        if (ovs_refcount_read(&node->refcount) > 1) {
+        if (ovs_refcount_unref(&node->refcount) > 1) {
+            /* Another thread may have taken another reference.  Rollback. */
+            ovs_refcount_ref(&node->refcount);
             ovs_mutex_unlock(&rfm->map_lock);
             return false;
         }
         rfm->value_uninit(refmap_node_value(rfm, node));
         cmap_remove(&rfm->map, &node->map_node, node->hash);
-        ovs_assert(ovs_refcount_unref(&node->refcount) == 1);
         ovs_mutex_unlock(&rfm->map_lock);
         ovsrcu_postpone_embedded(free, node, rcu_node);
         return true;

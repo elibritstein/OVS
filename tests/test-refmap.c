@@ -96,6 +96,16 @@ value_init(void *value_, void *arg_)
     return 0;
 }
 
+/* Counts value_init calls for check_double_value_init_concurrent. */
+static atomic_count double_init_count = ATOMIC_COUNT_INIT(0);
+
+static int
+value_init_count_double_init(void *value_, void *arg_)
+{
+    atomic_count_inc(&double_init_count);
+    return value_init(value_, arg_);
+}
+
 static void
 value_uninit(void *value_)
 {
@@ -106,6 +116,53 @@ value_uninit(void *value_)
 
     *value->hdl = 2;
     value->hdl = NULL;
+}
+
+/* Lifecycle for check_value_init_uninit_order: a new value_init for the same
+ * key must not run until the previous value_uninit has fully completed. */
+enum {
+    VALUE_LIFECYCLE_IDLE = 0,
+    VALUE_LIFECYCLE_LIVE = 1,
+    VALUE_LIFECYCLE_TEARDOWN = 2,
+};
+
+static atomic_uint value_lifecycle_state;
+
+static int
+tear_down_order_value_init(void *value_, void *arg_)
+{
+    struct value *value = value_;
+    struct arg *arg = arg_;
+    unsigned int state;
+
+    atomic_read(&value_lifecycle_state, &state);
+    ovs_assert(state == VALUE_LIFECYCLE_IDLE);
+
+    ovs_assert(!value->hdl);
+    *arg->ptr = 1;
+    value->hdl = arg->ptr;
+    atomic_store(&value_lifecycle_state, VALUE_LIFECYCLE_LIVE);
+    return 0;
+}
+
+static void
+tear_down_order_value_uninit(void *value_)
+{
+    struct value *value = value_;
+    unsigned int state;
+
+    atomic_read(&value_lifecycle_state, &state);
+    ovs_assert(state == VALUE_LIFECYCLE_LIVE);
+    atomic_store(&value_lifecycle_state, VALUE_LIFECYCLE_TEARDOWN);
+
+    /* Widen the race window so a buggy refmap could run replacement
+     * value_init before this value_uninit finishes. */
+    xnanosleep(100 * 1000);
+
+    ovs_assert(value->hdl);
+    *value->hdl = 2;
+    value->hdl = NULL;
+    atomic_store(&value_lifecycle_state, VALUE_LIFECYCLE_IDLE);
 }
 
 static struct ds *
@@ -260,6 +317,131 @@ check_try_ref_race(void)
     refmap_destroy(rfm);
 }
 
+/* If an object for a key is going down and another thread tries to ref the
+ * same key, a broken implementation could insert a replacement and run
+ * value_init before value_uninit on the old object has finished.
+ * value_lifecycle_state and tear_down_order_{value_init,value_uninit} detect
+ * that overlap.
+ */
+static void
+check_value_init_uninit_order(void)
+{
+    struct try_ref_race_ctx race_ctx;
+    uint32_t arg_val = 0;
+    struct refmap *rfm;
+    unsigned int state;
+    pthread_t worker;
+    struct arg arg = { .ptr = &arg_val };
+
+    atomic_init(&value_lifecycle_state, VALUE_LIFECYCLE_IDLE);
+
+    rfm = refmap_create("init-uninit-order", sizeof(struct key),
+                        sizeof(struct value), tear_down_order_value_init,
+                        tear_down_order_value_uninit, value_format);
+
+    memset(&race_ctx.key, 0, sizeof race_ctx.key);
+    race_ctx.key.idx = 0;
+    race_ctx.rfm = rfm;
+    atomic_init(&race_ctx.stop, false);
+
+    worker = ovs_thread_create("init-uninit-order", try_ref_racer, &race_ctx);
+
+    for (int i = 0; i < 10000; i++) {
+        void *value;
+
+        arg_val = 0;
+        value = refmap_ref(rfm, &race_ctx.key, &arg);
+        refmap_unref(rfm, value);
+    }
+
+    atomic_store(&race_ctx.stop, true);
+    xpthread_join(worker, NULL);
+
+    check_refmap(rfm, NULL, 0);
+    atomic_read(&value_lifecycle_state, &state);
+    ovs_assert(state == VALUE_LIFECYCLE_IDLE);
+
+    refmap_destroy(rfm);
+}
+
+/* Concurrent refmap_ref on the same key must run value_init exactly once.
+ * Without a second lookup under map_lock, two threads could both allocate
+ * after refmap_try_ref__ returns NULL (another thread may insert before
+ * refmap_ref takes map_lock for allocation or try_ref_rcu). */
+#define DOUBLE_INIT_THREADS 16
+
+struct double_init_worker_ctx {
+    struct ovs_barrier *barrier_start;
+    struct ovs_barrier *barrier_after_ref;
+    struct refmap *rfm;
+    struct key *key;
+    struct arg *arg;
+};
+
+static void *
+double_init_worker(void *aux)
+{
+    struct double_init_worker_ctx *ctx = aux;
+    void *value;
+
+    /* All threads call refmap_ref together; no refmap_unref until everyone
+     * has a ref. */
+    ovs_barrier_block(ctx->barrier_start);
+    value = refmap_ref(ctx->rfm, ctx->key, ctx->arg);
+    ovs_assert(value);
+    ovs_barrier_block(ctx->barrier_after_ref);
+    refmap_unref(ctx->rfm, value);
+    return NULL;
+}
+
+static void
+check_double_value_init_concurrent(void)
+{
+    pthread_t threads[DOUBLE_INIT_THREADS];
+    struct ovs_barrier barrier_after_ref;
+    struct double_init_worker_ctx ctx;
+    struct ovs_barrier barrier_start;
+    uint32_t arg_val = 0;
+    struct refmap *rfm;
+    struct key key;
+    struct arg arg = { .ptr = &arg_val };
+
+    memset(&key, 0, sizeof key);
+    atomic_count_init(&double_init_count, 0);
+
+    rfm = refmap_create("double-init", sizeof(struct key),
+                        sizeof(struct value), value_init_count_double_init,
+                        value_uninit, value_format);
+
+    ovs_barrier_init(&barrier_start, DOUBLE_INIT_THREADS);
+    ovs_barrier_init(&barrier_after_ref, DOUBLE_INIT_THREADS);
+    ctx.barrier_start = &barrier_start;
+    ctx.barrier_after_ref = &barrier_after_ref;
+    ctx.rfm = rfm;
+    ctx.key = &key;
+    ctx.arg = &arg;
+
+    for (int i = 0; i < DOUBLE_INIT_THREADS; i++) {
+        threads[i] = ovs_thread_create("double-init", double_init_worker,
+                                       &ctx);
+    }
+
+    for (int i = 0; i < DOUBLE_INIT_THREADS; i++) {
+        xpthread_join(threads[i], NULL);
+    }
+
+    ovs_barrier_destroy(&barrier_start);
+    ovs_barrier_destroy(&barrier_after_ref);
+
+    ovs_assert(atomic_count_get(&double_init_count) == 1);
+    /* value_init sets arg to 1; value_uninit sets it to 2 when the entry is
+     * torn down. */
+    ovs_assert(arg_val == 2);
+    check_refmap(rfm, NULL, 0);
+
+    refmap_destroy(rfm);
+}
+
 static void
 run_check(struct ovs_cmdl_context *ctx OVS_UNUSED)
 {
@@ -370,6 +552,8 @@ run_check(struct ovs_cmdl_context *ctx OVS_UNUSED)
 
     refmap_destroy(rfm);
 
+    check_double_value_init_concurrent();
+    check_value_init_uninit_order();
     check_try_ref_race();
 }
 
@@ -577,11 +761,11 @@ struct aux {
 static void *
 benchmark_thread_worker(void *aux_)
 {
-    unsigned int tid = thread_id();
     unsigned int n_ids_per_thread;
-    unsigned int start_idx;
     struct aux *aux = aux_;
     struct refmap *rfm;
+    unsigned int tid = thread_id();
+    unsigned int start_idx;
     unsigned int start;
     uint32_t *th_ids;
     void **th_privs;
