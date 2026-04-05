@@ -101,6 +101,9 @@ netdev_doca_destruct(struct netdev *netdev);
 static int
 netdev_doca_port_stop(struct netdev *netdev)
     OVS_REQUIRES(doca_mutex);
+static void
+netdev_doca_mempool_unconfigure(struct netdev_doca *dev)
+    OVS_REQUIRES(dev->common.mutex);
 
 static dpdk_port_t
 netdev_doca_get_esw_mgr_port_id(const struct netdev *netdev)
@@ -1418,6 +1421,8 @@ netdev_doca_port_stop(struct netdev *netdev)
 
     rte_eth_dev_stop(common->port_id);
 
+    netdev_doca_mempool_unconfigure(dev);
+
     return err;
 }
 
@@ -1641,6 +1646,19 @@ doca_calculate_mbufs(struct netdev_doca *dev)
               + MIN(RTE_MAX_LCORE, 1 + common->requested_n_rxq) * MP_CACHE_SZ;
 
     return n_mbufs;
+}
+
+static void
+netdev_doca_mempool_unconfigure(struct netdev_doca *dev)
+    OVS_REQUIRES(dev->common.mutex)
+{
+    struct netdev_dpdk_common *common = &dev->common;
+
+    if (netdev_doca_is_esw_mgr(&common->up) && common->mp) {
+        rte_mempool_free(common->mp);
+    }
+
+    common->mp = NULL;
 }
 
 static int
