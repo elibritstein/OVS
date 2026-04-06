@@ -1419,7 +1419,9 @@ netdev_doca_port_stop(struct netdev *netdev)
         dev->port = NULL;
     }
 
-    rte_eth_dev_stop(common->port_id);
+    if (common->port_id != DPDK_ETH_PORT_ID_INVALID) {
+        rte_eth_dev_stop(common->port_id);
+    }
 
     netdev_doca_mempool_unconfigure(dev);
 
