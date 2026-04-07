@@ -454,6 +454,18 @@ AC_DEFUN([OVS_CHECK_DOCA], [
           DOCA_LIBS=$(echo "$DOCA_LIBS" | sed "s/-l${lib}//g")
         fi
       done
+
+    fi
+
+    # Strip DPDK from DOCA_LIBS; it is covered by DPDK_LIB/DPDK_vswitchd_LDFLAGS.
+    DOCA_LIBS=$(echo "$DOCA_LIBS" | sed 's/-l:librte_[[^ ]]*\.a//g; s/-lrte_[[^ ]]*//g; s@-L[[^ ]]*/dpdk[[^ ]]*/lib[[^ ]]*@@g' | sed 's/  */ /g; s/-Wl,--whole-archive  *-Wl,--no-whole-archive//g; s/^ *//; s/ *$//')
+
+    # For shared builds, ensure doca_common is included (may only be
+    # in Requires.private and not in Libs field of .pc files).
+    if test "$DOCA_LINK" = shared; then
+      if ! echo "$DOCA_LIBS" | grep -q "\-ldoca_common"; then
+        DOCA_LIBS="$DOCA_LIBS -ldoca_common"
+      fi
     fi
 
     USED_PATH=`$PKG_CONFIG --variable=prefix doca-flow`
@@ -479,13 +491,15 @@ AC_DEFUN([OVS_CHECK_DOCA], [
           was not automatically disabled.]))
       ])
 
-    # DOCA's static pkg-config output already includes DPDK through
-    # its transitive dependency on libdpdk (via doca-dpdk-bridge), so
-    # no need to add DPDK_LIB separately for static link tests.
+    # DPDK was stripped from DOCA_LIBS above; add DPDK_LIB for the link test.
     if test "$enable_shared" = yes; then
       LIBS="$DOCA_LIBS $LIBS"
     else
-      LIBS="$DOCA_LIBS $ovs_save_libs_before_dpdk"
+      if test "$DOCA_LINK" = static; then
+        LIBS="$DOCA_LIBS $DPDK_LIB $ovs_save_libs_before_dpdk"
+      else
+        LIBS="$DOCA_LIBS $ovs_save_libs_before_dpdk"
+      fi
     fi
     AC_MSG_CHECKING([for DOCA-flow link])
     AC_LINK_IFELSE(
@@ -507,6 +521,11 @@ AC_DEFUN([OVS_CHECK_DOCA], [
       ])
     CFLAGS="$ovs_save_CFLAGS"
     LDFLAGS="$ovs_save_LDFLAGS"
+    # Keep bare DOCA libs (no --whole-archive) in LIBS; OVS_LDFLAGS covers the rest.
+    if test "$enable_shared" != yes && test "$DOCA_LINK" = static; then
+      doca_libs_no_wa=$(echo "$DOCA_LIBS" | sed 's/ *-Wl,--whole-archive//g; s/ *-Wl,--no-whole-archive//g')
+      LIBS="$doca_libs_no_wa $ovs_save_libs_before_dpdk"
+    fi
     OVS_CFLAGS="$OVS_CFLAGS $DOCA_INCLUDE -Wno-deprecated-declarations -DALLOW_EXPERIMENTAL_API"
 
     # DOCA libraries are very specific in their ordering and inherit DPDK
@@ -524,10 +543,8 @@ AC_DEFUN([OVS_CHECK_DOCA], [
     # object trying to link against libopenvswitch. It means every
     # binary generated will contain DOCA unfortunately.
     if test "$DOCA_LINK" = static; then
-      # DOCA's static pkg-config output already includes DPDK through
-      # its transitive dependency on libdpdk (via doca-dpdk-bridge).
-      OVS_LDFLAGS="$OVS_LDFLAGS $DOCA_LDFLAGS"
-      # Clear to prevent double linkage from Makefile.am
+      OVS_LDFLAGS="$OVS_LDFLAGS $DOCA_LDFLAGS $DPDK_vswitchd_LDFLAGS"
+      # Clear to prevent double linkage from Makefile.am.
       DPDK_vswitchd_LDFLAGS=""
     else
       # For shared builds, DPDK is not in DOCA's output (libdpdk is in
