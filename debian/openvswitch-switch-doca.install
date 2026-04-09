@@ -1,0 +1,2 @@
+#!/usr/bin/dh-exec
+_doca/vswitchd/ovs-vswitchd => /usr/lib/openvswitch-switch-doca/ovs-vswitchd-doca
