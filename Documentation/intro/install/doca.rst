@@ -40,10 +40,13 @@ In addition to the requirements described in :doc:`general` and :doc:`dpdk`,
 building Open vSwitch with DOCA requires the following:
 
 - DPDK with mlx5 PMD driver enabled (see :doc:`dpdk`).  The DOCA SDK
-  includes a compatible DPDK build (``dpdk-community-dev``); alternatively,
-  DPDK can be built from source with ``-Denable_drivers=net/mlx5``.
+  includes a compatible DPDK build (``dpdk-community-dev`` on Debian/Ubuntu,
+  ``dpdk-community-devel`` on RPM); alternatively, DPDK can be built from
+  source with ``-Denable_drivers=net/mlx5``.
 
-- DOCA SDK packages (``libdoca-sdk-flow-dev``, ``libdoca-sdk-dpdk-bridge-dev``)
+- DOCA SDK packages (Debian/Ubuntu: ``libdoca-sdk-flow-dev``,
+  ``libdoca-sdk-dpdk-bridge-dev``; RPM: ``doca-sdk-flow-devel``,
+  ``doca-sdk-dpdk-bridge-devel``)
 
 - An NVIDIA BlueField DPU or ConnectX NIC with a supported firmware version
 
@@ -72,8 +75,8 @@ The DOCA SDK can be installed from the NVIDIA package repository.
    On RPM-based distributions::
 
        $ sudo rpm -i doca-repo.rpm
-       $ sudo dnf install -y dpdk-community-devel \
-             libdoca-sdk-flow-devel libdoca-sdk-dpdk-bridge-devel
+       $ sudo dnf install -y dpdk-community-devel doca-sdk-flow-devel \
+             doca-sdk-dpdk-bridge-devel
 
 .. _NVIDIA DOCA Downloads: https://developer.nvidia.com/doca-downloads
 
@@ -102,3 +105,12 @@ OVS must be configured with both ``--with-dpdk`` and ``--with-doca`` flags.
 #. Build and install OVS, as described in :ref:`general-building`
 
 Additional information can be found in :doc:`general`.
+
+Runtime configuration
+~~~~~~~~~~~~~~~~~~~~~
+
+After installation, enabling DOCA ports requires **both**
+``other_config:dpdk-init=true`` and ``other_config:doca-init=true``, and
+``other_config:dpdk-extra`` must include a dummy PCI allow-list so DPDK does
+not probe devices owned by DOCA.  See :doc:`/howto/doca` for the full
+procedure and examples.
