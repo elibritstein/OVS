@@ -39,22 +39,41 @@ Prerequisites
 Enabling DOCA
 ~~~~~~~~~~~~~
 
-The ``doca-init`` option must be set to ``true`` before starting
-``ovs-vswitchd``.  If DOCA cannot be initialized, the process will abort::
+DOCA requires **all** of the following ``other_config`` settings on
+``Open_vSwitch`` before ``ovs-vswitchd`` starts.  Omitting any of them
+produces a misconfigured or non-functional setup:
 
-    $ ovs-vsctl --no-wait set Open_vSwitch . other_config:doca-init=true
+#. **DPDK must initialize.**  Set ``dpdk-init`` to ``true`` (DOCA is layered
+   on DPDK; ``doca-init`` alone is not sufficient).
 
-DOCA also requires DPDK, so ``dpdk-init`` must be enabled as well::
+#. **DOCA must initialize.**  Set ``doca-init`` to ``true``.  If DOCA cannot
+   be initialized, the process may abort.
+
+#. **DPDK must not auto-probe real PCI devices.**  Set ``dpdk-extra`` to
+   include a **dummy** PCI allow-list address (for example
+   ``-a pci:0000:00:00.0``).  This prevents the DPDK EAL from claiming NICs
+   that DOCA manages via the E-Switch.  NVIDIA documents this pattern in
+   the DOCA SDK material for Open vSwitch integration.
+
+Set the three options together (order of ``set`` calls does not matter)::
 
     $ ovs-vsctl --no-wait set Open_vSwitch . other_config:dpdk-init=true
+    $ ovs-vsctl --no-wait set Open_vSwitch . other_config:doca-init=true
+    $ ovs-vsctl set Open_vSwitch . \
+          other_config:dpdk-extra="-a pci:0000:00:00.0"
+
+Replace ``0000:00:00.0`` with any non-existent or otherwise safe dummy PCI
+BDF allowed by your environment if the default is unsuitable.
 
 .. note::
-  Changing either value requires restarting ``ovs-vswitchd``.
+  Changing any of these values requires restarting ``ovs-vswitchd``.
 
-DOCA initialization can be confirmed by checking the ``doca_initialized``
-value::
+Initialization can be confirmed with ``doca_initialized`` and
+``dpdk_initialized``::
 
     $ ovs-vsctl get Open_vSwitch . doca_initialized
+    true
+    $ ovs-vsctl get Open_vSwitch . dpdk_initialized
     true
 
 E-Switch Configuration
@@ -65,15 +84,6 @@ The NIC embedded switch (E-Switch) must be set to ``switchdev`` mode.
 Set the E-Switch to switchdev mode using the PF PCI address::
 
     $ sudo devlink dev eswitch set pci/0000:08:00.0 mode switchdev
-
-DPDK PCI Device Probing
-~~~~~~~~~~~~~~~~~~~~~~~
-
-DPDK must not automatically probe PCI devices when using DOCA ports.  Disable
-automatic probing by passing a dummy allow-list address via ``dpdk-extra``::
-
-    $ ovs-vsctl set Open_vSwitch . \
-          other_config:dpdk-extra="-a pci:0000:00:00.0"
 
 Device Capabilities
 ~~~~~~~~~~~~~~~~~~~
