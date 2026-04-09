@@ -29,6 +29,10 @@ EXTRA_DIST += \
 	debian/openvswitch-switch-dpdk.install \
 	debian/openvswitch-switch-dpdk.postinst \
 	debian/openvswitch-switch-dpdk.prerm \
+	debian/openvswitch-switch-doca.README.Debian \
+	debian/openvswitch-switch-doca.install \
+	debian/openvswitch-switch-doca.postinst \
+	debian/openvswitch-switch-doca.prerm \
 	debian/openvswitch-switch.README.Debian \
 	debian/openvswitch-switch.default \
 	debian/openvswitch-switch.dirs \
@@ -97,15 +101,22 @@ CLEANFILES += debian/copyright
 
 
 if DPDK_NETDEV
+if DOCA_NETDEV
 update_deb_control = \
-	$(AM_V_GEN) sed -e 's/^\# DPDK_NETDEV //' \
+	$(AM_V_GEN) sed -e 's/^\# DPDK_NETDEV //' -e 's/^\# DOCA_NETDEV //' \
 		< $(srcdir)/debian/control.in > debian/control
 DEB_BUILD_OPTIONS ?= nocheck parallel=`nproc`
 else
 update_deb_control = \
-	$(AM_V_GEN) grep -v '^\# DPDK_NETDEV' \
-		< $(srcdir)/debian/control.in > debian/control
-DEB_BUILD_OPTIONS ?= nocheck parallel=`nproc` nodpdk
+	$(AM_V_GEN) sed -e 's/^\# DPDK_NETDEV //' < $(srcdir)/debian/control.in \
+		| grep -v '^\# DOCA_NETDEV' > debian/control
+DEB_BUILD_OPTIONS ?= nocheck parallel=`nproc` nodoca
+endif
+else
+update_deb_control = \
+	$(AM_V_GEN) grep -v '^\# DPDK_NETDEV' < $(srcdir)/debian/control.in \
+		| grep -v '^\# DOCA_NETDEV' > debian/control
+DEB_BUILD_OPTIONS ?= nocheck parallel=`nproc` nodpdk nodoca
 endif
 
 debian/control: $(srcdir)/debian/control.in Makefile
