@@ -9,6 +9,10 @@ case "$1" in
         if [ -x /usr/lib/openvswitch-switch/ovs-vswitchd-dpdk ]; then
             update-alternatives --remove ovs-vswitchd /usr/lib/openvswitch-switch/ovs-vswitchd-dpdk
         fi
+
+        if [ -x /usr/lib/openvswitch-switch-doca/ovs-vswitchd-doca ]; then
+            update-alternatives --remove ovs-vswitchd /usr/lib/openvswitch-switch-doca/ovs-vswitchd-doca
+        fi
         ;;
 
     deconfigure|upgrade|failed-upgrade)
