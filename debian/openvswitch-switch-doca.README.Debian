@@ -1,0 +1,20 @@
+openvswitch-switch-doca
+-------------------------
+
+This package provides a DOCA-enabled Open vSwitch vswitchd binary linked
+statically against DPDK and DOCA. By default, the ovs-vswitchd binary from
+openvswitch-switch is used (see update-alternatives --query ovs-vswitchd).
+
+To select this binary:
+
+   sudo update-alternatives --set ovs-vswitchd \
+        /usr/lib/openvswitch-switch-doca/ovs-vswitchd-doca
+   sudo service openvswitch-switch restart
+
+Configure DOCA via ovsdb.  All of the following are required: enable DPDK
+(`other_config:dpdk-init=true`), enable DOCA (`other_config:doca-init=true`),
+and set `other_config:dpdk-extra` to a dummy PCI allow-list (for example
+`-a pci:0000:00:00.0`) so DPDK does not auto-probe NICs managed by DOCA.
+See Documentation/howto/doca.rst and the NVIDIA DOCA documentation.
+
+ -- Open vSwitch team <dev@openvswitch.org>
