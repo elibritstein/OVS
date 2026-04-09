@@ -43,6 +43,20 @@ ifeq (,$(filter nodpdk, $(DEB_BUILD_OPTIONS)))
 					$(EXTRA_CONFIGURE_OPTS) \
 					)
 endif
+ifeq (,$(filter nodoca, $(DEB_BUILD_OPTIONS)))
+	test -d _doca || mkdir _doca
+	cd _doca && ( \
+		test -e Makefile || \
+		../configure --prefix=/usr --localstatedir=/var \
+					--enable-ssl \
+					--disable-afxdp \
+					--with-dpdk=static \
+					--with-doca=static \
+					--sysconfdir=/etc \
+					$(DATAPATH_CONFIGURE_OPTS) \
+					$(EXTRA_CONFIGURE_OPTS) \
+					)
+endif
 endif
 
 
@@ -76,6 +90,14 @@ ifeq (,$(filter nodpdk, $(DEB_BUILD_OPTIONS)))
 		exit 1; \
 	fi
 endif # nodpdk
+ifeq (,$(filter nodoca, $(DEB_BUILD_OPTIONS)))
+	if $(MAKE) -C _doca check TESTSUITEFLAGS='$(PARALLEL) $(TEST_LIST_DPDK)' || \
+				$(MAKE) -C _doca check TESTSUITEFLAGS='--recheck'; then :; \
+	else \
+		cat _doca/tests/testsuite.log; \
+		exit 1; \
+	fi
+endif # nodoca
 endif # i386/amd64/ppc64el
 endif # nocheck
 
@@ -102,6 +124,9 @@ override_dh_auto_build:
 ifneq (,$(filter i386 amd64 ppc64el arm64, $(DEB_HOST_ARCH)))
 ifeq (,$(filter nodpdk, $(DEB_BUILD_OPTIONS)))
 	dh_auto_build --sourcedirectory=_dpdk
+endif
+ifeq (,$(filter nodoca, $(DEB_BUILD_OPTIONS)))
+	dh_auto_build --sourcedirectory=_doca
 endif
 endif
 
