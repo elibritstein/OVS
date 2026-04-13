@@ -282,7 +282,7 @@ ovsrcu_exit(void)
     }
 }
 
-static void
+static void OVS_NO_SANITIZE_FUNCTION
 ovsrcu_run_cbset(void *aux)
 {
     struct ovsrcu_cbset *cbset = aux;
