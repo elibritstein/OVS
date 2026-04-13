@@ -77,10 +77,34 @@ function clang_analyze()
 }
 
 if [ "$DEB_PACKAGE" ]; then
-    ./boot.sh && ./configure --with-dpdk=$DPDK && make debian
+    NPROC="$(nproc)"
+    if [ "$DEB_WITH_DOCA" ]; then
+        mlx_pc=""
+        for d in $(find /opt/mellanox -name pkgconfig -type d 2>/dev/null | sort -u); do
+            [ -d "$d" ] || continue
+            mlx_pc="${mlx_pc:+$mlx_pc:}$d"
+        done
+        PKG_CONFIG_PATH="${mlx_pc:+$mlx_pc:}${PKG_CONFIG_PATH:-}"
+        export PKG_CONFIG_PATH="${PKG_CONFIG_PATH%:}"
+        sudo ldconfig
+
+        : "${DEB_BUILD_OPTIONS:=with-dpdk with-doca static nocheck parallel=${NPROC}}"
+        ./boot.sh
+        ./configure --prefix=/usr --localstatedir=/var --sysconfdir=/etc \
+            --with-dpdk=static --with-doca=static --enable-Werror
+    else
+        ./boot.sh && ./configure --with-dpdk=$DPDK
+    fi
+    make debian
     mk-build-deps --install --root-cmd sudo --remove debian/control
     dpkg-checkbuilddeps
-    make debian-deb
+    if [ -n "${DEB_BUILD_OPTIONS:-}" ]; then
+        make debian-deb DEB_BUILD_OPTIONS="${DEB_BUILD_OPTIONS}" \
+            EXTRA_CONFIGURE_OPTS="${EXTRA_CONFIGURE_OPTS:-}"
+    else
+        make debian-deb
+    fi
+
     packages=$(ls $(pwd)/../*.deb)
     deps=""
     for pkg in $packages; do

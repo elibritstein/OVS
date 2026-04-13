@@ -4,6 +4,8 @@ on: [push, pull_request]
 
 env:
   python_default: 3.12
+  DOCA_REPO_PKG_URL: "https://www.mellanox.com/downloads/DOCA/DOCA_v3.3.0/host/doca-host_3.3.0-088000-26.01-ubuntu2404_amd64.deb"
+  DOCA_REPO_RPM_URL: "https://www.mellanox.com/downloads/DOCA/DOCA_v3.3.0/host/doca-host-3.3.0-088000_26.01_rhel9.x86_64.rpm"
 
 jobs:
   build-dpdk:
@@ -663,6 +665,33 @@ jobs:
         name: deb-packages-${{ matrix.dpdk }}-dpdk
         path: '/home/runner/work/ovs/*.deb'
 
+  linux-deb-doca:
+    env:
+      deb_dependencies: |
+        linux-headers-$(uname -r) build-essential fakeroot devscripts equivs wget
+      DEB_PACKAGE: yes
+      DEB_WITH_DOCA: yes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+    - name: checkout
+      uses: actions/checkout@v6
+
+    - name: update APT cache
+      run:  sudo apt update || true
+    - name: install dependencies for debian packages
+      run:  sudo apt install -y ${{ env.deb_dependencies }}
+    - name: install DOCA SDK packages
+      run:  ./.ci/doca-install.sh
+    - name: build
+      run:  ./.ci/linux-build.sh
+    - name: upload deb packages
+      uses: actions/upload-artifact@v7
+      with:
+        name: deb-packages-doca
+        path: '/home/runner/work/ovs/*.deb'
+
   build-linux-rpm:
     name: linux rpm fedora
     runs-on: ubuntu-latest
@@ -700,12 +729,43 @@ jobs:
           rpm/rpmbuild/SRPMS/*.rpm
           rpm/rpmbuild/RPMS/*/*.rpm
 
+  linux-rpm-doca:
+    runs-on: ubuntu-latest
+    container: rockylinux:9
+    timeout-minutes: 90
+
+    steps:
+    - name: checkout
+      uses: actions/checkout@v6
+    - name: build RPMs with DOCA
+      run: |
+        set -eux
+        dnf install -y dnf-plugins-core rpm-build git-core wget
+        wget -q "$DOCA_REPO_RPM_URL" -O /tmp/doca-host.rpm
+        dnf install -y /tmp/doca-host.rpm
+        rm -f /tmp/doca-host.rpm
+        dnf install -y doca-sdk-flow-devel doca-sdk-dpdk-bridge-devel \
+          dpdk-community-devel
+        sed -e 's/@VERSION@/0.0.1/' rhel/openvswitch-fedora.spec.in \
+          > /tmp/ovs.spec
+        dnf builddep --exclude='*.i686' -y /tmp/ovs.spec
+        rm -f /tmp/ovs.spec
+        ./boot.sh && ./configure
+        make rpm-fedora RPMBUILD_OPT="--without check --with static --with dpdk --with doca"
+        dnf install -y rpm/rpmbuild/RPMS/*/*.rpm
+    - name: upload rpm packages
+      uses: actions/upload-artifact@v7
+      with:
+        name: rpm-packages-doca
+        path: |
+          rpm/rpmbuild/SRPMS/*.rpm
+          rpm/rpmbuild/RPMS/*/*.rpm
+
   build-doca:
     env:
       dependencies: |
         automake libtool gcc bc libssl-dev llvm-dev libnuma-dev \
         libunbound-dev libunwind-dev libsystemd-dev wget python3-pip
-      DOCA_REPO_PKG_URL: "https://www.mellanox.com/downloads/DOCA/DOCA_v3.3.0/host/doca-host_3.3.0-088000-26.01-ubuntu2404_amd64.deb"
       CC:        ${{ matrix.compiler }}
       DOCA_LINK: ${{ matrix.doca_link }}
 
