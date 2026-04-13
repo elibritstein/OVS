@@ -134,8 +134,10 @@ endif
 
 execute_before_dh_auto_clean:
 	find . -name "*.pyc" -delete
-	if test -d $(PYBUILD_DIR)/build; then \
+	if test -f $(PYBUILD_DIR)/setup.py && test -d $(PYBUILD_DIR)/build; then \
 		pybuild --clean ; \
+	elif test -d $(PYBUILD_DIR)/build; then \
+		rm -rf $(PYBUILD_DIR)/build ; \
 	fi
 
 override_dh_auto_install:

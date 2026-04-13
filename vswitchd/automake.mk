@@ -25,12 +25,16 @@ pkgdata_DATA += vswitchd/vswitch.ovsschema
 # If "python" or "dot" is not available, then we do not add graphical diagram
 # to the documentation.
 if HAVE_DOT
-vswitchd/vswitch.gv: ovsdb/ovsdb-dot.in vswitchd/vswitch.ovsschema
+# $(CURDIR)-qualified paths: a vswitchd/vswitch.pic left in the source tree
+# from an in-tree build must not satisfy VPATH prerequisites for a separate
+# build dir while ovsdb-doc opens the diagram by path.
+VSWITCH_GV = $(CURDIR)/vswitchd/vswitch.gv
+VSWITCH_PIC = $(CURDIR)/vswitchd/vswitch.pic
+$(VSWITCH_GV): ovsdb/ovsdb-dot.in vswitchd/vswitch.ovsschema
 	$(AM_V_GEN)$(OVSDB_DOT) --no-arrows $(srcdir)/vswitchd/vswitch.ovsschema > $@
-vswitchd/vswitch.pic: vswitchd/vswitch.gv ovsdb/dot2pic
-	$(AM_V_GEN)(dot -T plain < vswitchd/vswitch.gv | $(PYTHON3) $(srcdir)/ovsdb/dot2pic -f 3) > $@.tmp && \
+$(VSWITCH_PIC): $(VSWITCH_GV) ovsdb/dot2pic
+	$(AM_V_GEN)(dot -T plain < $(VSWITCH_GV) | $(PYTHON3) $(srcdir)/ovsdb/dot2pic -f 3) > $@.tmp && \
 	mv $@.tmp $@
-VSWITCH_PIC = vswitchd/vswitch.pic
 VSWITCH_DOT_DIAGRAM_ARG = --er-diagram=$(VSWITCH_PIC)
 CLEANFILES += vswitchd/vswitch.gv vswitchd/vswitch.pic
 endif

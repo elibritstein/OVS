@@ -668,7 +668,8 @@ jobs:
   linux-deb-doca:
     env:
       deb_dependencies: |
-        linux-headers-$(uname -r) build-essential fakeroot devscripts equivs wget
+        linux-headers-$(uname -r) build-essential fakeroot devscripts equivs wget \
+        libsystemd-dev
       DEB_PACKAGE: yes
       DEB_WITH_DOCA: yes
     runs-on: ubuntu-24.04

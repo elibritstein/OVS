@@ -77,10 +77,11 @@ function clang_analyze()
 }
 
 if [ "$DEB_PACKAGE" ]; then
+    export DEBIAN_FRONTEND=noninteractive
     NPROC="$(nproc)"
     if [ "$DEB_WITH_DOCA" ]; then
         mlx_pc=""
-        for d in $(find /opt/mellanox -name pkgconfig -type d 2>/dev/null | sort -u); do
+        for d in $(find /opt/mellanox -name pkgconfig -type d 2>/dev/null); do
             [ -d "$d" ] || continue
             mlx_pc="${mlx_pc:+$mlx_pc:}$d"
         done
@@ -96,7 +97,9 @@ if [ "$DEB_PACKAGE" ]; then
         ./boot.sh && ./configure --with-dpdk=$DPDK
     fi
     make debian
-    mk-build-deps --install --root-cmd sudo --remove debian/control
+    mk-build-deps --install --root-cmd "sudo -E" \
+        --tool "apt-get -y --no-install-recommends" \
+        --remove debian/control
     dpkg-checkbuilddeps
     if [ -n "${DEB_BUILD_OPTIONS:-}" ]; then
         make debian-deb DEB_BUILD_OPTIONS="${DEB_BUILD_OPTIONS}" \
