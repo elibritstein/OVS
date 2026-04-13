@@ -77,29 +77,49 @@ function clang_analyze()
 }
 
 if [ "$DEB_PACKAGE" ]; then
-    ./boot.sh && ./configure --with-dpdk=$DPDK && make debian
+    NPROC="$(nproc)"
+    if [ "$DEB_WITH_DOCA" ]; then
+        PKG_CONFIG_PATH="${PKG_CONFIG_PATH:-}"
+        for pc_dir in $(find /opt/mellanox -name pkgconfig -type d 2>/dev/null); do
+            PKG_CONFIG_PATH="${pc_dir}:${PKG_CONFIG_PATH}"
+        done
+        export PKG_CONFIG_PATH="${PKG_CONFIG_PATH%:}"
+        sudo ldconfig
+
+        : "${DEB_BUILD_OPTIONS:=with-dpdk with-doca static nocheck parallel=${NPROC}}"
+        ./boot.sh
+        ./configure --prefix=/usr --localstatedir=/var --sysconfdir=/etc \
+            --with-dpdk=static --with-doca=static --enable-Werror
+    else
+        ./boot.sh && ./configure --with-dpdk=$DPDK
+    fi
+    make debian
     mk-build-deps --install --root-cmd sudo --remove debian/control
     dpkg-checkbuilddeps
-    make debian-deb
-    packages=$(ls $(pwd)/../*.deb)
+    if [ -n "${DEB_BUILD_OPTIONS:-}" ]; then
+        make debian-deb DEB_BUILD_OPTIONS="${DEB_BUILD_OPTIONS}" \
+            EXTRA_CONFIGURE_OPTS="${EXTRA_CONFIGURE_OPTS:-}"
+    else
+        make debian-deb
+    fi
+
+    shopt -s nullglob
+    packages=(../*.deb)
+    test "${#packages[@]}" -gt 0
     deps=""
-    for pkg in $packages; do
+    for pkg in "${packages[@]}"; do
         _ifs=$IFS
         IFS=","
-        for dep in $(dpkg-deb -f $pkg Depends); do
-            dep_name=$(echo "$dep"|awk '{print$1}')
-            # Don't install internal package inter-dependencies from apt
-            echo $dep_name | grep -q openvswitch && continue
+        for dep in $(dpkg-deb -f "$pkg" Depends); do
+            dep_name=$(echo "$dep" | awk '{print $1}')
+            echo "$dep_name" | grep -q openvswitch && continue
             deps+=" $dep_name"
         done
         IFS=$_ifs
     done
-    # install package dependencies from apt
     echo $deps | xargs sudo apt -y install
-    # install the locally built openvswitch packages
-    sudo dpkg -i $packages
+    sudo dpkg -i "${packages[@]}"
 
-    # Check that python C extension is built correctly.
     python3 -c "
 from ovs import _json
 import ovs.json
