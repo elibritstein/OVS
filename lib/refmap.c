@@ -400,12 +400,9 @@ refmap_ref(struct refmap *rfm, void *key, void *arg)
     bool error = false;
     uint32_t hash;
     void *value;
-    bool retry;
 
     hash = refmap_key_hash(rfm, key);
-    do {
-        retry = false;
-
+    for (;;) {
         node = refmap_try_ref__(rfm, key, hash);
         if (node) {
             value = refmap_node_value(rfm, node);
@@ -414,13 +411,14 @@ refmap_ref(struct refmap *rfm, void *key, void *arg)
 
         ovs_mutex_lock(&rfm->map_lock);
 
-        /* Another thread may have inserted between refmap_try_ref__ and this
-         * lock, or refcount may allow try_ref_rcu where try_ref_one could
-         * not.
+        /* Another thread may have inserted between refmap_try_ref__ and
+         * this lock.  Use try_ref_one (count > 1) here: at count=1 the
+         * node is in teardown; retry until it is removed from the map and
+         * we can allocate fresh, avoiding a concurrent double-cleanup race.
          */
         node = refmap_lookup_protected(rfm, key, hash);
         if (node) {
-            if (ovs_refcount_try_ref_rcu(&node->refcount)) {
+            if (refmap_refcount_try_ref_one(&node->refcount)) {
                 value = refmap_node_value(rfm, node);
                 ovs_mutex_unlock(&rfm->map_lock);
                 break;
@@ -428,13 +426,12 @@ refmap_ref(struct refmap *rfm, void *key, void *arg)
 
             ovs_mutex_unlock(&rfm->map_lock);
             if (++try_ref_rcu_retries > REFMAP_REF_MAX_RETRIES) {
-                VLOG_WARN_RL(&rl, "%s: refmap_ref try_ref_rcu retry limit "
-                             "exceeded", rfm->name);
-                ovs_abort(0, "%s: refmap_ref try_ref_rcu retry limit exceeded",
+                VLOG_WARN_RL(&rl, "%s: refmap_ref retry limit exceeded",
+                             rfm->name);
+                ovs_abort(0, "%s: refmap_ref retry limit exceeded",
                           rfm->name);
             }
 
-            retry = true;
             continue;
         }
 
@@ -454,7 +451,7 @@ refmap_ref(struct refmap *rfm, void *key, void *arg)
 
         ovs_mutex_unlock(&rfm->map_lock);
         break;
-    } while (retry);
+    }
 
     if (error) {
         free(node);

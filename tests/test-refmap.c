@@ -288,8 +288,10 @@ static void
 check_try_ref_race(void)
 {
     struct try_ref_race_ctx race_ctx;
-    pthread_t worker;
+    uint32_t arg_val = 0;
     struct refmap *rfm;
+    pthread_t worker;
+    struct arg arg = { .ptr = &arg_val };
 
     rfm = refmap_create("try-ref-race", sizeof(struct key),
                         sizeof(struct value), value_init, value_uninit,
@@ -303,8 +305,6 @@ check_try_ref_race(void)
     worker = ovs_thread_create("try-ref-racer", try_ref_racer, &race_ctx);
 
     for (int i = 0; i < 10000; i++) {
-        uint32_t arg_val = 0;
-        struct arg arg = { .ptr = &arg_val };
         void *value;
 
         value = refmap_ref(rfm, &race_ctx.key, &arg);
