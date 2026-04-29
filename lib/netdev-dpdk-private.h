@@ -68,6 +68,18 @@ extern const struct rte_eth_conf port_conf;
 typedef uint16_t dpdk_port_t;
 #define DPDK_PORT_ID_FMT "%"PRIu16
 
+/* Forward declarations. */
+
+struct dp_packet;
+struct dp_packet_batch;
+struct eth_addr;
+struct netdev;
+struct netdev_stats;
+struct rte_eth_xstat;
+struct rte_eth_xstat_name;
+struct smap;
+enum netdev_features;
+
 /* Enum definitions. */
 
 enum dpdk_hw_ol_features {
@@ -87,6 +99,11 @@ enum dpdk_hw_ol_features {
 };
 
 /* Structure definitions. */
+
+struct netdev_dpdk_watchdog_params {
+    struct ovs_mutex *mutex;
+    struct ovs_list *list;
+};
 
 /* There should be one 'struct netdev_dpdk_tx_queue' created for
  * each netdev tx queue. */
@@ -199,5 +216,102 @@ dpdk_dev_is_started(struct netdev_dpdk_common *common)
     atomic_read_relaxed(&common->started, &started);
     return started;
 }
+
+/* Common functions shared between netdev-dpdk and netdev-doca. */
+
+/* Type-independent helpers. */
+struct rte_mempool *netdev_dpdk_mp_create_pool(const char *pool_name,
+                                               uint32_t n_mbufs,
+                                               uint32_t mbuf_size,
+                                               int socket_id);
+uint32_t netdev_dpdk_buf_size(int mtu);
+size_t netdev_dpdk_copy_batch_to_mbuf(struct netdev_dpdk_common *common,
+                                      struct dp_packet_batch *batch);
+const char *netdev_dpdk_link_speed_to_str(uint32_t link_speed);
+void netdev_dpdk_mbuf_dump(const char *prefix, const char *message,
+                           const struct rte_mbuf *mbuf);
+
+/* Functions operating on struct netdev_dpdk_common. */
+void netdev_dpdk_detect_hw_ol_features(struct netdev_dpdk_common *common,
+                                       const struct rte_eth_dev_info *info)
+    OVS_REQUIRES(common->mutex);
+void netdev_dpdk_build_port_conf(struct netdev_dpdk_common *common,
+                                 const struct rte_eth_dev_info *info,
+                                 struct rte_eth_conf *conf);
+void netdev_dpdk_check_link_status(struct netdev_dpdk_common *common);
+
+void *netdev_dpdk_watchdog(void *params_);
+
+void netdev_dpdk_update_netdev_flags(struct netdev_dpdk_common *common)
+    OVS_REQUIRES(common->mutex);
+void netdev_dpdk_clear_xstats(struct netdev_dpdk_common *common);
+void netdev_dpdk_configure_xstats(struct netdev_dpdk_common *common)
+    OVS_REQUIRES(common->mutex);
+void netdev_dpdk_set_rxq_config(struct netdev_dpdk_common *common,
+                                const struct smap *args)
+    OVS_REQUIRES(common->mutex);
+int netdev_dpdk_prep_hwol_batch(struct netdev_dpdk_common *common,
+                                struct rte_mbuf **pkts, int pkt_cnt);
+int netdev_dpdk_filter_packet_len(struct netdev_dpdk_common *common,
+                                  struct rte_mbuf **pkts, int pkt_cnt);
+int netdev_dpdk_eth_tx_burst(struct netdev_dpdk_common *common,
+                             dpdk_port_t port_id, int qid,
+                             struct rte_mbuf **pkts, int cnt);
+void netdev_dpdk_get_config_common(struct netdev_dpdk_common *common,
+                                   struct smap *args)
+    OVS_REQUIRES(common->mutex);
+struct netdev_dpdk_common *
+netdev_dpdk_lookup_common_by_port_id(dpdk_port_t port_id,
+                                     struct ovs_list *list);
+dpdk_port_t netdev_dpdk_get_port_by_devargs(const char *devargs)
+    OVS_REQUIRES(NETDEV_DPDK_GLOBAL_MUTEX_NAME);
+
+/* Rxq ops shared between dpdk and doca. */
+struct netdev_rxq *netdev_dpdk_rxq_alloc(void);
+int netdev_dpdk_rxq_construct(struct netdev_rxq *rxq);
+void netdev_dpdk_rxq_destruct(struct netdev_rxq *rxq);
+void netdev_dpdk_rxq_dealloc(struct netdev_rxq *rxq);
+
+/* Netdev provider ops usable by both dpdk and doca. */
+int netdev_dpdk_get_numa_id(const struct netdev *netdev);
+int netdev_dpdk_set_tx_multiq(struct netdev *netdev, unsigned int n_txq);
+int netdev_dpdk_set_dev_etheraddr(struct netdev_dpdk_common *common,
+                                  const struct eth_addr mac)
+    OVS_REQUIRES(common->mutex);
+int netdev_dpdk_update_flags(struct netdev *netdev,
+                             enum netdev_flags off, enum netdev_flags on,
+                             enum netdev_flags *old_flagsp);
+int netdev_dpdk_update_dev_flags(struct netdev_dpdk_common *common,
+                                 enum netdev_flags off, enum netdev_flags on,
+                                 enum netdev_flags *old_flagsp)
+    OVS_REQUIRES(common->mutex);
+int netdev_dpdk_set_etheraddr(struct netdev *netdev,
+                              const struct eth_addr mac);
+int netdev_dpdk_get_etheraddr(const struct netdev *netdev,
+                              struct eth_addr *mac);
+int netdev_dpdk_get_mtu(const struct netdev *netdev, int *mtup);
+int netdev_dpdk_get_ifindex(const struct netdev *netdev);
+int netdev_dpdk_get_carrier(const struct netdev *netdev, bool *carrier);
+long long int netdev_dpdk_get_carrier_resets(const struct netdev *netdev);
+int netdev_dpdk_set_miimon(struct netdev *netdev, long long int interval);
+int netdev_dpdk_get_speed(const struct netdev *netdev, uint32_t *current,
+                          uint32_t *max);
+int netdev_dpdk_get_features(const struct netdev *netdev,
+                             enum netdev_features *current,
+                             enum netdev_features *advertised,
+                             enum netdev_features *supported,
+                             enum netdev_features *peer);
+void netdev_dpdk_convert_xstats(struct netdev_stats *stats,
+                                const struct rte_eth_xstat *xstats,
+                                const struct rte_eth_xstat_name *names,
+                                const unsigned int size);
+int netdev_dpdk_get_stats(const struct netdev *netdev,
+                          struct netdev_stats *stats);
+int netdev_dpdk_get_eth_dev_status(const struct netdev *netdev,
+                                   struct ovs_mutex *dev_mutex,
+                                   struct smap *args)
+    OVS_EXCLUDED(NETDEV_DPDK_GLOBAL_MUTEX_NAME,
+                 netdev_dpdk_common_cast(netdev)->mutex);
+struct netdev_dpdk_tx_queue *netdev_dpdk_alloc_txq(unsigned int n_txqs);
 
 #endif /* NETDEV_DPDK_PRIVATE_H */
