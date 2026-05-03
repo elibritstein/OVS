@@ -14,6 +14,7 @@ DOC_SOURCE = \
 	Documentation/intro/install/debian.rst \
 	Documentation/intro/install/documentation.rst \
 	Documentation/intro/install/distributions.rst \
+	Documentation/intro/install/doca.rst \
 	Documentation/intro/install/dpdk.rst \
 	Documentation/intro/install/fedora.rst \
 	Documentation/intro/install/general.rst \
@@ -63,6 +64,7 @@ DOC_SOURCE = \
 	Documentation/topics/userspace-tx-steering.rst \
 	Documentation/topics/windows.rst \
 	Documentation/howto/index.rst \
+	Documentation/howto/doca.rst \
 	Documentation/howto/dpdk.rst \
 	Documentation/howto/ipsec.rst \
 	Documentation/howto/kvm.rst \
