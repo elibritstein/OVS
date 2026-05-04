@@ -11,6 +11,9 @@
 # option. For example:
 #     rpmbuild -bb --without check rhel/openvswitch-fedora.spec
 #
+# For a DOCA build (static DPDK and DOCA; requires NVIDIA DOCA packages), use:
+#     rpmbuild -bb --with doca rhel/openvswitch-fedora.spec
+#
 # Support for executing kernel data path tests under rpmbuild is
 # provided, however this is intended for use only in test environments
 # and should not be used otherwise (these tests require root privileges).
@@ -22,6 +25,9 @@
 %bcond_without libcapng
 # To enable DPDK support, specify '--with dpdk' when building
 %bcond_with dpdk
+# To build with DOCA (static DPDK and DOCA per configure), specify
+# '--with doca'.  Requires NVIDIA DOCA yum/dnf repository packages.
+%bcond_with doca
 # To disable AF_XDP support, specify '--without afxdp' when building
 %bcond_without afxdp
 # To control the USDT support
@@ -68,14 +74,21 @@ BuildRequires: procps-ng
 BuildRequires: libcap-ng libcap-ng-devel
 Provides: user(openvswitch)
 Provides: group(openvswitch)
-%if %{with dpdk}
+%if %{with dpdk} || %{with doca}
 Provides: group(hugetlbfs)
 %endif
 %endif
+%if %{with doca}
+BuildRequires: libpcap-devel numactl-devel
+BuildRequires: doca-sdk-flow-devel doca-sdk-dpdk-bridge-devel dpdk-community-devel
+Provides: %{name}-doca = %{version}-%{release}
+Provides: %{name}-dpdk = %{version}-%{release}
+%else
 %if %{with dpdk}
 BuildRequires: libpcap-devel numactl-devel
 BuildRequires: dpdk-devel >= 25.11
 Provides: %{name}-dpdk = %{version}-%{release}
+%endif
 %endif
 %if %{with afxdp}
 BuildRequires: libxdp-devel libbpf-devel numactl-devel
@@ -177,8 +190,13 @@ This package provides IPsec tunneling support for OVS tunnels.
 %else
         --disable-libcapng \
 %endif
+%if %{with doca}
+        --with-dpdk=static \
+        --with-doca=static \
+%else
 %if %{with dpdk}
         --with-dpdk=shared \
+%endif
 %endif
 %if %{with afxdp}
         --enable-afxdp \
@@ -189,14 +207,16 @@ This package provides IPsec tunneling support for OVS tunnels.
         --enable-usdt-probes \
 %endif
         --enable-ssl \
+%if ! %{with doca}
         --disable-static \
         --enable-shared \
+%endif
         --with-pkidir=%{_sharedstatedir}/openvswitch/pki \
         --with-version-suffix=-%{release} \
         PYTHON3=%{__python3}
 
 build-aux/dpdkstrip.py \
-%if %{with dpdk}
+%if %{with dpdk} || %{with doca}
         --dpdk \
 %else
         --nodpdk \
@@ -215,7 +235,7 @@ install -d -m 0755 $RPM_BUILD_ROOT%{_rundir}/openvswitch
 install -d -m 0750 $RPM_BUILD_ROOT%{_localstatedir}/log/openvswitch
 install -d -m 0755 $RPM_BUILD_ROOT%{_sysconfdir}/openvswitch
 
-%if %{with dpdk}
+%if %{with dpdk} || %{with doca}
 install -p -D -m 0644 rhel/usr_lib_udev_rules.d_91-vfio.rules \
         $RPM_BUILD_ROOT%{_prefix}/lib/udev/rules.d/91-vfio.rules
 %endif
@@ -320,7 +340,7 @@ getent passwd openvswitch >/dev/null || \
     useradd -r -g openvswitch -d / -s /sbin/nologin \
     -c "Open vSwitch Daemons" openvswitch
 
-%if %{with dpdk}
+%if %{with dpdk} || %{with doca}
     getent group hugetlbfs >/dev/null || groupadd -r hugetlbfs
     usermod -a -G hugetlbfs openvswitch
 %endif
@@ -336,7 +356,7 @@ exit 0
 %post
 %if %{with libcapng}
 if [ $1 -eq 1 ]; then
-%if %{with dpdk}
+%if %{with dpdk} || %{with doca}
     %define gname hugetlbfs
 %else
     %define gname openvswitch
@@ -434,7 +454,11 @@ fi
 %{python3_sitelib}/ovstest
 
 %files devel
+%if ! %{with doca}
 %{_libdir}/lib*.so
+%else
+%{_libdir}/lib*.a
+%endif
 %{_libdir}/pkgconfig/*.pc
 %{_includedir}/openvswitch/*
 %{_includedir}/openflow/*
@@ -494,7 +518,9 @@ fi
 %{_bindir}/ovs-testcontroller
 %{_bindir}/ovs-pki
 %{_bindir}/vtep-ctl
+%if ! %{with doca}
 %{_libdir}/lib*.so.*
+%endif
 %{_sbindir}/ovs-bugtool
 %{_sbindir}/ovs-vswitchd
 %{_sbindir}/ovsdb-server
@@ -522,11 +548,11 @@ fi
 %{_mandir}/man8/ovs-vsctl.8*
 %{_mandir}/man8/ovs-vswitchd.8*
 %{_mandir}/man8/ovs-testcontroller.8*
-%if %{with dpdk}
+%if %{with dpdk} || %{with doca}
 %{_prefix}/lib/udev/rules.d/91-vfio.rules
 %endif
 %doc NOTICE README.rst NEWS rhel/README.RHEL.rst
-%if %{with dpdk}
+%if %{with dpdk} || %{with doca}
 %attr(750,openvswitch,hugetlbfs) /var/lib/openvswitch
 %else
 %attr(750,openvswitch,openvswitch) /var/lib/openvswitch
@@ -540,5 +566,9 @@ fi
 %{_unitdir}/openvswitch-ipsec.service
 
 %changelog
+* Tue Apr 07 2026 Open vSwitch <bugs@openvswitch.org>
+- Add %%with static for %%with dpdk so --with-dpdk=static is selected (e.g. build-rpm).
+- Add optional %%with doca build (static DPDK and DOCA linkage).
+
 * Wed Jan 12 2011 Ralf Spenneberg <ralf@os-s.net>
 - First build on F14
