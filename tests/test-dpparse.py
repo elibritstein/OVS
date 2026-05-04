@@ -17,17 +17,26 @@
 the python flow parsing library.
 """
 
-import fileinput
 import sys
 
 try:
     from ovs.flow.odp import ODPFlow
 except ImportError:
-    sys.exit(0)
+    ODPFlow = None
 
 
 def main():
-    for flow in fileinput.input():
+    # Read stdin entirely before validating.  Tests invoke this after ``sed``
+    # in a pipeline; exiting early closes the pipe while ``sed`` still writes,
+    # which can yield SIGPIPE and stderr noise ("Broken pipe") that Autoconf
+    # treats as failure.  The ImportError path must also consume stdin before
+    # exiting (otherwise ``except ImportError: sys.exit(0)`` at module level did
+    # the same harm).
+    lines = sys.stdin.read().splitlines()
+    if ODPFlow is None:
+        return 0
+
+    for flow in lines:
         try:
             result_flow = ODPFlow(flow)
             if flow != str(result_flow):
