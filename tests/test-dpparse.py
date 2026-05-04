@@ -26,13 +26,10 @@ except ImportError:
 
 
 def main():
-    # Read stdin entirely before validating.  Tests invoke this after ``sed``
-    # in a pipeline; exiting early closes the pipe while ``sed`` still writes,
-    # which can yield SIGPIPE and stderr noise ("Broken pipe") that Autoconf
-    # treats as failure.  The ImportError path must also consume stdin before
-    # exiting (otherwise ``except ImportError: sys.exit(0)`` at module level did
-    # the same harm).
-    lines = sys.stdin.read().splitlines()
+    # Read stdin entirely before validating so upstream ``sed`` in pipelines does
+    # not hit SIGPIPE.  Use splitlines(keepends=True) so each line matches
+    # fileinput.input() (blank lines are ``'\\n'``, not ``''``).
+    lines = sys.stdin.read().splitlines(keepends=True)
     if ODPFlow is None:
         return 0
 
