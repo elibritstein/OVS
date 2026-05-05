@@ -67,6 +67,11 @@ m4_define([OVS_DPDK_OFFLOAD_PRE_CHECK], [
 m4_define([OVS_TRAFFIC_VSWITCHD_START],
   [
    OVS_DPDK_OFFLOAD_PRE_CHECK()
+   dnl A failed prior run can leave ovs-vswitchd in this OVS_RUNDIR.
+   dnl Remove it first.
+   AT_CHECK([kill_ovs_vswitchd || true])
+   dnl Userspace dpif may keep the kernel netdev until we remove it explicitly.
+   AT_CHECK([ip link del ovs-netdev 2>/dev/null || true])
    OVS_WAIT_WHILE([ip link show ovs-netdev])
    ALLOW_LIST=$(echo "$OVS_DPDK_VF_PCI_ADDRS" | awk '{
      for (i=1; i<=NF; i++) {
@@ -85,6 +90,7 @@ m4_define([OVS_TRAFFIC_VSWITCHD_START],
    OVS_DPDK_START([$ALLOW_LIST], [--disable-system],
                   [-- set Open_vSwitch . other_config:hw-offload=true $3])
    dnl Add bridges, ports, etc.
+   AT_CHECK([ip link del br0 2>/dev/null || true])
    OVS_WAIT_WHILE([ip link show br0])
    AT_CHECK([ovs-vsctl -- _ADD_BR([br0]) -- $1 m4_if([$2], [], [],
             [| uuidfilt])], [0], [$2])
