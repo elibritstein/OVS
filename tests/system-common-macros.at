@@ -416,7 +416,7 @@ OVS_START_SHELL_HELPERS
 #
 # This function tries to find the VF's netdev for the given PF's VF index.
 #
-ovs_get_vf_port() {
+ovs_get_vf_port__() {
     local PF_PCI=$1
     local VF_IDX=$2
 
@@ -434,7 +434,22 @@ ovs_get_vf_port() {
     return 0
 }
 
-# ovs_get_representor_port(<PF_PORT_PCI>, <VF_INDEX>)
+ovs_get_vf_port() {
+    local vf_name
+    local round
+
+    for round in 1 2 3; do
+        vf_name=$(ovs_get_vf_port__ "$@")
+        if test -n "$vf_name"; then
+            echo "$vf_name"
+            return 0
+        fi
+        sleep 0.5
+    done
+
+    return 1
+}
+
 #
 # This function tries to find the representor's netdev for the given PF's VF
 # index.
