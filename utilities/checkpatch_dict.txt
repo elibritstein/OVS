@@ -3,6 +3,7 @@ addresssanitizer
 afxdp
 alg
 alloc
+altname
 amd64
 api
 apis
