@@ -73,20 +73,7 @@ m4_define([OVS_TRAFFIC_VSWITCHD_START],
    dnl Userspace dpif may keep the kernel netdev until we remove it explicitly.
    AT_CHECK([ip link del ovs-netdev 2>/dev/null || true])
    OVS_WAIT_WHILE([ip link show ovs-netdev])
-   ALLOW_LIST=$(echo "$OVS_DPDK_VF_PCI_ADDRS" | awk '{
-     for (i=1; i<=NF; i++) {
-       split($i, parts, ",");
-       addr = parts[1];
-       if (addr != "" && !seen[addr]) {
-         seen[addr] = 1;
-         if (result == "")
-           result = "--allow " addr;
-         else
-           result = result " --allow " addr;
-        }
-     }
-     print result;
-   }')
+   ALLOW_LIST="--allow pci:0000:00:00.0"
    OVS_DPDK_START([$ALLOW_LIST], [--disable-system],
                   [-- set Open_vSwitch . other_config:hw-offload=true $3])
    dnl Add bridges, ports, etc.
