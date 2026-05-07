@@ -17,8 +17,8 @@
 the python flow parsing library.
 
 On failure, writes debug files in the current working directory (the test's
-testsuite.dir subdirectory). These are not registered with AT_CAPTURE_FILE so a
-successful run leaves nothing to collect; on failure, inspect the test directory:
+testsuite.dir subdirectory). These are not registered with AT_CAPTURE_FILE;
+on failure inspect the test directory (nothing extra is collected on success):
   test-dpparse.failure-summary.txt   - line number, source path, lengths, diff
   test-dpparse.failure.traceback.txt - exception traceback (parse errors only)
   test-dpparse.failure-input.txt     - exact failing line as read from input
@@ -119,14 +119,16 @@ def _fail_roundtrip(line_no, flow, source_file, out_s):
     diff_txt = None
     if diff is not None:
         idx, ca, cb = diff
+        lo = max(0, idx - 40)
+        hi = idx + 40
+        ctx_in = _truncate(flow[lo:hi], 500)
+        ctx_out = _truncate(out_s[lo:hi], 500)
         diff_txt = (
             "first_difference_index: {}\n"
             "in_char: {}\n"
             "out_char: {}\n"
             "context_in: {!r}\n"
-            "context_out: {!r}".format(idx, ca, cb,
-                                       _truncate(flow[max(0, idx - 40) : idx + 40], 500),
-                                       _truncate(out_s[max(0, idx - 40) : idx + 40], 500))
+            "context_out: {!r}".format(idx, ca, cb, ctx_in, ctx_out)
         )
     parts = [
         ("line_number", str(line_no)),
