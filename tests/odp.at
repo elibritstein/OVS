@@ -102,7 +102,11 @@ sed -i'back' 's/\(ct_label([[^)]]*)\),\(eth\)/\1,packet_type(ns=0,id=0),\2/' odp
 
 AT_CHECK_UNQUOTED([ovstest test-odp parse-keys < odp-in.txt], [0], [`cat odp-out.txt`
 ])
-AT_CHECK_UNQUOTED([cat odp-in.txt | sed 's/^#.*//' | sed 's/$/ actions:drop/' | test-dpparse.py])
+sed 's/^#.*//' < odp-in.txt > odp-in.strip.txt
+sed 's/$/ actions:drop/' < odp-in.strip.txt > odp-in.drop.txt
+AT_CAPTURE_FILE([odp-in.strip.txt])
+AT_CAPTURE_FILE([odp-in.drop.txt])
+AT_CHECK_UNQUOTED([test-dpparse.py < odp-in.drop.txt])
 AT_CLEANUP
 
 AT_SETUP([OVS datapath wildcarded key parsing and formatting - valid forms])
@@ -465,7 +469,9 @@ odp_actions_from_string: error
 `cat actions.txt | head -3 | tail -1`
 odp_actions_from_string: error
 ])
-AT_CHECK_UNQUOTED([cat actions.txt | sed 's/^/actions:/' | test-dpparse.py])
+sed 's/^/actions:/' < actions.txt > actions.prefixed.txt
+AT_CAPTURE_FILE([actions.prefixed.txt])
+AT_CHECK_UNQUOTED([test-dpparse.py < actions.prefixed.txt])
 AT_CLEANUP
 
 AT_SETUP([OVS datapath actions parsing and formatting - actions too long])
