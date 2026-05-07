@@ -32,3 +32,7 @@ if ! vswitchd/ovs-vswitchd -V 2>&1 | grep -q 'DOCA'; then
     vswitchd/ovs-vswitchd -V || true
     exit 1
 fi
+
+export DISTCHECK_CONFIGURE_FLAGS="$EXTRA_OPTS"
+make distcheck ${JOBS} CFLAGS="${CFLAGS_FOR_OVS}" \
+    TESTSUITEFLAGS="${JOBS} ${TEST_RANGE}" RECHECK=yes
