@@ -102,7 +102,11 @@ sed -i'back' 's/\(ct_label([[^)]]*)\),\(eth\)/\1,packet_type(ns=0,id=0),\2/' odp
 
 AT_CHECK_UNQUOTED([ovstest test-odp parse-keys < odp-in.txt], [0], [`cat odp-out.txt`
 ])
-AT_CHECK_UNQUOTED([cat odp-in.txt | sed 's/^#.*//' | sed 's/$/ actions:drop/' | test-dpparse.py])
+sed 's/^#.*//' < odp-in.txt > odp-in.strip.txt
+sed 's/$/ actions:drop/' < odp-in.strip.txt > odp-in.drop.txt
+AT_CAPTURE_FILE([odp-in.strip.txt])
+AT_CAPTURE_FILE([odp-in.drop.txt])
+AT_CHECK_UNQUOTED([test-dpparse.py < odp-in.drop.txt])
 AT_CLEANUP
 
 AT_SETUP([OVS datapath wildcarded key parsing and formatting - valid forms])
@@ -190,7 +194,11 @@ sed -n 's/,frag=no),.*/,frag=later)/p' odp-base.txt
 AT_CAPTURE_FILE([odp.txt])
 AT_CHECK_UNQUOTED([ovstest test-odp parse-wc-keys < odp.txt], [0], [`cat odp.txt`
 ])
-AT_CHECK_UNQUOTED([cat odp.txt | sed 's/^#.*//' | sed 's/$/ actions:drop/' | test-dpparse.py])
+sed 's/^#.*//' < odp.txt > odp.strip.txt
+sed 's/$/ actions:drop/' < odp.strip.txt > odp.drop.txt
+AT_CAPTURE_FILE([odp.strip.txt])
+AT_CAPTURE_FILE([odp.drop.txt])
+AT_CHECK_UNQUOTED([test-dpparse.py < odp.drop.txt])
 AT_CLEANUP
 
 AT_SETUP([OVS datapath wildcarded key filtering.])
@@ -238,31 +246,60 @@ in_port(1),eth(src=00:01:02:03:04:05,dst=10:11:12:13:14:15),eth_type(0x86dd),ipv
 ])
 AT_CHECK_UNQUOTED([ovstest test-odp parse-filter filter='dl_type=0x1235' < odp-base.txt], [0], [`cat odp-eth-type.txt`
 ])
-AT_CHECK_UNQUOTED([cat odp-eth-type.txt | sed 's/^#.*//' | sed 's/$/ actions:drop/' | test-dpparse.py])
+sed 's/^#.*//' < odp-eth-type.txt > odp-eth-type.strip.txt
+sed 's/$/ actions:drop/' < odp-eth-type.strip.txt > odp-eth-type.drop.txt
+AT_CAPTURE_FILE([odp-eth-type.strip.txt])
+AT_CAPTURE_FILE([odp-eth-type.drop.txt])
+AT_CHECK_UNQUOTED([test-dpparse.py < odp-eth-type.drop.txt])
 AT_CHECK_UNQUOTED([ovstest test-odp parse-filter filter='dl_vlan=99' < odp-vlan-base.txt], [0], [`cat odp-vlan.txt`
 ])
-AT_CHECK_UNQUOTED([cat odp-vlan.txt | sed 's/^#.*//' | sed 's/$/ actions:drop/' | test-dpparse.py])
+sed 's/^#.*//' < odp-vlan.txt > odp-vlan.strip.txt
+sed 's/$/ actions:drop/' < odp-vlan.strip.txt > odp-vlan.drop.txt
+AT_CAPTURE_FILE([odp-vlan.strip.txt])
+AT_CAPTURE_FILE([odp-vlan.drop.txt])
+AT_CHECK_UNQUOTED([test-dpparse.py < odp-vlan.drop.txt])
 AT_CHECK_UNQUOTED([ovstest test-odp parse-filter filter='dl_vlan=99,ip' < odp-vlan-base.txt], [0], [`cat odp-vlan.txt`
 ])
+AT_CHECK_UNQUOTED([test-dpparse.py < odp-vlan.drop.txt])
 AT_CHECK_UNQUOTED([ovstest test-odp parse-filter filter='ip,nw_src=35.8.2.199' < odp-base.txt], [0], [`cat odp-ipv4.txt`
 ])
 AT_CHECK_UNQUOTED([ovstest test-odp parse-filter filter='ip,nw_dst=172.16.0.199' < odp-base.txt], [0], [`cat odp-ipv4.txt`
 ])
-AT_CHECK_UNQUOTED([cat odp-ipv4.txt | sed 's/^#.*//' | sed 's/$/ actions:drop/' | test-dpparse.py])
+sed 's/^#.*//' < odp-ipv4.txt > odp-ipv4.strip.txt
+sed 's/$/ actions:drop/' < odp-ipv4.strip.txt > odp-ipv4.drop.txt
+AT_CAPTURE_FILE([odp-ipv4.strip.txt])
+AT_CAPTURE_FILE([odp-ipv4.drop.txt])
+AT_CHECK_UNQUOTED([test-dpparse.py < odp-ipv4.drop.txt])
 AT_CHECK_UNQUOTED([ovstest test-odp parse-filter filter='dl_type=0x0800,nw_src=35.8.2.199,nw_dst=172.16.0.199' < odp-base.txt], [0], [`cat odp-ipv4.txt`
 ])
 AT_CHECK_UNQUOTED([ovstest test-odp parse-filter filter='icmp,nw_src=35.8.2.199' < odp-base.txt], [0], [`cat odp-icmp.txt`
 ])
-AT_CHECK_UNQUOTED([cat odp-icmp.txt | sed 's/^#.*//' | sed 's/$/ actions:drop/' | test-dpparse.py])
+sed 's/^#.*//' < odp-icmp.txt > odp-icmp.strip.txt
+sed 's/$/ actions:drop/' < odp-icmp.strip.txt > odp-icmp.drop.txt
+AT_CAPTURE_FILE([odp-icmp.strip.txt])
+AT_CAPTURE_FILE([odp-icmp.drop.txt])
+AT_CHECK_UNQUOTED([test-dpparse.py < odp-icmp.drop.txt])
 AT_CHECK_UNQUOTED([ovstest test-odp parse-filter filter='arp,arp_spa=1.2.3.5' < odp-base.txt], [0], [`cat odp-arp.txt`
 ])
-AT_CHECK_UNQUOTED([cat odp-arp.txt | sed 's/^#.*//' | sed 's/$/ actions:drop/' | test-dpparse.py])
+sed 's/^#.*//' < odp-arp.txt > odp-arp.strip.txt
+sed 's/$/ actions:drop/' < odp-arp.strip.txt > odp-arp.drop.txt
+AT_CAPTURE_FILE([odp-arp.strip.txt])
+AT_CAPTURE_FILE([odp-arp.drop.txt])
+AT_CHECK_UNQUOTED([test-dpparse.py < odp-arp.drop.txt])
 AT_CHECK_UNQUOTED([ovstest test-odp parse-filter filter='tcp,tp_src=90' < odp-base.txt], [0], [`cat odp-tcp.txt`
 ])
-AT_CHECK_UNQUOTED([cat odp-tcp.txt | sed 's/^#.*//' | sed 's/$/ actions:drop/' | test-dpparse.py])
+sed 's/^#.*//' < odp-tcp.txt > odp-tcp.strip.txt
+sed 's/$/ actions:drop/' < odp-tcp.strip.txt > odp-tcp.drop.txt
+AT_CAPTURE_FILE([odp-tcp.strip.txt])
+AT_CAPTURE_FILE([odp-tcp.drop.txt])
+AT_CHECK_UNQUOTED([test-dpparse.py < odp-tcp.drop.txt])
 AT_CHECK_UNQUOTED([ovstest test-odp parse-filter filter='tcp6,tp_src=90' < odp-base.txt], [0], [`cat odp-tcp6.txt`
 ])
-AT_CHECK_UNQUOTED([cat odp-tcp6.txt | sed 's/^#.*//' | sed 's/$/ actions:drop/' | test-dpparse.py])
+sed 's/^#.*//' < odp-tcp6.txt > odp-tcp6.strip.txt
+sed 's/$/ actions:drop/' < odp-tcp6.strip.txt > odp-tcp6.drop.txt
+AT_CAPTURE_FILE([odp-tcp6.strip.txt])
+AT_CAPTURE_FILE([odp-tcp6.drop.txt])
+AT_CHECK_UNQUOTED([test-dpparse.py < odp-tcp6.drop.txt])
 AT_CLEANUP
 
 AT_SETUP([OVS datapath actions parsing and formatting - valid forms])
@@ -401,7 +438,9 @@ sample(sample=50.0%,actions(userspace(pid=42,userdata(0102030400000000)),psample
 AT_CHECK_UNQUOTED([ovstest test-odp parse-actions < actions.txt], [0],
   [`cat actions.txt`
 ])
-AT_CHECK_UNQUOTED([cat actions.txt | sed 's/^/actions:/' | test-dpparse.py])
+sed 's/^/actions:/' < actions.txt > actions.prefixed.txt
+AT_CAPTURE_FILE([actions.prefixed.txt])
+AT_CHECK_UNQUOTED([test-dpparse.py < actions.prefixed.txt])
 AT_CLEANUP
 
 AT_SETUP([OVS datapath actions parsing and formatting - invalid forms])
@@ -465,7 +504,9 @@ odp_actions_from_string: error
 `cat actions.txt | head -3 | tail -1`
 odp_actions_from_string: error
 ])
-AT_CHECK_UNQUOTED([cat actions.txt | sed 's/^/actions:/' | test-dpparse.py])
+sed 's/^/actions:/' < actions.txt > actions.prefixed.txt
+AT_CAPTURE_FILE([actions.prefixed.txt])
+AT_CHECK_UNQUOTED([test-dpparse.py < actions.prefixed.txt])
 AT_CLEANUP
 
 AT_SETUP([OVS datapath actions parsing and formatting - actions too long])
