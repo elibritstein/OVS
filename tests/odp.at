@@ -1,14 +1,6 @@
 AT_BANNER([datapath parsing and formatting])
 
-dnl Files created by tests/test-dpparse.py only when it fails.
-m4_define([ODP_CAPTURE_DPPARSE_DEBUG], [
-AT_CAPTURE_FILE([test-dpparse.failure-summary.txt])
-AT_CAPTURE_FILE([test-dpparse.failure.traceback.txt])
-AT_CAPTURE_FILE([test-dpparse.failure-input.txt])
-])
-
 AT_SETUP([OVS datapath key parsing and formatting - valid forms])
-ODP_CAPTURE_DPPARSE_DEBUG
 dnl We could add a test for invalid forms, but that's less important.
 AT_DATA([odp-base.txt], [dnl
 eth(src=00:01:02:03:04:05,dst=10:11:12:13:14:15)
@@ -118,7 +110,6 @@ AT_CHECK_UNQUOTED([test-dpparse.py < odp-in.drop.txt])
 AT_CLEANUP
 
 AT_SETUP([OVS datapath wildcarded key parsing and formatting - valid forms])
-ODP_CAPTURE_DPPARSE_DEBUG
 dnl We could add a test for invalid forms, but that's less important.
 AT_DATA([odp-base.txt], [dnl
 in_port(1/0xff),eth(src=00:01:02:03:04:05/ff:ff:ff:ff:ff:f0,dst=10:11:12:13:14:15/ff:ff:ff:ff:ff:f0)
@@ -207,7 +198,6 @@ AT_CHECK_UNQUOTED([cat odp.txt | sed 's/^#.*//' | sed 's/$/ actions:drop/' | tes
 AT_CLEANUP
 
 AT_SETUP([OVS datapath wildcarded key filtering.])
-ODP_CAPTURE_DPPARSE_DEBUG
 dnl We could add a test for invalid forms, but that's less important.
 AT_DATA([odp-base.txt], [dnl
 in_port(1),eth(src=00:01:02:03:04:05,dst=10:11:12:13:14:15),eth_type(0x1234/0xfff0)
@@ -280,7 +270,6 @@ AT_CHECK_UNQUOTED([cat odp-tcp6.txt | sed 's/^#.*//' | sed 's/$/ actions:drop/' 
 AT_CLEANUP
 
 AT_SETUP([OVS datapath actions parsing and formatting - valid forms])
-ODP_CAPTURE_DPPARSE_DEBUG
 AT_DATA([actions.txt], [dnl
 1,2,3
 userspace(pid=6633,sFlow(vid=9,pcp=7,output=10),actions)
@@ -446,7 +435,6 @@ odp_actions_from_string: error
 AT_CLEANUP
 
 AT_SETUP([OVS datapath actions parsing and formatting - userdata overflow])
-ODP_CAPTURE_DPPARSE_DEBUG
 dnl Userdata should fit in a single netlink message, i.e. should be less than
 dnl UINT16_MAX - NLA_HDRLEN = 65535 - 4 = 65531 bytes.  OVS should not accept
 dnl larger userdata.  OTOH, userdata is part of a nested netlink message, that

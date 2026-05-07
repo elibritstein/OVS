@@ -17,10 +17,11 @@
 the python flow parsing library.
 
 On failure, writes debug files in the current working directory (the test's
-testsuite.dir subdirectory):
-  test-dpparse.failure-summary.txt   — line number, source path, lengths, diff
-  test-dpparse.failure.traceback.txt — exception traceback (parse errors only)
-  test-dpparse.failure-input.txt     — exact failing line as read from input
+testsuite.dir subdirectory). These are not registered with AT_CAPTURE_FILE so a
+successful run leaves nothing to collect; on failure, inspect the test directory:
+  test-dpparse.failure-summary.txt   - line number, source path, lengths, diff
+  test-dpparse.failure.traceback.txt - exception traceback (parse errors only)
+  test-dpparse.failure-input.txt     - exact failing line as read from input
 """
 
 import fileinput
