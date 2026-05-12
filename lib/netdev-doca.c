@@ -813,14 +813,14 @@ get_sysfs_attr(const char *prefix, const char *devname, const char *suffix,
 
     n = snprintf(str, sizeof str, "/sys/%s/%s/%s", prefix, devname, suffix);
     if (!(n >= 0 && n < sizeof str)) {
-        VLOG_DBG("%s: snprintf overflow for %s/%s/%s", OVS_SOURCE_LOCATOR,
-                 prefix, devname, suffix);
+        VLOG_DBG("snprintf overflow for %s/%s/%s", prefix, devname,
+                 suffix);
         return ENOSPC;
     }
 
     fp = fopen(str, "r");
     if (!fp) {
-        VLOG_DBG("%s: fopen failed for %s", OVS_SOURCE_LOCATOR, str);
+        VLOG_DBG("fopen failed for %s", str);
         return errno;
     }
 
@@ -828,7 +828,7 @@ get_sysfs_attr(const char *prefix, const char *devname, const char *suffix,
     fclose(fp);
 
     if (!p) {
-        VLOG_DBG("%s: fgets failed for %s", OVS_SOURCE_LOCATOR, str);
+        VLOG_DBG("fgets failed for %s", str);
         return EIO;
     }
 
@@ -838,8 +838,7 @@ get_sysfs_attr(const char *prefix, const char *devname, const char *suffix,
     if (outp) {
         len = strnlen(str, maxlen);
         if (maxlen <= len) {
-            VLOG_DBG("%s: maxlen exceeded for /%s/%s/%s", OVS_SOURCE_LOCATOR,
-                     prefix, devname, suffix);
+            VLOG_DBG("maxlen exceeded for /%s/%s/%s", prefix, devname, suffix);
             return ERANGE;
         }
         ovs_strlcpy(outp, str, len);
@@ -1010,7 +1009,7 @@ out:
 }
 
 static int
-get_dpdk_iface_name(const char *name, char iface[IFNAMSIZ])
+get_phys_iface_name(const char *name, char iface[IFNAMSIZ])
 {
     char phys_port_name[IFNAMSIZ];
     char slaves[PATH_MAX];
@@ -1249,14 +1248,13 @@ netdev_doca_parse_dpdk_devargs_pci(const char *devargs,
     int rv = 0;
 
     if (rte_devargs_parse(&da, devargs)) {
-        VLOG_ERR("%s: Device argument parsing failed for %s",
-                 OVS_SOURCE_LOCATOR, devargs);
+        VLOG_ERR("Device argument parsing failed for %s", devargs);
         return EINVAL;
     }
 
     if (rte_pci_addr_parse(da.name, rte_pci)) {
-        VLOG_ERR("%s: PCI address parsing failed for %s",
-                 OVS_SOURCE_LOCATOR, da.name);
+        VLOG_ERR("PCI address parsing failed for %s, devargs %s", da.name,
+                 devargs);
         rv = EINVAL;
     }
 
@@ -2399,9 +2397,8 @@ netdev_doca_generate_devargs(const char *name, char *devargs, size_t maxlen,
         return NULL;
     }
 
-    if (get_dpdk_iface_name(name, iface_tmp)) {
-        VLOG_ERR("%s: get_dpdk_iface_name failed for %s",
-                 OVS_SOURCE_LOCATOR, name);
+    if (get_phys_iface_name(name, iface_tmp)) {
+        VLOG_ERR("%s: Failed to get physical iface name", name);
         return NULL;
     }
 
@@ -2409,14 +2406,12 @@ netdev_doca_generate_devargs(const char *name, char *devargs, size_t maxlen,
     ovs_strlcpy(iface, name, IFNAMSIZ);
 
     if (get_doca_dev_pci(name, pci, sizeof pci, &is_rep)) {
-        VLOG_WARN("%s: get_doca_dev_pci failed for %s", OVS_SOURCE_LOCATOR,
-                  name);
+        VLOG_WARN("%s: Failed to get PCI address", name);
         return NULL;
     }
 
     if (get_phys_port_name(name, phys_port_name_, sizeof phys_port_name_)) {
-        VLOG_WARN("%s: get_phys_port_name failed for %s",
-                  OVS_SOURCE_LOCATOR, name);
+        VLOG_WARN("%s: Failed to get phys_port_name", name);
         return NULL;
     }
 
@@ -2430,8 +2425,7 @@ netdev_doca_generate_devargs(const char *name, char *devargs, size_t maxlen,
     if (sscanf(phys_port_name, "p%d", &port) == 1) {
         is_pf = true;
     } else if (sscanf(phys_port_name, "pf%d", &port) != 1) {
-        VLOG_ERR("%s: unrecognized phys_port_name %s",
-                 OVS_SOURCE_LOCATOR, phys_port_name);
+        VLOG_ERR("%s: unrecognized phys_port_name %s", name, phys_port_name);
         return NULL;
     }
 
@@ -2446,8 +2440,7 @@ netdev_doca_generate_devargs(const char *name, char *devargs, size_t maxlen,
         /* "" to workaround a false positive checkpatch issue. */
         if (snprintf(devargs, maxlen, "%s,%s,representor=(pf%d)""vf65535", pci,
                      mlx5_devargs, port) < 0) {
-            VLOG_ERR("%s: snprintf failed for HPF devargs",
-                     OVS_SOURCE_LOCATOR);
+            VLOG_ERR("%s: snprintf failed for HPF devargs", name);
             return NULL;
         }
 
@@ -2464,7 +2457,7 @@ netdev_doca_generate_devargs(const char *name, char *devargs, size_t maxlen,
         }
 
         if (len < 0) {
-            VLOG_ERR("%s: snprintf failed for PF devargs", OVS_SOURCE_LOCATOR);
+            VLOG_ERR("%s: snprintf failed for PF devargs", name);
             return NULL;
         }
 
@@ -2478,8 +2471,7 @@ netdev_doca_generate_devargs(const char *name, char *devargs, size_t maxlen,
     }
 
     if (!rep_part) {
-        VLOG_ERR("%s: no vf/sf in phys_port_name %s",
-                 OVS_SOURCE_LOCATOR, phys_port_name);
+        VLOG_ERR("%s: no vf/sf", phys_port_name);
         return NULL;
     }
 
@@ -2487,8 +2479,7 @@ netdev_doca_generate_devargs(const char *name, char *devargs, size_t maxlen,
     if (snprintf(devargs, maxlen, "%s,%s,representor=(%.*s)%s", pci,
                  mlx5_devargs, (int) (rep_part - phys_port_name),
                  phys_port_name, rep_part) < 0) {
-        VLOG_ERR("%s: snprintf failed for representor devargs",
-                 OVS_SOURCE_LOCATOR);
+        VLOG_ERR("%s: snprintf failed for representor devargs", name);
         return NULL;
     }
 
@@ -2592,11 +2583,11 @@ netdev_doca_set_config(struct netdev *netdev, const struct smap *args,
 {
     struct netdev_doca *dev = netdev_doca_cast(netdev);
     struct netdev_dpdk_common *common = &dev->common;
+    const char *netdev_name = netdev_get_name(netdev);
     char generated[PATH_MAX];
     bool lsc_interrupt_mode;
     const char *new_devargs;
     char iface[IFNAMSIZ];
-    const char *dev_name;
     const char *vf_mac;
     int err = 0;
     bool is_rep;
@@ -2606,8 +2597,7 @@ netdev_doca_set_config(struct netdev *netdev, const struct smap *args,
 
     memset(iface, 0, sizeof iface);
     if (!common->devargs) {
-        dev_name = netdev_get_name(netdev);
-        new_devargs = netdev_doca_generate_devargs(dev_name, generated,
+        new_devargs = netdev_doca_generate_devargs(netdev_name, generated,
                                                    sizeof generated, iface);
         if (!new_devargs) {
             VLOG_WARN("%s: Could not generate DPDK devargs",
@@ -2625,8 +2615,8 @@ netdev_doca_set_config(struct netdev *netdev, const struct smap *args,
         struct netdev_doca_esw_ctx *esw;
 
         if (netdev_doca_esw_key_parse(common->devargs, &esw_key)) {
-            VLOG_ERR("%s: esw_key_parse failed for %s",
-                     OVS_SOURCE_LOCATOR, common->devargs);
+            VLOG_ERR("%s: ESW_key parsing failed for %s",
+                     netdev_name, common->devargs);
             err = EINVAL;
             goto out;
         }
