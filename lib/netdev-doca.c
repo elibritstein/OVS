@@ -1575,9 +1575,9 @@ netdev_doca_get_custom_stats(const struct netdev *netdev,
         const char *stats_name = netdev_doca_stats_name(i);
 
         err = doca_flow_resource_query_entry(dev->rss_entries[i], &stats);
-        if (err) {
-            VLOG_ERR("%s: Failed to query '%s' RSS entry. Error: %d (%s)",
-                     common->devargs, stats_name, err,
+        if (err != DOCA_SUCCESS) {
+            VLOG_ERR("%s: Failed to query '%s' RSS entry %d. Error: %d (%s)",
+                     common->devargs, stats_name, i, err,
                      doca_error_get_descr(err));
             return err;
         }
@@ -1642,22 +1642,20 @@ netdev_doca_get_status(const struct netdev *netdev, struct smap *args)
 /* Mempools are allocated for ESW managers only.
  * Estimation of number of mbufs required for this port:
  * (<packets required to fill the device rxqs>
- * + <packets that could be stuck on other ports txqs>
- * + <packets in the pmd threads>
- * + <headroom for per-lcore mempool caches>)
- */
+ *  + <packets that could be stuck on other ports txqs>
+ *  + <packets in the pmd threads>
+ *  + <headroom for per-lcore mempool caches>). */
 static uint32_t
 doca_calculate_mbufs(struct netdev_doca *dev)
 {
     struct netdev_dpdk_common *common = &dev->common;
-    uint32_t n_mbufs;
 
-    n_mbufs = common->requested_n_rxq * common->requested_rxq_size
-              + common->requested_n_txq * common->requested_txq_size
-              + MIN(RTE_MAX_LCORE, common->requested_n_rxq) * NETDEV_MAX_BURST
-              + MIN(RTE_MAX_LCORE, 1 + common->requested_n_rxq) * MP_CACHE_SZ;
-
-    return n_mbufs;
+    /* The main thread may allocate packets from the mempool, filling its
+     * per-lcore mempool cache, thus +1. */
+    return common->requested_n_rxq * common->requested_rxq_size
+           + common->requested_n_txq * common->requested_txq_size
+           + MIN(RTE_MAX_LCORE, common->requested_n_rxq) * NETDEV_MAX_BURST
+           + MIN(RTE_MAX_LCORE, 1 + common->requested_n_rxq) * MP_CACHE_SZ;
 }
 
 static int
@@ -1675,8 +1673,7 @@ doca_mp_full(const struct rte_mempool *mp)
      * If future implementations of rte_mempool_full() were to change
      * it could be possible for a false positive.  Even that would
      * likely be ok, as there are additional checks during mempool
-     * freeing but it would make things racey.
-     */
+     * freeing but it would make things racey. */
     return rte_mempool_full(mp);
 }
 
@@ -1902,6 +1899,7 @@ netdev_doca_esw_key_parse(const char *devargs,
 static int
 netdev_doca_dev_probe(struct netdev_doca *dev, const char *devargs)
 {
+    const char *netdev_name = netdev_get_name(&dev->common.up);
     struct ds rte_devargs = DS_EMPTY_INITIALIZER;
     struct netdev_doca_esw_ctx_arg ctx_arg;
     struct netdev_doca_esw_key esw_key;
@@ -1911,8 +1909,7 @@ netdev_doca_dev_probe(struct netdev_doca *dev, const char *devargs)
     ovs_assert(!dev->esw_ctx);
 
     if (netdev_doca_esw_key_parse(devargs, &esw_key)) {
-        VLOG_ERR("%s: esw_key_parse failed for %s",
-                 OVS_SOURCE_LOCATOR, devargs);
+        VLOG_ERR("%s: ESW key parsing failed for %s", netdev_name, devargs);
         return EINVAL;
     }
 
@@ -1923,12 +1920,12 @@ netdev_doca_dev_probe(struct netdev_doca *dev, const char *devargs)
 
     dev->esw_ctx = refmap_ref(netdev_doca_esw_rfm, &esw_key, &ctx_arg);
     if (!dev->esw_ctx) {
-        VLOG_ERR("Could not get esw context for %s", devargs);
+        VLOG_ERR("%s: Could not get esw context for %s", netdev_name, devargs);
         return EINVAL;
     }
 
     if (doca_rdma_bridge_get_dev_pd(dev->esw_ctx->dev, &pd)) {
-        VLOG_ERR("Could not get pd for %s", devargs);
+        VLOG_ERR("%s: Could not get pd for %s", netdev_name, devargs);
         rv = EINVAL;
         goto out;
     }
@@ -1936,8 +1933,8 @@ netdev_doca_dev_probe(struct netdev_doca *dev, const char *devargs)
     if (dev->esw_ctx->cmd_fd == -1) {
         dev->esw_ctx->cmd_fd = dup(pd->context->cmd_fd);
         if (dev->esw_ctx->cmd_fd == -1) {
-            VLOG_ERR("Could not dup fd for %s. Error %s", devargs,
-                     ovs_strerror(errno));
+            VLOG_ERR("%s: Could not dup fd for %s. Error %s", netdev_name,
+                     devargs, ovs_strerror(errno));
             rv = EBADF;
             goto out;
         }
@@ -1948,7 +1945,7 @@ netdev_doca_dev_probe(struct netdev_doca *dev, const char *devargs)
 
     VLOG_DBG("Probing '%s'", ds_cstr(&rte_devargs));
     if (rte_dev_probe(ds_cstr(&rte_devargs))) {
-        VLOG_ERR("%s: rte_dev_probe failed for %s", OVS_SOURCE_LOCATOR,
+        VLOG_ERR("%s: DPDK probe failed for %s", netdev_name,
                  ds_cstr(&rte_devargs));
         close(dev->esw_ctx->cmd_fd);
         dev->esw_ctx->cmd_fd = -1;
@@ -1977,7 +1974,7 @@ netdev_doca_port_start(struct netdev *netdev)
     int err;
 
     if (!rte_eth_dev_is_valid_port(dev->esw_mgr_port_id)) {
-        VLOG_ERR("Cannot start port "DPDK_PORT_ID_FMT" '%s', invalid proxy "
+        VLOG_ERR("Cannot start port "DPDK_PORT_ID_FMT" '%s', invalid ESW "
                  "port", port_id,
                  devargs);
         return DOCA_ERROR_NOT_FOUND;
@@ -2037,6 +2034,7 @@ netdev_doca_port_start(struct netdev *netdev)
 
     VLOG_INFO("%s: Starting '%s', port_id="DPDK_PORT_ID_FMT,
               netdev_get_name(netdev), devargs, port_id);
+
     if (common->port_id == dev->esw_mgr_port_id) {
         err = doca_flow_port_cfg_set_actions_mem_size(
                 port_cfg, NETDEV_DOCA_ACTIONS_MEM_SIZE);
@@ -2127,8 +2125,8 @@ dpdk_eth_dev_init(struct netdev_doca *dev)
         return -diag;
     }
 
-    common->is_representor = common->devargs &&
-        strstr(common->devargs, "representor=");
+    common->is_representor = common->devargs
+        && strstr(common->devargs, "representor=");
 
     netdev_dpdk_detect_hw_ol_features(&dev->common, &info);
 
@@ -2149,8 +2147,7 @@ dpdk_eth_dev_init(struct netdev_doca *dev)
      * probes the latter, thus probe is not called from
      * netdev_doca_process_devargs().  In this case we call probe at
      * netdev_doca_port_start(), and make sure the device is marked as
-     * "attached".
-     */
+     * "attached". */
     common->attached = true;
     diag = netdev_doca_port_start(netdev);
     if (diag) {
