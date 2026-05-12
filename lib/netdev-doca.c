@@ -1958,6 +1958,7 @@ out:
     if (rv) {
         netdev_doca_dev_close(dev);
     }
+
     return rv;
 }
 
@@ -2097,6 +2098,7 @@ out:
     if (err) {
         netdev_doca_port_stop(netdev);
     }
+
     return err;
 }
 
@@ -2232,12 +2234,14 @@ netdev_doca_reconfigure(struct netdev *netdev)
             err = -1;
             goto out;
         }
+
         if (common->requested_n_rxq != esw_n_rxq) {
             VLOG_WARN("%s: requested_n_rxq=%d is ignored. DOCA binds the "
                       "number of rx queues to the esw's n_rxq=%d",
                       netdev_get_name(netdev), common->requested_n_rxq,
                       esw_n_rxq);
         }
+
         netdev->n_rxq = esw_n_rxq;
     }
 
@@ -2259,6 +2263,7 @@ netdev_doca_reconfigure(struct netdev *netdev)
     if (err) {
         goto out;
     }
+
     netdev_dpdk_update_netdev_flags(&dev->common);
 
     /* If both requested and actual hw-addr were previously
@@ -2382,6 +2387,7 @@ iface_exists(const char *name)
     if (!(n >= 0 && n < sizeof path)) {
         return false;
     }
+
     return stat(path, &st) == 0;
 }
 
