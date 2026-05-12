@@ -489,6 +489,8 @@ lib_libopenvswitch_la_SOURCES += \
 	lib/netlink-protocol.h \
 	lib/netlink-socket.c \
 	lib/netlink-socket.h \
+	lib/ovs-doca.c \
+	lib/ovs-doca.h \
 	lib/rtnetlink.c \
 	lib/rtnetlink.h \
 	lib/route-table.c \
@@ -516,10 +518,6 @@ else
 lib_libopenvswitch_la_SOURCES += \
 	lib/dpdk-stub.c
 endif
-
-lib_libopenvswitch_la_SOURCES += \
-	lib/ovs-doca.c \
-	lib/ovs-doca.h
 
 if DOCA_NETDEV
 lib_libopenvswitch_la_SOURCES += \
