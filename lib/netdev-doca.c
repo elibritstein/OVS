@@ -2145,11 +2145,6 @@ dpdk_eth_dev_init(struct netdev_doca *dev)
         return -diag;
     }
 
-    /* When a representor is probed before its ESW, dpdk implicitly
-     * probes the latter, thus probe is not called from
-     * netdev_doca_process_devargs().  In this case we call probe at
-     * netdev_doca_port_start(), and make sure the device is marked as
-     * "attached". */
     common->attached = true;
     diag = netdev_doca_port_start(netdev);
     if (diag) {
@@ -2165,6 +2160,7 @@ dpdk_eth_dev_init(struct netdev_doca *dev)
 
     memset(&eth_addr, 0x0, sizeof(eth_addr));
     rte_eth_macaddr_get(common->port_id, &eth_addr);
+
     VLOG_INFO_RL(&rl, "Port %d: "ETH_ADDR_FMT,
                  common->port_id, ETH_ADDR_BYTES_ARGS(eth_addr.addr_bytes));
 
@@ -2230,11 +2226,6 @@ netdev_doca_reconfigure(struct netdev *netdev)
         int esw_n_rxq;
 
         esw_n_rxq = dev->esw_ctx->n_rxq;
-        if (esw_n_rxq < 0) {
-            err = -1;
-            goto out;
-        }
-
         if (common->requested_n_rxq != esw_n_rxq) {
             VLOG_WARN("%s: requested_n_rxq=%d is ignored. DOCA binds the "
                       "number of rx queues to the esw's n_rxq=%d",
@@ -2274,8 +2265,7 @@ netdev_doca_reconfigure(struct netdev *netdev)
      *
      * This is harmless in case requested_hwaddr was
      * configured by the user, as netdev_dpdk_set_dev_etheraddr()
-     * will have succeeded to get to this point.
-     */
+     * will have succeeded to get to this point. */
     common->requested_hwaddr = common->hwaddr;
 
     common->tx_q = netdev_dpdk_alloc_txq(netdev->n_txq);
@@ -2302,7 +2292,7 @@ common_construct(struct netdev *netdev, dpdk_port_t port_no, int socket_id)
 
     rte_spinlock_init(&common->stats_lock);
 
-    /* If the 'sid' is negative, it means that the kernel fails
+    /* If socket_id is negative, it means that the kernel fails
      * to obtain the pci numa info.  In that situation, always
      * use 'SOCKET0'. */
     common->socket_id = socket_id < 0 ? SOCKET0 : socket_id;
@@ -2335,10 +2325,6 @@ common_construct(struct netdev *netdev, dpdk_port_t port_no, int socket_id)
 
     common->flags = NETDEV_UP | NETDEV_PROMISC;
 
-    ovs_list_push_back(&doca_list, &common->list_node);
-
-    netdev_request_reconfigure(netdev);
-
     common->rte_xstats_names = NULL;
     common->rte_xstats_names_size = 0;
 
@@ -2347,6 +2333,10 @@ common_construct(struct netdev *netdev, dpdk_port_t port_no, int socket_id)
 
     common->sw_stats = xzalloc(sizeof *common->sw_stats);
     common->sw_stats->tx_retries = UINT64_MAX;
+
+    ovs_list_push_back(&doca_list, &common->list_node);
+
+    netdev_request_reconfigure(netdev);
 
     return 0;
 }
@@ -2396,13 +2386,12 @@ netdev_doca_generate_devargs(const char *name, char *devargs, size_t maxlen,
                              char iface[IFNAMSIZ])
 {
     char phys_port_name_[IFNAMSIZ], *phys_port_name = phys_port_name_;
+    char pci[PCI_PRI_STR_SIZE + 1];
     char iface_tmp[IFNAMSIZ];
-    char device[PATH_MAX];
     char *mlx5_devargs;
     char *rep_part;
     bool is_rep;
     bool is_pf;
-    char *pci;
     int port;
     int len;
 
@@ -2419,13 +2408,11 @@ netdev_doca_generate_devargs(const char *name, char *devargs, size_t maxlen,
     name = iface_tmp;
     ovs_strlcpy(iface, name, IFNAMSIZ);
 
-    if (get_doca_dev_pci(name, device, sizeof device, &is_rep)) {
+    if (get_doca_dev_pci(name, pci, sizeof pci, &is_rep)) {
         VLOG_WARN("%s: get_doca_dev_pci failed for %s", OVS_SOURCE_LOCATOR,
                   name);
         return NULL;
     }
-
-    pci = device;
 
     if (get_phys_port_name(name, phys_port_name_, sizeof phys_port_name_)) {
         VLOG_WARN("%s: get_phys_port_name failed for %s",
