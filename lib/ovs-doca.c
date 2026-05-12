@@ -602,7 +602,7 @@ ovs_doca_pipe_cfg_allow_queues(struct doca_flow_pipe_cfg *cfg,
         }
 
         err = doca_flow_pipe_cfg_set_excluded_queue(cfg, qid);
-        if (DOCA_IS_ERROR(err)) {
+        if (err != DOCA_SUCCESS) {
             VLOG_ERR("Failed to exclude queue %u in pipe configuration."
                      " Error: %d (%s)", qid, err, doca_error_get_descr(err));
             return err;

@@ -66,8 +66,6 @@ COVERAGE_DEFINE(netdev_doca_no_mark);
 #define NETDEV_DOCA_ACTIONS_MEM_SIZE \
     (64 * 2 * NETDEV_DOCA_MAX_MEGAFLOWS_COUNTERS)
 
-#define MAX_PHYS_ITEM_ID_LEN 32
-
 struct netdev_doca_esw_key {
     struct rte_pci_addr rte_pci;
 };
@@ -89,7 +87,10 @@ static uint16_t pre_miss_mapping[NUM_SEND_TO_KERNEL] = {
 
 static struct refmap *netdev_doca_esw_rfm;
 static struct atomic_count n_doca_ports = ATOMIC_COUNT_INIT(0);
+/* Global mutex for all DOCA activities.  This must be acquired before
+ * any per-device mutex ('netdev_dpdk_common.mutex'). */
 struct ovs_mutex doca_mutex = OVS_MUTEX_INITIALIZER;
+
 /* Contains all 'struct doca_dev's. */
 static struct ovs_list doca_list OVS_GUARDED_BY(doca_mutex)
     = OVS_LIST_INITIALIZER(&doca_list);
@@ -376,12 +377,12 @@ netdev_doca_rss_entries_init(struct netdev *netdev)
     struct doca_flow_fwd fwd;
     uint16_t *rss_queues;
     int ret;
-    int i;
 
     num_of_queues = esw->n_rxq;
+    ovs_assert(num_of_queues > 0);
 
     rss_queues = xcalloc(num_of_queues, sizeof *rss_queues);
-    for (i = 0; i < num_of_queues; i++) {
+    for (int i = 0; i < num_of_queues; i++) {
         rss_queues[i] = i;
     }
 
@@ -397,7 +398,7 @@ netdev_doca_rss_entries_init(struct netdev *netdev)
     match.d.parser_meta.port_id = port_id;
     actions.mark = (OVS_FORCE doca_be32_t) DOCA_HTOBE32(port_id);
 
-    for (i = 0; i < NETDEV_DOCA_RSS_NUM_ENTRIES; i++) {
+    for (int i = 0; i < NETDEV_DOCA_RSS_NUM_ENTRIES; i++) {
         struct rss_match_type match_type = netdev_doca_rss_match_type(i);
 
         match.d.parser_meta.outer_l3_type = match_type.l3_type;
@@ -552,7 +553,7 @@ netdev_doca_pre_miss_rules_init(struct netdev *netdev)
 
     memset(&match, 0, sizeof match);
 
-    for (int i = 0 ; i < NUM_SEND_TO_KERNEL ; i++) {
+    for (int i = 0; i < NUM_SEND_TO_KERNEL; i++) {
         pentry = &dev->esw_ctx->pre_miss_entries[i];
 
         match.d.outer.eth.type = htons(pre_miss_mapping[i]);
@@ -577,7 +578,7 @@ netdev_doca_pre_miss_rules_uninit(struct netdev *netdev)
     struct netdev_doca *dev = netdev_doca_cast(netdev);
     struct netdev_doca_esw_ctx *esw = dev->esw_ctx;
 
-    for (int i = 0 ; i < NUM_SEND_TO_KERNEL ; i++) {
+    for (int i = 0; i < NUM_SEND_TO_KERNEL; i++) {
         ovs_doca_remove_entry(esw, AUX_QUEUE, DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
                               &esw->pre_miss_entries[i]);
     }
@@ -663,14 +664,15 @@ netdev_doca_slowpath_esw_init(struct netdev *netdev)
 {
     int rv;
 
-#define ESW_INIT_CMD(func)                                     \
-    do {                                                       \
-        rv = (func)(netdev);                                   \
-        if (!rv) {                                             \
-            break;                                             \
-        }                                                      \
-        VLOG_ERR("%s: %s failed: %d", netdev_get_name(netdev), \
-                 #func, rv);                                   \
+#define ESW_INIT_CMD(func)                                                \
+    do {                                                                  \
+        rv = (func)(netdev);                                              \
+        if (!rv) {                                                        \
+            break;                                                        \
+        }                                                                 \
+        VLOG_ERR("%s: eSwitch initialization failed, %s() with error: "   \
+                 "%d (%s)", netdev_get_name(netdev), #func, rv,           \
+                  doca_error_get_descr(rv));                              \
         return rv;                                             \
     } while (0)
 
@@ -707,7 +709,7 @@ netdev_doca_esw_port_uninit(struct netdev *netdev)
                     continue;
                 }
 
-                while (1) {
+                while (true) {
                     deq = rte_ring_dequeue(*pring, (void **) &pkt);
                     if (deq) {
                         break;
@@ -765,13 +767,6 @@ netdev_doca_esw_init(struct netdev *netdev)
 
             ring_name = xasprintf("%s-%d-%d", netdev_get_name(netdev), pid,
                                   qid);
-            if (!ring_name) {
-                VLOG_ERR("%s: ring_name alloc failed for pid=%d qid=%d",
-                         netdev_get_name(netdev), pid, qid);
-                rv = ENOMEM;
-                goto err;
-            }
-
             if (strlen(ring_name) >= RTE_RING_NAMESIZE) {
                 VLOG_ERR("%s: ring_name too long for pid=%d qid=%d",
                          netdev_get_name(netdev), pid, qid);
@@ -798,20 +793,23 @@ netdev_doca_esw_init(struct netdev *netdev)
     }
 
     return 0;
+
 err:
     netdev_doca_esw_port_uninit(netdev);
     return rv;
 }
 
 static int
-get_sys(const char *prefix, const char *devname, const char *suffix,
-        char *outp, size_t maxlen)
+get_sysfs_attr(const char *prefix, const char *devname, const char *suffix,
+               char *outp, size_t maxlen)
 {
     char str[PATH_MAX];
     size_t len;
     FILE *fp;
     char *p;
     int n;
+
+    ovs_assert(prefix && devname && suffix);
 
     n = snprintf(str, sizeof str, "/sys/%s/%s/%s", prefix, devname, suffix);
     if (!(n >= 0 && n < sizeof str)) {
@@ -834,11 +832,13 @@ get_sys(const char *prefix, const char *devname, const char *suffix,
         return EIO;
     }
 
-    /* The string is terminated by \n.  Drop it. */
+    /* 'fgets' terminates the string with \n.  Passing 'len', which
+     * includes the \n, as the size to ovs_strlcpy() causes it to copy
+     * len-1 characters, dropping the newline. */
     if (outp) {
         len = strnlen(str, maxlen);
         if (maxlen <= len) {
-            VLOG_DBG("%s: maxlen exceeded for %s/%s/%s", OVS_SOURCE_LOCATOR,
+            VLOG_DBG("%s: maxlen exceeded for /%s/%s/%s", OVS_SOURCE_LOCATOR,
                      prefix, devname, suffix);
             return ERANGE;
         }
@@ -851,13 +851,15 @@ get_sys(const char *prefix, const char *devname, const char *suffix,
 static int
 get_phys_port_name(const char *devname, char *outp, size_t maxlen)
 {
-    return get_sys("class/net", devname, "phys_port_name", outp, maxlen);
+    return get_sysfs_attr("class/net", devname, "phys_port_name", outp,
+                          maxlen);
 }
 
 static int
 get_bonding_slaves(const char *devname, char *outp, size_t maxlen)
 {
-    return get_sys("class/net", devname, "bonding/slaves", outp, maxlen);
+    return get_sysfs_attr("class/net", devname, "bonding/slaves", outp,
+                          maxlen);
 }
 
 static doca_error_t
@@ -865,10 +867,10 @@ dev_get_rep(const char *name, struct doca_devinfo *devinfo, bool *found)
 {
     char dev_name[DOCA_DEVINFO_IFACE_NAME_SIZE];
     struct doca_devinfo_rep **dev_list_rep;
+    doca_error_t err = DOCA_SUCCESS;
     struct doca_dev *ddev;
     uint32_t nb_devs_rep;
     doca_error_t ret;
-    int i;
 
     ret = doca_dev_open(devinfo, &ddev);
     if (ret != DOCA_SUCCESS) {
@@ -882,16 +884,18 @@ dev_get_rep(const char *name, struct doca_devinfo *devinfo, bool *found)
     if (ret != DOCA_SUCCESS) {
         VLOG_ERR("%s: Failed to create a rep list. Error: %d (%s)", name, ret,
                  doca_error_get_descr(ret));
-        goto err_list;
+        err = ret;
+        goto out;
     }
 
-    for (i = 0; i < nb_devs_rep; i++) {
+    for (int i = 0; i < nb_devs_rep; i++) {
         ret = doca_devinfo_rep_get_iface_name(dev_list_rep[i], dev_name,
                                               sizeof dev_name);
         if (ret != DOCA_SUCCESS) {
             VLOG_ERR("%s: Failed to get rep iface name. Error: %d (%s)", name,
                      ret, doca_error_get_descr(ret));
-            goto out;
+            err = ret;
+            break;
         }
 
         if (!strcmp(name, dev_name)) {
@@ -900,35 +904,37 @@ dev_get_rep(const char *name, struct doca_devinfo *devinfo, bool *found)
         }
     }
 
-out:
     ret = doca_devinfo_rep_destroy_list(dev_list_rep);
     if (ret != DOCA_SUCCESS) {
         VLOG_ERR("%s: Failed to destroy rep list. Error: %d (%s)", name, ret,
                  doca_error_get_descr(ret));
+        if (err == DOCA_SUCCESS) {
+            err = ret;
+        }
     }
 
-err_list:
+out:
     ret = doca_dev_close(ddev);
     if (ret != DOCA_SUCCESS) {
         VLOG_ERR("%s: Failed to close dev. Error: %d (%s)", name, ret,
                  doca_error_get_descr(ret));
+        if (err == DOCA_SUCCESS) {
+            err = ret;
+        }
     }
 
-    return ret;
+    return err;
 }
 
 static int
-get_pci(const char *name, char *pci, size_t maxlen, bool *is_rep)
+get_doca_dev_pci(const char *name, char *pci, size_t maxlen, bool *is_rep)
 {
     struct doca_devinfo **dev_list;
     bool found = false;
     uint32_t nb_devs;
     doca_error_t ret;
-    int i;
 
-    if (maxlen <= PCI_PRI_STR_SIZE) {
-        return DOCA_ERROR_INVALID_VALUE;
-    }
+    ovs_assert(maxlen > PCI_PRI_STR_SIZE);
 
     ret = doca_devinfo_create_list(&dev_list, &nb_devs);
     if (ret != DOCA_SUCCESS) {
@@ -942,13 +948,13 @@ get_pci(const char *name, char *pci, size_t maxlen, bool *is_rep)
      * 2. If the device name is what we look for, done.
      * 3. If not, try to find in the representors of this ESW.
      */
-    for (i = 0; i < nb_devs; i++) {
+    for (int i = 0; i < nb_devs; i++) {
         char dev_name[DOCA_DEVINFO_IFACE_NAME_SIZE];
         uint8_t net_supported;
 
         /* If not an ESW, continue. */
-        ret = doca_devinfo_rep_cap_is_filter_net_supported(
-            dev_list[i], &net_supported);
+        ret = doca_devinfo_rep_cap_is_filter_net_supported(dev_list[i],
+                                                           &net_supported);
         if (ret != DOCA_SUCCESS) {
             VLOG_ERR("%s: Failed to check rep_cap. Error: %d (%s)", name, ret,
                      doca_error_get_descr(ret));
@@ -1012,9 +1018,7 @@ get_dpdk_iface_name(const char *name, char iface[IFNAMSIZ])
     char *lower;
 
     /* In case the device is a bond, there is a lower_p0 symbolic link, with
-     * the format of ../../.../<lower-dev>.  Extract the lower device.
-     */
-
+     * the format of ../../.../<lower-dev>.  Extract the lower device.  */
     if (get_bonding_slaves(name, slaves, sizeof slaves)) {
         goto fallback;
     }
@@ -1022,8 +1026,8 @@ get_dpdk_iface_name(const char *name, char iface[IFNAMSIZ])
     lower = strtok_r(slaves, " ", &save_ptr);
     while (lower) {
         if (!get_phys_port_name(lower, phys_port_name,
-                                sizeof phys_port_name) &&
-            !strcmp(phys_port_name, "p0")) {
+                                sizeof phys_port_name)
+            && !strcmp(phys_port_name, "p0")) {
             break;
         }
         lower = strtok_r(NULL, " ", &save_ptr);
@@ -1039,6 +1043,7 @@ get_dpdk_iface_name(const char *name, char iface[IFNAMSIZ])
 
 fallback:
     ovs_strlcpy(iface, name, IFNAMSIZ);
+
 out:
     return 0;
 }
@@ -1082,9 +1087,13 @@ static void
 netdev_doca_dealloc(struct netdev *netdev)
 {
     struct netdev_doca *dev = netdev_doca_cast(netdev);
+    unsigned int old_count;
 
     /* Upon the last doca port going down, enable back dpdk steering. */
-    if (atomic_count_dec(&n_doca_ports) == 1) {
+    old_count = atomic_count_dec(&n_doca_ports);
+    ovs_assert(old_count > 0);
+
+    if (old_count == 1) {
         rte_pmd_mlx5_enable_steering();
     }
 
@@ -1107,6 +1116,7 @@ netdev_doca_set_mtu(struct netdev *netdev, int mtu)
         common->requested_mtu = mtu;
         netdev_request_reconfigure(netdev);
     }
+
 out:
     ovs_mutex_unlock(&common->mutex);
 
@@ -1122,7 +1132,6 @@ netdev_doca_dev_open_pci(struct rte_pci_addr *rte_pci, struct doca_dev **pdev)
     uint8_t is_esw_manager = 0;
     uint8_t is_addr_equal = 0;
     uint32_t nb_devs;
-    size_t i;
     int res;
 
     /* Set default return value. */
@@ -1136,8 +1145,7 @@ netdev_doca_dev_open_pci(struct rte_pci_addr *rte_pci, struct doca_dev **pdev)
     }
 
     rte_pci_device_name(rte_pci, pci, sizeof pci);
-    /* Search. */
-    for (i = 0; i < nb_devs; i++) {
+    for (int i = 0; i < nb_devs; i++) {
         res = doca_devinfo_is_equal_pci_addr(dev_list[i], pci, &is_addr_equal);
         if (res != DOCA_SUCCESS || !is_addr_equal) {
             continue;
@@ -1159,7 +1167,7 @@ netdev_doca_dev_open_pci(struct rte_pci_addr *rte_pci, struct doca_dev **pdev)
         goto out;
     }
 
-    VLOG_WARN("No matching doca device found");
+    VLOG_WARN("No DOCA device found for PCI address %s", pci);
     res = DOCA_ERROR_NOT_FOUND;
 
 out:
@@ -1241,28 +1249,24 @@ netdev_doca_parse_dpdk_devargs_pci(const char *devargs,
     int rv = 0;
 
     if (rte_devargs_parse(&da, devargs)) {
-        VLOG_ERR("%s: rte_devargs_parse failed for %s",
+        VLOG_ERR("%s: Device argument parsing failed for %s",
                  OVS_SOURCE_LOCATOR, devargs);
         return EINVAL;
     }
 
     if (rte_pci_addr_parse(da.name, rte_pci)) {
-        VLOG_ERR("%s: rte_pci_addr_parse failed for %s",
+        VLOG_ERR("%s: PCI address parsing failed for %s",
                  OVS_SOURCE_LOCATOR, da.name);
         rv = EINVAL;
-        goto out;
     }
 
-out:
     rte_devargs_reset(&da);
     return rv;
 }
 
 /* Changing the netdev of the ESW require changes of its representor ports.
  * This helper traverses them with a callback to run on each representor.
- * For each representor, request a reconfigure of it.
- */
-
+ * For each representor, request a reconfigure of it. */
 static void
 netdev_doca_do_foreach_representor(struct netdev_doca *esw_dev,
                                    bool (*cb)(struct netdev_doca *))
@@ -1367,7 +1371,7 @@ netdev_doca_dev_close(struct netdev_doca *dev)
 
         VLOG_DBG("Closing '%s'", pci_addr);
         err = doca_dev_close(esw->dev);
-        if (err) {
+        if (err != DOCA_SUCCESS) {
             VLOG_ERR("Failed to close doca dev %s. Error: %d (%s)", pci_addr,
                      err, doca_error_get_descr(err));
         }
@@ -1468,7 +1472,8 @@ netdev_doca_destruct(struct netdev *netdev)
         netdev_doca_dev_close(dev);
         common->port_id = DPDK_ETH_PORT_ID_INVALID;
 
-        VLOG_INFO("Device '%s' has been removed", common->devargs);
+        VLOG_INFO("%s: Device '%s' has been removed", netdev_get_name(netdev),
+                  common->devargs);
     }
 
     ovs_mutex_lock(&common->mutex);
@@ -1549,7 +1554,6 @@ netdev_doca_get_custom_stats(const struct netdev *netdev,
         BYTES,
     };
     int err;
-    int i;
 
     if (!dpdk_dev_is_started(common)) {
         return EAGAIN;
@@ -1567,7 +1571,7 @@ netdev_doca_get_custom_stats(const struct netdev *netdev,
                                       sizeof *custom_stats->counters);
     counter = &custom_stats->counters[sw_stats_size];
 
-    for (i = 0; i < NETDEV_DOCA_RSS_NUM_ENTRIES; i++, counter += 2) {
+    for (int i = 0; i < NETDEV_DOCA_RSS_NUM_ENTRIES; i++, counter += 2) {
         const char *stats_name = netdev_doca_stats_name(i);
 
         err = doca_flow_resource_query_entry(dev->rss_entries[i], &stats);
@@ -1589,7 +1593,7 @@ netdev_doca_get_custom_stats(const struct netdev *netdev,
     n_sw_packets = 0;
     n_sw_bytes = 0;
 
-    for (i = 0; i < n_rxq; i++, counter += 2) {
+    for (int i = 0; i < n_rxq; i++, counter += 2) {
         atomic_read_relaxed(&esw_ctx->port_queues[port_id][i].n_packets,
                             &n_packets);
         atomic_read_relaxed(&esw_ctx->port_queues[port_id][i].n_bytes,
@@ -1614,7 +1618,7 @@ netdev_doca_get_custom_stats(const struct netdev *netdev,
              "sw_rx_bytes");
     counter += 2;
 
-    for (i = 0; i < n_txq; i++, counter += 2) {
+    for (int i = 0; i < n_txq; i++, counter += 2) {
         atomic_read_relaxed(&dev->sw_tx_stats[i].n_packets, &n_packets);
         atomic_read_relaxed(&dev->sw_tx_stats[i].n_bytes, &n_bytes);
 
@@ -2412,8 +2416,9 @@ netdev_doca_generate_devargs(const char *name, char *devargs, size_t maxlen,
     name = iface_tmp;
     ovs_strlcpy(iface, name, IFNAMSIZ);
 
-    if (get_pci(name, device, sizeof device, &is_rep)) {
-        VLOG_WARN("%s: get_pci failed for %s", OVS_SOURCE_LOCATOR, name);
+    if (get_doca_dev_pci(name, device, sizeof device, &is_rep)) {
+        VLOG_WARN("%s: get_doca_dev_pci failed for %s", OVS_SOURCE_LOCATOR,
+                  name);
         return NULL;
     }
 
