@@ -271,7 +271,7 @@ ovs_doca_init_defs(struct doca_flow_cfg *cfg,
     }
 
 out:
-    if (result) {
+    if (result != DOCA_SUCCESS) {
         ovs_doca_destroy_defs(*defs, *defs_cfg);
     }
 
@@ -362,7 +362,7 @@ ovs_doca_init__(const struct smap *ovs_other_config)
 #define RV_TEST(call)                                               \
     do {                                                            \
         err = (call);                                               \
-        if (err) {                                                  \
+        if (err != DOCA_SUCCESS) {                                  \
             VLOG_ERR("%s failed. Error: %d (%s)",                   \
                      #call, err, doca_error_get_descr(err));        \
             return ENODEV;                                          \
@@ -437,7 +437,7 @@ ovs_doca_complete_queue_esw(struct netdev_doca_esw_ctx *esw,
          * the full length of the queue. */
         err = doca_flow_entries_process(esw->esw_port, qid,
                                         OVS_DOCA_ENTRY_PROCESS_TIMEOUT_US, 0);
-        if (err) {
+        if (err != DOCA_SUCCESS) {
             VLOG_WARN_RL(&rl, "%s: Failed to process entries in queue "
                          "%u. Error: %d (%s)",
                          netdev_get_name(esw->esw_netdev), qid,
@@ -537,7 +537,7 @@ ovs_doca_add_entry(struct netdev *netdev,
 
     err = ovs_doca_add_generic(qid, 0, pipe, DOCA_FLOW_PIPE_BASIC, match,
                                actions, monitor, fwd, flags, esw, pentry);
-    if (err) {
+    if (err != DOCA_SUCCESS) {
         VLOG_WARN_RL(&rl, "%s: Failed to create basic pipe entry. "
                      "Error: %d (%s)", netdev_get_name(netdev), err,
                      doca_error_get_descr(err));
@@ -656,7 +656,7 @@ ovs_doca_pipe_create(struct netdev *netdev,
              pipe_str);
 
     ret = doca_flow_pipe_cfg_create(&cfg, doca_port);
-    if (ret) {
+    if (ret != DOCA_SUCCESS) {
         VLOG_ERR("%s: Could not create doca_flow_pipe_cfg for %s."
                  " Error: %d (%s)", netdev_get_name(netdev), pipe_name,
                  ret, doca_error_get_descr(ret));
@@ -672,7 +672,7 @@ ovs_doca_pipe_create(struct netdev *netdev,
 #define PIPE_CFG_SET(call)                                              \
     do {                                                                \
         ret = (call);                                                   \
-        if (ret) {                                                      \
+        if (ret != DOCA_SUCCESS) {                                      \
             VLOG_ERR("%s: %s failed for %s. Error: %d (%s)",            \
                      netdev_get_name(netdev), #call, pipe_name,         \
                      ret, doca_error_get_descr(ret));                   \
@@ -714,7 +714,7 @@ ovs_doca_pipe_create(struct netdev *netdev,
 #undef PIPE_CFG_SET
 
     ret = doca_flow_pipe_create(cfg, fwd, fwd_miss, pipe);
-    if (ret) {
+    if (ret != DOCA_SUCCESS) {
         VLOG_ERR("%s: Failed to create basic pipe '%s'. Error: %d (%s)",
                  netdev_get_name(netdev), pipe_name, ret,
                  doca_error_get_descr(ret));

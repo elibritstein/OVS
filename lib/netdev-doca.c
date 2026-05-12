@@ -408,7 +408,7 @@ netdev_doca_rss_entries_init(struct netdev *netdev)
         ret = ovs_doca_add_entry(&common->up, AUX_QUEUE, esw->rss_pipe, &match,
                                  &actions, NULL, &fwd,
                                  DOCA_FLOW_ENTRY_FLAGS_NO_WAIT, &entry);
-        if (ret) {
+        if (ret != DOCA_SUCCESS) {
             VLOG_ERR("%s: Failed to create '%s' rss entry. Error: %d (%s)",
                      netdev_get_name(&common->up), netdev_doca_stats_name(i),
                      ret, doca_error_get_descr(ret));
@@ -482,7 +482,7 @@ netdev_doca_meta_tag0_rule_init(struct netdev *netdev)
 
     ret = ovs_doca_add_entry(netdev, AUX_QUEUE, pipe, NULL, NULL, NULL, NULL,
                              DOCA_FLOW_ENTRY_FLAGS_NO_WAIT, pentry);
-    if (ret) {
+    if (ret != DOCA_SUCCESS) {
         VLOG_ERR("%s: Failed to create meta-tag0 rule. Error: %d (%s)",
                  netdev_get_name(netdev), ret, doca_error_get_descr(ret));
     }
@@ -519,7 +519,7 @@ netdev_doca_pre_miss_pipe_init(struct netdev *netdev)
     miss.next_pipe = dev->esw_ctx->meta_tag0_pipe;
 
     err = doca_flow_get_target(DOCA_FLOW_TARGET_KERNEL, &kernel_target);
-    if (err) {
+    if (err != DOCA_SUCCESS) {
         VLOG_ERR("%s: Could not get miss to kernel target. Error: %d (%s)",
                  netdev_get_name(netdev), err, doca_error_get_descr(err));
         return err;
@@ -561,7 +561,7 @@ netdev_doca_pre_miss_rules_init(struct netdev *netdev)
                                  dev->esw_ctx->pre_miss_pipe, &match, NULL,
                                  NULL, NULL, DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
                                  pentry);
-        if (ret) {
+        if (ret != DOCA_SUCCESS) {
             VLOG_ERR("%s: Failed to create pre_miss %x rule. Error: %d (%s)",
                      netdev_get_name(netdev), pre_miss_mapping[i],
                      ret, doca_error_get_descr(ret));
@@ -629,7 +629,7 @@ netdev_doca_egress_entry_init(struct netdev_doca *dev)
     ret = ovs_doca_add_entry(&common->up, AUX_QUEUE, pipe, &match, NULL, NULL,
                              &fwd, DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
                              &dev->egress_entry);
-    if (ret) {
+    if (ret != DOCA_SUCCESS) {
         VLOG_ERR("Failed to create egress pipe entry. Error: %d (%s)", ret,
                  doca_error_get_descr(ret));
     }
@@ -1348,7 +1348,7 @@ netdev_doca_dev_close(struct netdev_doca *dev)
                  ". %p", netdev_get_name(&common->up),
                  common->port_id, dev->dev_rep);
         err = doca_dev_rep_close(dev->dev_rep);
-        if (err) {
+        if (err != DOCA_SUCCESS) {
             VLOG_ERR("Failed to close doca dev_rep with port id "
                      DPDK_PORT_ID_FMT". Error: %d (%s)",
                      common->port_id, err, doca_error_get_descr(err));
@@ -1981,7 +1981,7 @@ netdev_doca_port_start(struct netdev *netdev)
     }
 
     err = doca_flow_port_cfg_create(&port_cfg);
-    if (err) {
+    if (err != DOCA_SUCCESS) {
         VLOG_ERR("Failed to create doca flow port_cfg. Error: %d (%s)",
                  err, doca_error_get_descr(err));
         return err;
@@ -1994,7 +1994,7 @@ netdev_doca_port_start(struct netdev *netdev)
     }
 
     err = doca_flow_port_cfg_set_port_id(port_cfg, port_id);
-    if (err) {
+    if (err != DOCA_SUCCESS) {
         VLOG_ERR("%s: Failed to set doca flow port_cfg port_id "
                  DPDK_PORT_ID_FMT". Error: %d (%s)",
                  netdev_get_name(netdev), port_id, err,
@@ -2005,7 +2005,7 @@ netdev_doca_port_start(struct netdev *netdev)
     if (!netdev_doca_is_esw_mgr(netdev)) {
         err = doca_dpdk_open_dev_rep_by_port_id(port_id, esw->dev,
                                                 &dev->dev_rep);
-        if (err) {
+        if (err != DOCA_SUCCESS) {
             VLOG_ERR("%s: Failed to open doca dev_rep for port_id "
                      DPDK_PORT_ID_FMT". Error: %d (%s)",
                      netdev_get_name(netdev), port_id, err,
@@ -2017,7 +2017,7 @@ netdev_doca_port_start(struct netdev *netdev)
                  ". %p", netdev_get_name(netdev), port_id, dev->dev_rep);
 
         err = doca_flow_port_cfg_set_dev_rep(port_cfg, dev->dev_rep);
-        if (err) {
+        if (err != DOCA_SUCCESS) {
             VLOG_ERR("%s: Failed to set doca flow port_cfg dev_rep. "
                      "Error: %d (%s)", netdev_get_name(netdev), err,
                      doca_error_get_descr(err));
@@ -2026,7 +2026,7 @@ netdev_doca_port_start(struct netdev *netdev)
     }
 
     err = doca_flow_port_cfg_set_dev(port_cfg, esw->dev);
-    if (err) {
+    if (err != DOCA_SUCCESS) {
         VLOG_ERR("%s: Failed to set doca flow port_cfg dev. Error: %d (%s)",
                  netdev_get_name(netdev), err, doca_error_get_descr(err));
         goto out;
@@ -2038,7 +2038,7 @@ netdev_doca_port_start(struct netdev *netdev)
     if (common->port_id == dev->esw_mgr_port_id) {
         err = doca_flow_port_cfg_set_actions_mem_size(
                 port_cfg, NETDEV_DOCA_ACTIONS_MEM_SIZE);
-        if (err) {
+        if (err != DOCA_SUCCESS) {
             VLOG_ERR("Failed set_actions_mem_size for port_id "
                      DPDK_PORT_ID_FMT". Error: %d (%s)",
                      common->port_id, err,
@@ -2058,7 +2058,7 @@ netdev_doca_port_start(struct netdev *netdev)
         err = doca_flow_port_cfg_set_nr_resources(port_cfg,
                                                   DOCA_FLOW_RESOURCE_COUNTER,
                                                   ovs_doca_max_counters());
-        if (err) {
+        if (err != DOCA_SUCCESS) {
             VLOG_ERR("Failed set_nr_resources counters for port_id "
                      DPDK_PORT_ID_FMT". Error: %d (%s)",
                      common->port_id, err,
@@ -2068,7 +2068,7 @@ netdev_doca_port_start(struct netdev *netdev)
     }
 
     err = doca_flow_port_start(port_cfg, &dev->port);
-    if (err) {
+    if (err != DOCA_SUCCESS) {
         VLOG_ERR("Failed to start doca flow port_id "DPDK_PORT_ID_FMT
                  ". Error: %d (%s)", port_id, err,
                  doca_error_get_descr(err));
@@ -2083,12 +2083,12 @@ netdev_doca_port_start(struct netdev *netdev)
     }
 
     err = netdev_doca_egress_entry_init(dev);
-    if (err) {
+    if (err != DOCA_SUCCESS) {
         goto out;
     }
 
     err = netdev_doca_rss_entries_init(netdev);
-    if (err) {
+    if (err != DOCA_SUCCESS) {
         goto out;
     }
 
