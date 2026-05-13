@@ -33,6 +33,7 @@ extern struct ovs_mutex doca_mutex;
 #define NETDEV_DPDK_GLOBAL_MUTEX_NAME doca_mutex
 #include "netdev-dpdk-private.h"
 
+struct doca_mp;
 struct rte_ring;
 
 enum netdev_doca_rss_type {
@@ -78,16 +79,16 @@ struct netdev_doca_esw_ctx {
         offload_queues[OVS_DOCA_MAX_OFFLOAD_QUEUES];
     struct doca_flow_port *esw_port;
     struct netdev *esw_netdev;
+
     /* miss-path */
-    struct {
-        struct doca_flow_pipe *egress_pipe;
-        struct doca_flow_pipe *rss_pipe;
-        struct doca_flow_pipe *meta_tag0_pipe;
-        struct doca_flow_pipe_entry *meta_tag0_entry;
-        struct doca_flow_pipe *pre_miss_pipe;
-        struct doca_flow_pipe_entry *pre_miss_entries[PRE_MISS_N_TYPES];
-        struct doca_flow_pipe *root_pipe;
-    };
+    struct doca_flow_pipe *egress_pipe;
+    struct doca_flow_pipe *rss_pipe;
+    struct doca_flow_pipe *meta_tag0_pipe;
+    struct doca_flow_pipe_entry *meta_tag0_entry;
+    struct doca_flow_pipe *pre_miss_pipe;
+    struct doca_flow_pipe_entry *pre_miss_entries[PRE_MISS_N_TYPES];
+    struct doca_flow_pipe *root_pipe;
+
     unsigned int n_rxq;
     char pci_addr[PCI_PRI_STR_SIZE];
     struct doca_dev *dev;
@@ -95,9 +96,8 @@ struct netdev_doca_esw_ctx {
     int cmd_fd;
 };
 
-struct doca_mp;
 struct netdev_doca {
-    struct netdev_dpdk_common common; /* Must be first (offset 0). */
+    struct netdev_dpdk_common common;
 
     struct doca_mp *doca_mp;
     dpdk_port_t esw_mgr_port_id;
@@ -112,6 +112,7 @@ struct netdev_doca {
         struct doca_dev_rep *dev_rep;
     );
 };
+BUILD_ASSERT_DECL(offsetof(struct netdev_doca, common) == 0);
 
 void netdev_doca_register(void);
 
