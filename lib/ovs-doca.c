@@ -89,7 +89,7 @@ ovs_doca_parse_log_level(const char *s)
         }
     }
 
-    return -1;
+    return -EINVAL;
 }
 
 static const char *
@@ -106,11 +106,14 @@ ovs_doca_log_level_to_str(uint32_t log_level)
 }
 
 static enum doca_log_level
-get_buf_log_level(const char *buf, size_t size)
+get_buf_log_level(const char **pbuf, size_t *psize)
 {
+    const char *buf = *pbuf;
+    size_t size = *psize;
     const char *p = buf;
     int level;
 
+    /* Skip [timestamp][thread_id][DOCA], then parse [LEVEL] (INF/WRN/etc.). */
     for (int i = 0; i < 4; i++) {
         while (size && *p && *p != '[') {
             size--;
@@ -130,6 +133,13 @@ get_buf_log_level(const char *buf, size_t size)
         return DOCA_LOG_LEVEL_DISABLE;
     }
 
+    /* 'p' points to the level start which is 3 chars and another ']'
+     * after it.  For example "INF]".  Skip it. */
+    VLOG_ERR("orig size=%lu '%s'", *psize, *pbuf);
+    *pbuf = p + 4;
+    *psize -= *pbuf - buf;
+    VLOG_ERR("trim size=%lu '%s'", *psize, *pbuf);
+
     return level;
 }
 
@@ -137,7 +147,7 @@ static ssize_t
 ovs_doca_log_write(void *c OVS_UNUSED, const char *buf, size_t size)
 {
     static struct vlog_rate_limit dbg_rl = VLOG_RATE_LIMIT_INIT(600, 600);
-    enum doca_log_level level = get_buf_log_level(buf, size);
+    enum doca_log_level level = get_buf_log_level(&buf, &size);
 
     switch (level) {
         case DOCA_LOG_LEVEL_DISABLE:
