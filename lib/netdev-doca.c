@@ -2812,46 +2812,6 @@ netdev_doca_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch,
     return 0;
 }
 
-static size_t
-netdev_doca_common_send(struct netdev *netdev, struct dp_packet_batch *batch,
-                        struct netdev_dpdk_sw_stats *stats)
-{
-    struct rte_mbuf **pkts = (struct rte_mbuf **) batch->packets;
-    struct netdev_doca *dev = netdev_doca_cast(netdev);
-    size_t cnt, pkt_cnt = dp_packet_batch_size(batch);
-    struct netdev_dpdk_common *common = &dev->common;
-    struct dp_packet *packet;
-    bool need_copy = false;
-
-    memset(stats, 0, sizeof *stats);
-
-    DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
-        if (packet->source != DPBUF_DPDK) {
-            need_copy = true;
-            break;
-        }
-    }
-
-    /* Copy dp-packets to mbufs. */
-    if (OVS_UNLIKELY(need_copy)) {
-        cnt = netdev_dpdk_copy_batch_to_mbuf(common, batch);
-        stats->tx_failure_drops += pkt_cnt - cnt;
-        pkt_cnt = cnt;
-    }
-
-    /* Drop over-sized packets. */
-    cnt = netdev_dpdk_filter_packet_len(common, pkts, pkt_cnt);
-    stats->tx_mtu_exceeded_drops += pkt_cnt - cnt;
-    pkt_cnt = cnt;
-
-    /* Prepare each mbuf for hardware offloading. */
-    cnt = netdev_dpdk_prep_hwol_batch(common, pkts, pkt_cnt);
-    stats->tx_invalid_hwol_drops += pkt_cnt - cnt;
-    pkt_cnt = cnt;
-
-    return cnt;
-}
-
 static inline void
 packet_set_meta(struct dp_packet *p, uint32_t meta)
 {
@@ -2861,19 +2821,21 @@ packet_set_meta(struct dp_packet *p, uint32_t meta)
 }
 
 static int
-netdev_doca_eth_send(struct netdev *netdev, int qid,
-                     struct dp_packet_batch *batch, bool concurrent_txq)
+netdev_doca_send(struct netdev *netdev, int qid,
+                 struct dp_packet_batch *batch, bool concurrent_txq)
 {
     struct rte_mbuf **pkts = (struct rte_mbuf **) batch->packets;
     uint32_t port_id_meta = netdev_doca_get_port_id(netdev);
     struct netdev_doca *dev = netdev_doca_cast(netdev);
+    size_t cnt, pkt_cnt = dp_packet_batch_size(batch);
     struct netdev_dpdk_common *common = &dev->common;
     int batch_cnt = dp_packet_batch_size(batch);
     struct netdev_dpdk_sw_stats stats;
     struct dp_packet *packet;
+    bool need_copy = false;
     uint64_t n_bytes = 0;
     uint64_t old_count;
-    int cnt, dropped;
+    int dropped;
 
     if (OVS_UNLIKELY(!(common->flags & NETDEV_UP))) {
         rte_spinlock_lock(&common->stats_lock);
@@ -2888,8 +2850,32 @@ netdev_doca_eth_send(struct netdev *netdev, int qid,
         rte_spinlock_lock(&common->tx_q[qid].tx_lock);
     }
 
-    cnt = netdev_doca_common_send(netdev, batch, &stats);
+    memset(&stats, 0, sizeof stats);
 
+    DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
+        if (packet->source != DPBUF_DPDK) {
+            need_copy = true;
+            break;
+        }
+    }
+
+    /* Copy dp-packets to mbufs. */
+    if (OVS_UNLIKELY(need_copy)) {
+        cnt = netdev_dpdk_copy_batch_to_mbuf(common, batch);
+        stats.tx_failure_drops += pkt_cnt - cnt;
+        pkt_cnt = cnt;
+    }
+
+    /* Drop over-sized packets. */
+    cnt = netdev_dpdk_filter_packet_len(common, pkts, pkt_cnt);
+    stats.tx_mtu_exceeded_drops += pkt_cnt - cnt;
+    pkt_cnt = cnt;
+
+    /* Prepare each mbuf for hardware offloading. */
+    cnt = netdev_dpdk_prep_hwol_batch(common, pkts, pkt_cnt);
+    stats.tx_invalid_hwol_drops += pkt_cnt - cnt;
+
+    batch->count = cnt;
     DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
         /* Set metadata for egress pipe rules to match on. */
         packet_set_meta(packet, port_id_meta);
@@ -2901,7 +2887,7 @@ netdev_doca_eth_send(struct netdev *netdev, int qid,
     atomic_add_relaxed(&dev->sw_tx_stats[qid].n_bytes, n_bytes, &old_count);
 
     dropped = netdev_dpdk_eth_tx_burst(common, dev->esw_mgr_port_id,
-                                      qid, pkts, cnt);
+                                       qid, pkts, cnt);
     stats.tx_failure_drops += dropped;
     dropped += batch_cnt - cnt;
     if (OVS_UNLIKELY(dropped)) {
@@ -2960,7 +2946,7 @@ static const struct netdev_class netdev_doca_class = {
     .construct = netdev_doca_construct,
     .get_config = netdev_doca_get_config,
     .set_config = netdev_doca_set_config,
-    .send = netdev_doca_eth_send,
+    .send = netdev_doca_send,
 };
 
 void
