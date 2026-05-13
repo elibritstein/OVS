@@ -731,6 +731,27 @@ ovs_doca_max_counters(void)
     return ovs_doca_max_megaflows_counters + OVS_DOCA_SLOWPATH_COUNTERS;
 }
 
+/* Called from bridge_reconfigure() when other_config may have changed (same
+ * moment as ofproto_set_flow_limit). No work on the main loop hot path. */
+void
+ovs_doca_flow_limit_config_changed(unsigned int cfg_flow_limit)
+{
+    bool available;
+
+    atomic_read_relaxed(&doca_initialized, &available);
+    if (!available) {
+        return;
+    }
+
+    if (cfg_flow_limit != ovs_doca_max_megaflows_counters) {
+        VLOG_WARN_RL(&rl,
+                     "other_config:flow-limit is now %u but DOCA was already "
+                     "initialized with %u; the limit is fixed until "
+                     "ovs-vswitchd is restarted.",
+                     cfg_flow_limit, ovs_doca_max_megaflows_counters);
+    }
+}
+
 void
 ovs_doca_init(const struct smap *ovs_other_config)
 {

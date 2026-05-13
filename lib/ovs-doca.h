@@ -100,6 +100,8 @@ ovs_doca_pipe_cfg_allow_queues(struct doca_flow_pipe_cfg *cfg,
 unsigned int
 ovs_doca_max_counters(void);
 
+void ovs_doca_flow_limit_config_changed(unsigned int cfg_flow_limit);
+
 #endif /* DOCA_NETDEV */
 
 void ovs_doca_init(const struct smap *ovs_other_config);
