@@ -187,11 +187,9 @@ ovs_doca_unixctl_log_set(struct unixctl_conn *conn, int argc,
     int level = DOCA_LOG_LEVEL_DEBUG;
 
     /* With no argument, level is set to 'debug'. */
-
     if (argc == 2) {
-        const char *level_string;
+        const char *level_string = argv[1];
 
-        level_string = argv[1];
         level = ovs_doca_parse_log_level(level_string);
         if (level < 0) {
             char *err_msg = xasprintf("invalid log level: '%s'", level_string);
@@ -335,8 +333,8 @@ ovs_doca_init__(const struct smap *ovs_other_config)
     }
 
     if (rte_flow_dynf_metadata_register() < 0) {
-        VLOG_ERR("Failed to register dynamic metadata, err: %s.",
-                 rte_strerror(rte_errno));
+        VLOG_ERR("Failed to register dynamic metadata, Error: %d (%s)",
+                 rte_errno, rte_strerror(rte_errno));
         return ENOTSUP;
     }
 
@@ -344,7 +342,7 @@ ovs_doca_init__(const struct smap *ovs_other_config)
     if (!log_stream) {
         VLOG_ERR("Can't redirect DOCA log: %s.", ovs_strerror(errno));
     } else {
-        /* Create a logger back-end that prints to the redirected log */
+        /* Create a logger back-end that prints to the redirected log. */
         err = doca_log_backend_create_with_file_sdk(log_stream,
                                                     &ovs_doca_log);
         if (err != DOCA_SUCCESS) {
