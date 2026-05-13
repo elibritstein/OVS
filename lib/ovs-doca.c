@@ -343,15 +343,7 @@ ovs_doca_init__(const struct smap *ovs_other_config)
         VLOG_ERR("Can't redirect DOCA log: %s.", ovs_strerror(errno));
     } else {
         /* Create a logger back-end that prints to the redirected log. */
-        err = doca_log_backend_create_with_file_sdk(log_stream,
-                                                    &ovs_doca_log);
-        if (err != DOCA_SUCCESS) {
-            VLOG_ERR("%s: doca_log_backend_create_with_file_sdk failed."
-                     " Error: %d (%s)",
-                     OVS_SOURCE_LOCATOR, err, doca_error_get_descr(err));
-            return ENODEV;
-        }
-
+        doca_log_backend_create_with_file_sdk(log_stream, &ovs_doca_log);
         doca_log_level_set_global_sdk_limit(DOCA_LOG_LEVEL_WARNING);
     }
 
