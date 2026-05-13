@@ -80,9 +80,9 @@ struct rss_match_type {
     enum doca_flow_l4_meta l4_type;
 };
 
-static uint16_t pre_miss_mapping[NUM_SEND_TO_KERNEL] = {
-    [SEND_TO_KERNEL_LACP] = ETH_TYPE_LACP,
-    [SEND_TO_KERNEL_LLDP] = ETH_TYPE_LLDP,
+static uint16_t pre_miss_mapping[PRE_MISS_N_TYPES] = {
+    [PRE_MISS_TYPE_LACP] = ETH_TYPE_LACP,
+    [PRE_MISS_TYPE_LLDP] = ETH_TYPE_LLDP,
 };
 
 static struct refmap *netdev_doca_esw_rfm;
@@ -529,7 +529,7 @@ netdev_doca_pre_miss_pipe_init(struct netdev *netdev)
     fwd.target = kernel_target;
 
     return ovs_doca_pipe_create(netdev, &match, NULL, NULL, NULL, NULL, NULL,
-                                &fwd, &miss, NUM_SEND_TO_KERNEL, false,
+                                &fwd, &miss, PRE_MISS_N_TYPES, false,
                                 false, UINT64_C(1) << AUX_QUEUE, "PRE_MISS",
                                 &dev->esw_ctx->pre_miss_pipe);
 }
@@ -553,7 +553,7 @@ netdev_doca_pre_miss_rules_init(struct netdev *netdev)
 
     memset(&match, 0, sizeof match);
 
-    for (int i = 0; i < NUM_SEND_TO_KERNEL; i++) {
+    for (int i = 0; i < PRE_MISS_N_TYPES; i++) {
         pentry = &dev->esw_ctx->pre_miss_entries[i];
 
         match.d.outer.eth.type = htons(pre_miss_mapping[i]);
@@ -578,7 +578,7 @@ netdev_doca_pre_miss_rules_uninit(struct netdev *netdev)
     struct netdev_doca *dev = netdev_doca_cast(netdev);
     struct netdev_doca_esw_ctx *esw = dev->esw_ctx;
 
-    for (int i = 0; i < NUM_SEND_TO_KERNEL; i++) {
+    for (int i = 0; i < PRE_MISS_N_TYPES; i++) {
         ovs_doca_remove_entry(esw, AUX_QUEUE, DOCA_FLOW_ENTRY_FLAGS_NO_WAIT,
                               &esw->pre_miss_entries[i]);
     }

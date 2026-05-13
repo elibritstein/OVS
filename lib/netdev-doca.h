@@ -58,9 +58,9 @@ struct netdev_doca_tx_stats {
 };
 
 enum pre_miss_types {
-    SEND_TO_KERNEL_LACP,
-    SEND_TO_KERNEL_LLDP,
-    NUM_SEND_TO_KERNEL,
+    PRE_MISS_TYPE_LACP,
+    PRE_MISS_TYPE_LLDP,
+    PRE_MISS_N_TYPES,
 };
 
 struct netdev_doca_port_queue {
@@ -85,7 +85,7 @@ struct netdev_doca_esw_ctx {
         struct doca_flow_pipe *meta_tag0_pipe;
         struct doca_flow_pipe_entry *meta_tag0_entry;
         struct doca_flow_pipe *pre_miss_pipe;
-        struct doca_flow_pipe_entry *pre_miss_entries[NUM_SEND_TO_KERNEL];
+        struct doca_flow_pipe_entry *pre_miss_entries[PRE_MISS_N_TYPES];
         struct doca_flow_pipe *root_pipe;
     };
     unsigned int n_rxq;
