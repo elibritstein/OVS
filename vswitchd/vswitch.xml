@@ -340,15 +340,20 @@
       <column name="other_config" key="doca-init"
               type='{"type": "boolean"}'>
         <p>
+          Set this value to <code>true</code> to enable runtime support for
+          DOCA ports.  The vswitch must have compile-time support for DOCA as
+          well.
+        </p>
+        <p>
           A value of <code>true</code> will cause the ovs-vswitchd process to
           abort if DOCA cannot be initialized.
         </p>
         <p>
           The default value is <code>false</code>.  Changing this value
-          requires restarting the daemon
+          requires restarting the daemon.
         </p>
         <p>
-          If this value is <code>false</code> at startup, any doca ports which
+          If this value is <code>false</code> at startup, any DOCA ports which
           are configured in the bridge will fail as an unknown port type.
         </p>
       </column>
@@ -527,10 +532,6 @@
       <column name="other_config" key="per-port-memory"
               type='{"type": "boolean"}'>
         <p>
-          NOTE: For DOCA, there is a mempool per ESW manager, which is shared
-          with all its representors.  This configuration is N/A for doca.
-        </p>
-        <p>
           By default OVS DPDK uses a shared memory model wherein devices
           that have the same MTU and socket values can share the same
           mempool. Setting this value to <code>true</code> changes this
@@ -543,13 +544,13 @@
           Changing this value requires restarting the daemon if dpdk-init has
           already been set to true.
         </p>
+        <p>
+          NOTE: In DOCA, each ESW manager has a mempool that is shared with all
+          its representors.  This configuration is not applicable to DOCA.
+        </p>
       </column>
 
       <column name="other_config" key="shared-mempool-config">
-        <p>
-          NOTE: For DOCA, there is a mempool per ESW manager, which is shared
-          with all its representors.  This configuration is N/A for doca.
-        </p>
         <p>Specifies dpdk shared mempool config.</p>
         <p>Value should be set in the following form:</p>
         <p>
@@ -583,6 +584,10 @@
         <p>
           Changing this value requires restarting the daemon if dpdk-init has
           already been set to true.
+        </p>
+        <p>
+          NOTE: In DOCA, each ESW manager has a mempool that is shared with all
+          its representors.  This configuration is not applicable to DOCA.
         </p>
       </column>
 
