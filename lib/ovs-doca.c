@@ -135,10 +135,8 @@ get_buf_log_level(const char **pbuf, size_t *psize)
 
     /* 'p' points to the level start which is 3 chars and another ']'
      * after it.  For example "INF]".  Skip it. */
-    VLOG_ERR("orig size=%lu '%s'", *psize, *pbuf);
     *pbuf = p + 4;
     *psize -= *pbuf - buf;
-    VLOG_ERR("trim size=%lu '%s'", *psize, *pbuf);
 
     return level;
 }
