@@ -359,27 +359,21 @@ ovs_doca_init__(const struct smap *ovs_other_config)
         smap_get_uint(ovs_other_config, "flow-limit",
                       OVS_DOCA_MAX_MEGAFLOWS_COUNTERS);
 
-#define RV_TEST(call)                                               \
-    do {                                                            \
-        err = (call);                                               \
-        if (err != DOCA_SUCCESS) {                                  \
-            VLOG_ERR("%s failed. Error: %d (%s)",                   \
-                     #call, err, doca_error_get_descr(err));        \
-            return ENODEV;                                          \
-        }                                                           \
+#define RV_TEST(call)                                                        \
+    do {                                                                     \
+        err = (call);                                                        \
+        if (err != DOCA_SUCCESS) {                                           \
+            VLOG_ERR("DOCA initialization failed, %s() with error: %d (%s)", \
+                     #call, err, doca_error_get_descr(err));                 \
+            return ENODEV;                                                   \
+        }                                                                    \
     } while (0)
 
     RV_TEST(doca_flow_cfg_create(&cfg));
-    RV_TEST(doca_flow_cfg_set_pipe_queues(cfg,
-                                          OVS_DOCA_MAX_OFFLOAD_QUEUES));
+    RV_TEST(doca_flow_cfg_set_pipe_queues(cfg, OVS_DOCA_MAX_OFFLOAD_QUEUES));
     RV_TEST(doca_flow_cfg_set_resource_mode(cfg,
                                             DOCA_FLOW_RESOURCE_MODE_PORT));
-    RV_TEST(doca_flow_cfg_set_mode_args(cfg,
-                                        "switch"
-                                        ",hws"
-                                        ",isolated"
-                                        ",expert"
-                                        ""));
+    RV_TEST(doca_flow_cfg_set_mode_args(cfg, "switch,hws,isolated,expert"));
     RV_TEST(doca_flow_cfg_set_queue_depth(cfg, OVS_DOCA_QUEUE_DEPTH));
     RV_TEST(doca_flow_cfg_set_cb_entry_process(
                 cfg, ovs_doca_offload_entry_process));
