@@ -357,14 +357,14 @@ ovs_doca_init__(const struct smap *ovs_other_config)
         smap_get_uint(ovs_other_config, "flow-limit",
                       OVS_DOCA_MAX_MEGAFLOWS_COUNTERS);
 
-#define RV_TEST(call)                                                        \
-    do {                                                                     \
-        err = (call);                                                        \
-        if (err != DOCA_SUCCESS) {                                           \
-            VLOG_ERR("DOCA initialization failed, %s() with error: %d (%s)", \
-                     #call, err, doca_error_get_descr(err));                 \
-            return ENODEV;                                                   \
-        }                                                                    \
+#define RV_TEST(call)                                                    \
+    do {                                                                 \
+        err = (call);                                                    \
+        if (err != DOCA_SUCCESS) {                                       \
+            VLOG_ERR("DOCA initialization failed, %s(). Error: %d (%s)", \
+                     #call, err, doca_error_get_descr(err));             \
+            return ENODEV;                                               \
+        }                                                                \
     } while (0)
 
     RV_TEST(doca_flow_cfg_create(&cfg));
@@ -534,6 +534,13 @@ ovs_doca_add_entry(struct netdev *netdev,
         return err;
     }
 
+    /* DOCA API is async.
+     *
+     * "wait" means the request is not sent to the HW yet (to enable bursts),
+     * so we can't "complete" in this case.
+     *
+     * "no-wait" means it is sent immediately to the HW, then we want to
+     * complete to return to the caller as if the call was "sync". */
     if (DOCA_FLOW_FLAGS_IS_SET(flags, DOCA_FLOW_ENTRY_FLAGS_NO_WAIT)) {
         err = ovs_doca_complete_queue_esw(esw, qid);
     }
@@ -557,6 +564,13 @@ ovs_doca_remove_entry(struct netdev_doca_esw_ctx *esw,
     err = doca_flow_pipe_remove_entry(qid, flags, *entry);
     if (err == DOCA_SUCCESS) {
         esw->offload_queues[qid].n_waiting_entries++;
+        /* DOCA API is async.
+         *
+         * "wait" means the request is not sent to the HW yet (to enable
+         * bursts), so we can't "complete" in this case.
+         *
+         * "no-wait" means it is sent immediately to the HW, then we want to
+         * complete to return to the caller as if the call was "sync". */
         if (DOCA_FLOW_FLAGS_IS_SET(flags, DOCA_FLOW_ENTRY_FLAGS_NO_WAIT)) {
             /* Ignore potential errors here, as even if the queue completion
              * failed, the entry removal would still be issued.  The caller
@@ -653,15 +667,15 @@ ovs_doca_pipe_create(struct netdev *netdev,
     descs.nb_action_desc = desc ? 1 : 0;
     descs_arr[0] = &descs;
 
-#define PIPE_CFG_SET(call)                                              \
-    do {                                                                \
-        ret = (call);                                                   \
-        if (ret != DOCA_SUCCESS) {                                      \
-            VLOG_ERR("%s: %s failed for %s. Error: %d (%s)",            \
-                     netdev_get_name(netdev), #call, pipe_name,         \
-                     ret, doca_error_get_descr(ret));                   \
-            goto error;                                                 \
-        }                                                               \
+#define PIPE_CFG_SET(call)                                                 \
+    do {                                                                   \
+        ret = (call);                                                      \
+        if (ret != DOCA_SUCCESS) {                                         \
+            VLOG_ERR("%s: Pipe '%s' configuration failed, %s(). "          \
+                     "Error: %d (%s)", netdev_get_name(netdev), pipe_name, \
+                     #call, ret, doca_error_get_descr(ret));               \
+            goto error;                                                    \
+        }                                                                  \
     } while (0)
 
     PIPE_CFG_SET(doca_flow_pipe_cfg_set_name(cfg, pipe_name));
