@@ -398,8 +398,7 @@ ovs_doca_available(void)
 }
 
 /* Complete the queue 'qid' on the netdev's ESW until OVS_DOCA_QUEUE_DEPTH
- * entries are available.
- */
+ * entries are available. */
 static doca_error_t
 ovs_doca_complete_queue_esw(struct netdev_doca_esw_ctx *esw,
                             unsigned int qid)
@@ -450,7 +449,7 @@ ovs_doca_complete_queue_esw(struct netdev_doca_esw_ctx *esw,
         }
 
         if (timeout_ms && time_msec() > timeout_ms) {
-            ovs_abort(0, "Timeout reached trying to complete queue %u: "
+            VLOG_EMER("Timeout reached trying to complete queue %u: "
                       "%u remaining entries", qid, n_waiting);
         }
     } while (err == DOCA_SUCCESS && room < OVS_DOCA_QUEUE_DEPTH);
@@ -460,17 +459,16 @@ ovs_doca_complete_queue_esw(struct netdev_doca_esw_ctx *esw,
 
 static doca_error_t
 ovs_doca_add_generic(unsigned int qid,
-                     uint32_t hash_index,
                      struct doca_flow_pipe *pipe,
                      enum doca_flow_pipe_type pipe_type,
-                     const struct ovs_doca_flow_match *omatch,
-                     const struct ovs_doca_flow_actions *oactions,
+                     uint32_t hash_index,
+                     const struct ovs_doca_flow_match *ovs_match,
+                     const struct ovs_doca_flow_actions *ovs_actions,
                      const struct doca_flow_monitor *monitor,
                      const struct doca_flow_fwd *fwd,
                      uint32_t flags,
                      struct netdev_doca_esw_ctx *esw,
                      struct doca_flow_pipe_entry **pentry)
-    OVS_NO_THREAD_SAFETY_ANALYSIS
 {
     const struct doca_flow_actions *actions;
     struct ovs_doca_offload_queue *queues;
@@ -481,8 +479,8 @@ ovs_doca_add_generic(unsigned int qid,
 
     ovs_assert(esw);
     queues = esw->offload_queues;
-    match = omatch ? &omatch->d : NULL;
-    actions = oactions ? &oactions->d : NULL;
+    match = ovs_match ? &ovs_match->d : NULL;
+    actions = ovs_actions ? &ovs_actions->d : NULL;
 
     ovs_assert(queues);
 
@@ -527,7 +525,7 @@ ovs_doca_add_entry(struct netdev *netdev,
     struct netdev_doca_esw_ctx *esw = dev->esw_ctx;
     doca_error_t err;
 
-    err = ovs_doca_add_generic(qid, 0, pipe, DOCA_FLOW_PIPE_BASIC, match,
+    err = ovs_doca_add_generic(qid, pipe, DOCA_FLOW_PIPE_BASIC, 0, match,
                                actions, monitor, fwd, flags, esw, pentry);
     if (err != DOCA_SUCCESS) {
         VLOG_WARN_RL(&rl, "%s: Failed to create basic pipe entry. "
@@ -538,12 +536,6 @@ ovs_doca_add_entry(struct netdev *netdev,
 
     if (DOCA_FLOW_FLAGS_IS_SET(flags, DOCA_FLOW_ENTRY_FLAGS_NO_WAIT)) {
         err = ovs_doca_complete_queue_esw(esw, qid);
-        if (err != DOCA_SUCCESS) {
-            VLOG_ERR("%s: ovs_doca_complete_queue_esw failed."
-                     " Error: %d (%s)",
-                     OVS_SOURCE_LOCATOR, err, doca_error_get_descr(err));
-            return err;
-        }
     }
 
     return err;
@@ -595,8 +587,6 @@ ovs_doca_pipe_cfg_allow_queues(struct doca_flow_pipe_cfg *cfg,
 
         err = doca_flow_pipe_cfg_set_excluded_queue(cfg, qid);
         if (err != DOCA_SUCCESS) {
-            VLOG_ERR("Failed to exclude queue %u in pipe configuration."
-                     " Error: %d (%s)", qid, err, doca_error_get_descr(err));
             return err;
         }
     }
@@ -644,8 +634,10 @@ ovs_doca_pipe_create(struct netdev *netdev,
     doca_port = doca_flow_port_switch_get(dev->port);
     ovs_assert(doca_port);
 
-    snprintf(pipe_name, sizeof pipe_name, "%s: %s", netdev_get_name(netdev),
-             pipe_str);
+    if (snprintf(pipe_name, sizeof pipe_name, "%s: %s",
+                 netdev_get_name(netdev), pipe_str) >= sizeof pipe_name) {
+        VLOG_WARN("%s: pipe name truncated", netdev_get_name(netdev));
+    }
 
     ret = doca_flow_pipe_cfg_create(&cfg, doca_port);
     if (ret != DOCA_SUCCESS) {
@@ -658,7 +650,7 @@ ovs_doca_pipe_create(struct netdev *netdev,
     actions_arr[0] = actions ? &actions->d : NULL;
     actions_masks_arr[0] = actions_mask ? &actions_mask->d : NULL;
     descs.desc_array = desc;
-    descs.nb_action_desc = 1;
+    descs.nb_action_desc = desc ? 1 : 0;
     descs_arr[0] = &descs;
 
 #define PIPE_CFG_SET(call)                                              \

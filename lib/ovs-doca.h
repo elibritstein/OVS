@@ -37,7 +37,7 @@ struct smap;
 /* Estimated maximum number of megaflows */
 #define OVS_DOCA_MAX_MEGAFLOWS_COUNTERS (1 << 19)
 
-#define OVS_DOCA_MAX_PIPE_NAME_LEN 128
+#define OVS_DOCA_MAX_PIPE_NAME_LEN 32
 
 struct netdev_doca_esw_ctx;
 
