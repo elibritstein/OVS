@@ -58,9 +58,9 @@
 VLOG_DEFINE_THIS_MODULE(netdev_doca);
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(600, 600);
 
-COVERAGE_DEFINE(netdev_doca_drop_ring_full);
-COVERAGE_DEFINE(netdev_doca_invalid_classify_port);
-COVERAGE_DEFINE(netdev_doca_no_mark);
+COVERAGE_DEFINE(netdev_doca_rx_drop_invalid_port);
+COVERAGE_DEFINE(netdev_doca_rx_drop_no_mark);
+COVERAGE_DEFINE(netdev_doca_rx_drop_ring_full);
 
 #define NETDEV_DOCA_MAX_MEGAFLOWS_COUNTERS (1 << 19)
 #define NETDEV_DOCA_ACTIONS_MEM_SIZE \
@@ -2387,6 +2387,7 @@ netdev_doca_generate_devargs(const char *name, char *devargs, size_t maxlen,
     char pci[PCI_PRI_STR_SIZE + 1];
     char iface_tmp[IFNAMSIZ];
     char *mlx5_devargs;
+    int controller_len;
     char *rep_part;
     bool is_rep;
     bool is_pf;
@@ -2416,8 +2417,8 @@ netdev_doca_generate_devargs(const char *name, char *devargs, size_t maxlen,
     }
 
     /* In some kernels, there is a controller prefix, like "c1".  Ignore it. */
-    if (sscanf(phys_port_name, "c%d", &port) == 1) {
-        phys_port_name += 2;
+    if (sscanf(phys_port_name, "c%d%n", &port, &controller_len) == 1) {
+        phys_port_name += controller_len;
     }
 
     is_pf = false;
@@ -2435,12 +2436,14 @@ netdev_doca_generate_devargs(const char *name, char *devargs, size_t maxlen,
         "probe_opt_en=1";
 
     len = strlen(phys_port_name);
+
     /* HPF's phys_port_name is pf0/pf1. */
     if (len == 3 && !strncmp(phys_port_name, "pf", 2)) {
         /* "" to workaround a false positive checkpatch issue. */
-        if (snprintf(devargs, maxlen, "%s,%s,representor=(pf%d)""vf65535", pci,
-                     mlx5_devargs, port) < 0) {
-            VLOG_ERR("%s: snprintf failed for HPF devargs", name);
+        len = snprintf(devargs, maxlen, "%s,%s,representor=(pf%d)""vf65535",
+                       pci, mlx5_devargs, port);
+        if (len < 0 || len >= maxlen) {
+            VLOG_ERR("%s: Failed to format devargs for HPF port", name);
             return NULL;
         }
 
@@ -2456,8 +2459,8 @@ netdev_doca_generate_devargs(const char *name, char *devargs, size_t maxlen,
                            mlx5_devargs, port);
         }
 
-        if (len < 0) {
-            VLOG_ERR("%s: snprintf failed for PF devargs", name);
+        if (len < 0 || len >= maxlen) {
+            VLOG_ERR("%s: Failed to format devargs for PF port", name);
             return NULL;
         }
 
@@ -2476,10 +2479,11 @@ netdev_doca_generate_devargs(const char *name, char *devargs, size_t maxlen,
     }
 
     /* Format as (pfX)vfY or (pfX)sfY. */
-    if (snprintf(devargs, maxlen, "%s,%s,representor=(%.*s)%s", pci,
-                 mlx5_devargs, (int) (rep_part - phys_port_name),
-                 phys_port_name, rep_part) < 0) {
-        VLOG_ERR("%s: snprintf failed for representor devargs", name);
+    len = snprintf(devargs, maxlen, "%s,%s,representor=(%.*s)%s", pci,
+                   mlx5_devargs, (int) (rep_part - phys_port_name),
+                   phys_port_name, rep_part);
+    if (len < 0 || len >= maxlen) {
+        VLOG_ERR("%s: Failed to format devargs for representor port", name);
         return NULL;
     }
 
@@ -2567,9 +2571,9 @@ netdev_doca_find_esw_mgr_port_id(dpdk_port_t dev_port_id)
 
         if (info.switch_info.domain_id == domain_id &&
             !(*info.dev_flags & RTE_ETH_DEV_REPRESENTOR)) {
-            VLOG_INFO("Found ESW manager port "DPDK_PORT_ID_FMT" for "
-                      "device "DPDK_PORT_ID_FMT, dev->common.port_id,
-                      dev_port_id);
+            VLOG_DBG("Found ESW manager port "DPDK_PORT_ID_FMT" for "
+                     "device "DPDK_PORT_ID_FMT, dev->common.port_id,
+                     dev_port_id);
             return dev->common.port_id;
         }
     }
@@ -2704,9 +2708,9 @@ out:
 }
 
 static void
-classify_in_port(struct dp_packet_batch *rx_batch,
-                 struct netdev_doca_port_queue *pq[RTE_MAX_ETHPORTS],
-                 uint16_t queue_id)
+dispatch_rx_packets_by_port(struct dp_packet_batch *rx_batch,
+                            struct netdev_doca_port_queue *pq[RTE_MAX_ETHPORTS],
+                            uint16_t queue_id)
 {
     struct dp_packet *pkt;
     uint64_t old_count;
@@ -2726,14 +2730,14 @@ classify_in_port(struct dp_packet_batch *rx_batch,
                                   | RTE_MBUF_F_RX_L4_CKSUM_GOOD);
 
         if (!dp_packet_has_flow_mark(pkt, &port_id)) {
-            COVERAGE_INC(netdev_doca_no_mark);
+            COVERAGE_INC(netdev_doca_rx_drop_no_mark);
             dp_packet_delete(pkt);
             continue;
         }
 
         pkt->has_mark = false;
         if (!rte_eth_dev_is_valid_port(port_id)) {
-            COVERAGE_INC(netdev_doca_invalid_classify_port);
+            COVERAGE_INC(netdev_doca_rx_drop_invalid_port);
             dp_packet_delete(pkt);
             continue;
         }
@@ -2741,7 +2745,7 @@ classify_in_port(struct dp_packet_batch *rx_batch,
         pkt_size = dp_packet_size(pkt);
         rv = rte_ring_sp_enqueue(pq[port_id][queue_id].ring, pkt);
         if (rv) {
-            COVERAGE_INC(netdev_doca_drop_ring_full);
+            COVERAGE_INC(netdev_doca_rx_drop_ring_full);
             dp_packet_delete(pkt);
             continue;
         }
@@ -2756,7 +2760,6 @@ netdev_doca_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch,
                      int *qfill)
 {
     struct netdev_doca *dev = netdev_doca_cast(rxq->netdev);
-    struct netdev_rxq_dpdk *rx = netdev_dpdk_rxq_cast(rxq);
     struct netdev_dpdk_common *common = &dev->common;
     struct netdev_doca_port_queue *pq;
     struct dp_packet_batch rx_batch;
@@ -2782,7 +2785,8 @@ netdev_doca_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch,
             return 0;
         }
 
-        classify_in_port(&rx_batch, dev->esw_ctx->port_queues, rxq->queue_id);
+        dispatch_rx_packets_by_port(&rx_batch, dev->esw_ctx->port_queues,
+                                    rxq->queue_id);
     }
 
     pq = &dev->esw_ctx->port_queues[port_id][rxq->queue_id];
@@ -2799,7 +2803,7 @@ netdev_doca_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch,
 
     if (qfill) {
         if (nb_rx == NETDEV_MAX_BURST) {
-            *qfill = rte_eth_rx_queue_count(rx->port_id, rxq->queue_id);
+            *qfill = rte_ring_count(pq->ring);
         } else {
             *qfill = 0;
         }
