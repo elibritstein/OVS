@@ -102,7 +102,7 @@ ovs_doca_log_level_to_str(uint32_t log_level)
     }
 
     OVS_NOT_REACHED();
-    return "UNKONWN";
+    return "UNKNOWN";
 }
 
 static enum doca_log_level
