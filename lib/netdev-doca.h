@@ -17,8 +17,6 @@
 #ifndef NETDEV_DOCA_H
 #define NETDEV_DOCA_H
 
-#include <config.h>
-
 #include <rte_ethdev.h>
 #include <rte_mempool.h>
 #include <rte_pci.h>
@@ -48,9 +46,8 @@ enum netdev_doca_rss_type {
     NETDEV_DOCA_RSS_IPV6_ICMP,
     NETDEV_DOCA_RSS_IPV6_ESP,
     NETDEV_DOCA_RSS_IPV6_OTHER,
-    NETDEV_DOCA_RSS_OTHER,
+    NETDEV_DOCA_RSS_OTHER,  /* Must be the last enum type. */
 };
-/* Must be the last enum type. */
 #define NETDEV_DOCA_RSS_NUM_ENTRIES (NETDEV_DOCA_RSS_OTHER + 1)
 
 struct netdev_doca_tx_stats {
@@ -58,12 +55,6 @@ struct netdev_doca_tx_stats {
         atomic_uint64_t n_packets;
         atomic_uint64_t n_bytes;
     );
-};
-
-enum netdev_doca_port_dir {
-    NETDEV_DOCA_PORT_DIR_RX,
-    NETDEV_DOCA_PORT_DIR_TX,
-    NUM_NETDEV_DOCA_PORT_DIR,
 };
 
 enum pre_miss_types {
@@ -118,7 +109,6 @@ struct netdev_doca {
         struct doca_flow_pipe_entry *rss_entries[NETDEV_DOCA_RSS_NUM_ENTRIES];
         struct doca_flow_pipe_entry *egress_entry;
         char *peer_name;
-        enum netdev_doca_port_dir port_dir;
         struct doca_dev_rep *dev_rep;
     );
 };
