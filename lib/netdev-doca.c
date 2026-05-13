@@ -1840,7 +1840,7 @@ dpdk_eth_dev_port_config(struct netdev_doca *dev,
         diag = rte_eth_dev_configure(common->port_id, n_rxq,
                                      n_txq, &conf);
         if (diag) {
-            VLOG_WARN("Interface %s eth_dev setup error %s\n",
+            VLOG_WARN("Interface %s eth_dev setup error %s",
                       common->up.name, rte_strerror(-diag));
             break;
         }
