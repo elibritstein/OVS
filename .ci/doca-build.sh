@@ -9,13 +9,13 @@ JOBS=${JOBS:-"-j4"}
 
 DOCA_LINK="${DOCA_LINK:-static}"
 
-for pc_dir in $(find /opt/mellanox -name pkgconfig -type d 2>/dev/null); do
+for pc_dir in $(find /opt/mellanox/doca -name pkgconfig -type d 2>/dev/null); do
     PKG_CONFIG_PATH="${pc_dir}:${PKG_CONFIG_PATH}"
 done
 export PKG_CONFIG_PATH
 
 if [ "$DOCA_LINK" = "shared" ]; then
-    DOCA_LIB=$(find /opt/mellanox -name pkgconfig -type d 2>/dev/null \
+    DOCA_LIB=$(find /opt/mellanox/doca -name pkgconfig -type d 2>/dev/null \
                | head -1 | sed 's|/pkgconfig$||')
     export LD_LIBRARY_PATH="${DOCA_LIB}:${LD_LIBRARY_PATH}"
 fi
