@@ -9,15 +9,25 @@ JOBS=${JOBS:-"-j4"}
 
 DOCA_LINK="${DOCA_LINK:-static}"
 
-for pc_dir in $(find /opt/mellanox -name pkgconfig -type d 2>/dev/null); do
-    PKG_CONFIG_PATH="${pc_dir}:${PKG_CONFIG_PATH}"
-done
-export PKG_CONFIG_PATH
+# DOCA .pc directory.
+DOCA_PKGCONFIG=$(find /opt/mellanox/doca -name pkgconfig -type d 2>/dev/null \
+                 | head -1)
+
+DPDK_INSTALL_DIR="${DPDK_INSTALL_DIR:-$(pwd)/dpdk-dir}"
+DPDK_VERSION_FILE="${DPDK_INSTALL_DIR}/cached-version"
+if [ -f "${DPDK_VERSION_FILE}" ]; then
+    DPDK_LIB=${DPDK_INSTALL_DIR}/lib/x86_64-linux-gnu
+    export PKG_CONFIG_PATH="${DPDK_LIB}/pkgconfig:${DOCA_PKGCONFIG}${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
+    export PATH="${DPDK_INSTALL_DIR}/bin:${PATH}"
+    echo "Using cached DPDK $(cat "${DPDK_VERSION_FILE}") from ${DPDK_INSTALL_DIR}"
+else
+    export PKG_CONFIG_PATH="${DOCA_PKGCONFIG}${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
+    DPDK_LIB=""
+fi
 
 if [ "$DOCA_LINK" = "shared" ]; then
-    DOCA_LIB=$(find /opt/mellanox -name pkgconfig -type d 2>/dev/null \
-               | head -1 | sed 's|/pkgconfig$||')
-    export LD_LIBRARY_PATH="${DOCA_LIB}:${LD_LIBRARY_PATH}"
+    DOCA_LIB=${DOCA_PKGCONFIG%/pkgconfig}
+    export LD_LIBRARY_PATH="${DPDK_LIB:+$DPDK_LIB:}${DOCA_LIB}:${LD_LIBRARY_PATH:-}"
 fi
 sudo ldconfig
 
