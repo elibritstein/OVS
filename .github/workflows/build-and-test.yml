@@ -708,10 +708,12 @@ jobs:
           rpm/rpmbuild/RPMS/*/*.rpm
 
   build-doca:
+    needs: [build-dpdk]
     env:
       dependencies: |
         automake libtool gcc bc libssl-dev llvm-dev libnuma-dev \
-        libunbound-dev libunwind-dev libsystemd-dev wget python3-pip
+        libunbound-dev libunwind-dev libsystemd-dev wget python3-pip \
+        libbpf-dev libxdp-dev pkgconf
       DOCA_REPO_PKG_URL: "https://www.mellanox.com/downloads/DOCA/DOCA_v3.3.0/host/doca-host_3.3.0-088000-26.01-ubuntu2404_amd64.deb"
       CC:        ${{ matrix.compiler }}
       DOCA_LINK: ${{ matrix.doca_link }}
@@ -751,6 +753,13 @@ jobs:
       run:  sudo apt update || true
     - name: install common dependencies
       run:  sudo apt install -y ${{ env.dependencies }}
+
+    - name: get cached dpdk-dir
+      uses: actions/cache/restore@v5
+      with:
+        path: dpdk-dir
+        key: ${{ needs.build-dpdk.outputs.dpdk_key }}
+        fail-on-cache-miss: true
 
     - name: install DOCA
       run:  ./.ci/doca-install.sh
