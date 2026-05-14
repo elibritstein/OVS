@@ -529,13 +529,11 @@ AC_DEFUN([OVS_CHECK_DOCA], [
     else
       # For shared builds, DPDK is not in DOCA's output (libdpdk is in
       # Requires.private, not followed by pkg-config without --static).
-      # Link DPDK separately.  Add PMD drivers explicitly as they may
+      # Link DPDK separately.  Add mlx5 PMD explicitly as it may
       # not be in Libs field for shared builds.
-      for pmd in rte_net_mlx5 rte_net_vhost; do
-        if ! echo "$DPDK_LIB" | grep -q "\-l$pmd"; then
-          DPDK_LIB="$DPDK_LIB -l$pmd"
-        fi
-      done
+      if ! echo "$DPDK_LIB" | grep -q "\-lrte_net_mlx5"; then
+        DPDK_LIB="$DPDK_LIB -lrte_net_mlx5"
+      fi
       OVS_LDFLAGS="$OVS_LDFLAGS $DOCA_LDFLAGS $DPDK_LIB"
     fi
     AC_DEFINE([DOCA_NETDEV], [1], [System uses the DOCA module.])
