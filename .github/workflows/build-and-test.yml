@@ -708,6 +708,7 @@ jobs:
           rpm/rpmbuild/RPMS/*/*.rpm
 
   build-doca:
+    needs: [build-dpdk]
     env:
       dependencies: |
         automake libtool gcc bc libssl-dev llvm-dev libnuma-dev \
@@ -751,6 +752,13 @@ jobs:
       run:  sudo apt update || true
     - name: install common dependencies
       run:  sudo apt install -y ${{ env.dependencies }}
+
+    - name: get cached dpdk-dir
+      uses: actions/cache/restore@v5
+      with:
+        path: dpdk-dir
+        key: ${{ needs.build-dpdk.outputs.dpdk_key }}
+        fail-on-cache-miss: true
 
     - name: install DOCA
       run:  ./.ci/doca-install.sh
