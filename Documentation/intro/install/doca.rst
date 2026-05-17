@@ -41,8 +41,9 @@ building Open vSwitch with DOCA requires the following:
 
 - DPDK with mlx5 PMD driver enabled (see :doc:`dpdk`).  The DOCA SDK
   includes a compatible DPDK build (``dpdk-community-dev`` on Debian/Ubuntu,
-  ``dpdk-community-devel`` on RPM); alternatively, DPDK can be built from
-  source with ``-Denable_drivers=net/mlx5``.
+  ``dpdk-community-devel`` on RPM).  Alternatively, DPDK can be built from
+  source with ``-Denable_drivers=bus/auxiliary,common/mlx5,net/mlx5``.
+  net/mlx5 requires common/mlx5 which requires bus/auxiliary.
 
 - DOCA SDK packages (Debian/Ubuntu: ``libdoca-sdk-flow-dev``,
   ``libdoca-sdk-dpdk-bridge-dev``; RPM: ``doca-sdk-flow-devel``,
@@ -69,14 +70,14 @@ The DOCA SDK can be installed from the NVIDIA package repository.
 
        $ sudo dpkg -i doca-repo.deb
        $ sudo apt-get update
-       $ sudo apt-get install -y dpdk-community-dev \
+       $ sudo apt-get install -y  \
              libdoca-sdk-flow-dev libdoca-sdk-dpdk-bridge-dev
 
    On RPM-based distributions::
 
        $ sudo rpm -i doca-repo.rpm
-       $ sudo dnf install -y dpdk-community-devel doca-sdk-flow-devel \
-             doca-sdk-dpdk-bridge-devel
+       $ sudo dnf install -y \
+             doca-sdk-flow-devel doca-sdk-dpdk-bridge-devel
 
 .. _NVIDIA DOCA Downloads: https://developer.nvidia.com/doca-downloads
 
@@ -110,7 +111,5 @@ Runtime configuration
 ~~~~~~~~~~~~~~~~~~~~~
 
 After installation, enabling DOCA ports requires **both**
-``other_config:dpdk-init=true`` and ``other_config:doca-init=true``, and
-``other_config:dpdk-extra`` must include a dummy PCI allow-list so DPDK does
-not probe devices owned by DOCA.  See :doc:`/howto/doca` for the full
-procedure and examples.
+``other_config:dpdk-init=true`` and ``other_config:doca-init=true``.
+See :doc:`/howto/doca` for the full procedure and examples.

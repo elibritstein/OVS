@@ -43,27 +43,15 @@ DOCA requires **all** of the following ``other_config`` settings on
 ``Open_vSwitch`` before ``ovs-vswitchd`` starts.  Omitting any of them
 produces a misconfigured or non-functional setup:
 
-#. **DPDK must initialize.**  Set ``dpdk-init`` to ``true`` (DOCA is layered
-   on DPDK; ``doca-init`` alone is not sufficient).
+#. **DPDK must initialize.**  Set ``dpdk-init`` to ``true``.
 
 #. **DOCA must initialize.**  Set ``doca-init`` to ``true``.  If DOCA cannot
    be initialized, the process may abort.
-
-#. **DPDK must not auto-probe real PCI devices.**  Set ``dpdk-extra`` to
-   include a **dummy** PCI allow-list address (for example
-   ``-a pci:0000:00:00.0``).  This prevents the DPDK EAL from claiming NICs
-   that DOCA manages via the E-Switch.  NVIDIA documents this pattern in
-   the DOCA SDK material for Open vSwitch integration.
 
 Set the three options together (order of ``set`` calls does not matter)::
 
     $ ovs-vsctl --no-wait set Open_vSwitch . other_config:dpdk-init=true
     $ ovs-vsctl --no-wait set Open_vSwitch . other_config:doca-init=true
-    $ ovs-vsctl set Open_vSwitch . \
-          other_config:dpdk-extra="-a pci:0000:00:00.0"
-
-Replace ``0000:00:00.0`` with any non-existent or otherwise safe dummy PCI
-BDF allowed by your environment if the default is unsuitable.
 
 .. note::
   Changing any of these values requires restarting ``ovs-vswitchd``.
