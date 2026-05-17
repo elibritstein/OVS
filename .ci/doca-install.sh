@@ -15,6 +15,5 @@ DOCA_REPO_PKG_URL="${DOCA_REPO_PKG_URL:?Set to .deb repo package URL}"
 wget -q "$DOCA_REPO_PKG_URL" -O /tmp/doca-repo.deb
 sudo dpkg -i /tmp/doca-repo.deb
 sudo apt-get update
-sudo apt-get install -y dpdk-community-dev \
-    libdoca-sdk-flow-dev libdoca-sdk-dpdk-bridge-dev
+sudo apt-get install -y libdoca-sdk-flow-dev libdoca-sdk-dpdk-bridge-dev
 
