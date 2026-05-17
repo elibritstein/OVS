@@ -874,6 +874,11 @@ bridge_reconfigure(const struct ovsrec_open_vswitch *ovs_cfg)
 
     ofproto_set_flow_limit(smap_get_uint(&ovs_cfg->other_config, "flow-limit",
                                         OFPROTO_FLOW_LIMIT_DEFAULT));
+#ifdef DOCA_NETDEV
+    ovs_doca_flow_limit_config_changed(
+        smap_get_uint(&ovs_cfg->other_config, "flow-limit",
+                      OVS_DOCA_MAX_MEGAFLOWS_COUNTERS));
+#endif
     ofproto_set_max_idle(smap_get_uint(&ovs_cfg->other_config, "max-idle",
                                       OFPROTO_MAX_IDLE_DEFAULT));
     ofproto_set_max_revalidator(smap_get_uint(&ovs_cfg->other_config,
