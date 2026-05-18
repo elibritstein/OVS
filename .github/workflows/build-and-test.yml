@@ -633,6 +633,8 @@ jobs:
       DEB_WITH_DOCA: yes
       DEB_CONFIGURE_OPTS: --with-dpdk=static --with-doca=static
       DOCA_REPO_PKG_URL: "https://www.mellanox.com/downloads/DOCA/DOCA_v3.3.0/host/doca-host_3.3.0-088000-26.01-ubuntu2404_amd64.deb"
+      # Noble's libdpdk-dev is 23.x; debian/control.in pins >=25.11 for CI/cached DPDK alignment.
+      DEB_CI_RELAX_LIBDPDK_DEV: yes
 
     name: linux deb dpdk doca
     runs-on: ubuntu-24.04

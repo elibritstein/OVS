@@ -105,6 +105,11 @@ if [ "$DEB_PACKAGE" ]; then
     else
         ./boot.sh && ./configure --with-dpdk=$DPDK && make debian
     fi
+    # Ubuntu LTS often ships older libdpdk-dev than debian/control.in (mk-build-deps cannot
+    # install unsatisfiable Build-Depends). Cached DPDK still satisfies ./configure / _doca.
+    if [ "$DEB_CI_RELAX_LIBDPDK_DEV" = yes ]; then
+        sed -i -E 's/libdpdk-dev \(>= [0-9.]+\)/libdpdk-dev (>= 23.11)/' debian/control
+    fi
     test -f debian/control
     mk-build-deps --install --remove --root-cmd sudo ./debian/control
     dpkg-checkbuilddeps
