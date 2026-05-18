@@ -77,8 +77,36 @@ function clang_analyze()
 }
 
 if [ "$DEB_PACKAGE" ]; then
-    ./boot.sh && ./configure --with-dpdk=$DPDK && make debian
-    mk-build-deps --install --root-cmd sudo --remove debian/control
+    if [ "$DEB_WITH_DOCA" = yes ]; then
+        DOCA_PKGCONFIG=$(find /opt/mellanox/doca -name pkgconfig -type d 2>/dev/null |
+                         head -1)
+        DPDK_INSTALL_DIR="${DPDK_INSTALL_DIR:-$(pwd)/dpdk-dir}"
+        if [ ! -f "${DPDK_INSTALL_DIR}/cached-version" ]; then
+            echo "DEB_WITH_DOCA=yes requires a built DPDK tree at \$DPDK_INSTALL_DIR" >&2
+            exit 1
+        fi
+        DPDK_LIB=$(find "${DPDK_INSTALL_DIR}/lib" -maxdepth 1 -type d -name '*-linux-gnu' 2>/dev/null |
+                   head -1)
+        if [ -z "$DPDK_LIB" ]; then
+            echo "DEB_WITH_DOCA=yes could not find DPDK lib dir under ${DPDK_INSTALL_DIR}/lib" >&2
+            exit 1
+        fi
+        if [ -z "$DOCA_PKGCONFIG" ]; then
+            echo "DEB_WITH_DOCA=yes requires DOCA SDK pkgconfig under /opt/mellanox/doca" >&2
+            exit 1
+        fi
+        export PKG_CONFIG_PATH="${DPDK_LIB}/pkgconfig:${DOCA_PKGCONFIG}${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
+        export PATH="${DPDK_INSTALL_DIR}/bin:${PATH}"
+        sudo ldconfig
+    fi
+
+    if [ -n "$DEB_CONFIGURE_OPTS" ]; then
+        ./boot.sh && ./configure $DEB_CONFIGURE_OPTS && make debian
+    else
+        ./boot.sh && ./configure --with-dpdk=$DPDK && make debian
+    fi
+    test -f debian/control
+    mk-build-deps --install --remove --root-cmd sudo ./debian/control
     dpkg-checkbuilddeps
     make debian-deb
     packages=$(ls $(pwd)/../*.deb)

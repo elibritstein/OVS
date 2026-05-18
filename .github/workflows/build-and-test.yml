@@ -626,21 +626,17 @@ jobs:
       run:  cd ovs && make -j4
 
   build-linux-deb:
+    needs: [build-dpdk]
     env:
-      deb_dependencies: |
-        linux-headers-$(uname -r) build-essential fakeroot devscripts equivs
+      deb_dependencies: linux-headers-$(uname -r) build-essential fakeroot devscripts equivs wget pkgconf libnuma-dev libbpf-dev libxdp-dev libibverbs-dev rdma-core
       DEB_PACKAGE: yes
-      DPDK:        ${{ matrix.dpdk }}
+      DEB_WITH_DOCA: yes
+      DEB_CONFIGURE_OPTS: --with-dpdk=static --with-doca=static
+      DOCA_REPO_PKG_URL: "https://www.mellanox.com/downloads/DOCA/DOCA_v3.3.0/host/doca-host_3.3.0-088000-26.01-ubuntu2404_amd64.deb"
 
-    name: linux deb ${{ matrix.dpdk }} dpdk
+    name: linux deb dpdk doca
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - dpdk: no
+    timeout-minutes: 45
 
     steps:
     - name: checkout
@@ -652,12 +648,25 @@ jobs:
         echo "$HOME/.local/bin" >> $GITHUB_PATH
 
     - name: update APT cache
-      run:  sudo apt update || true
+      run: |
+        if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+          sudo sed -i 's/^Types: deb$/Types: deb deb-src/' \
+            /etc/apt/sources.list.d/ubuntu.sources
+        fi
+        sudo apt-get update
+
     - name: install dependencies for debian packages
       run:  sudo apt install -y ${{ env.deb_dependencies }}
-    - name: install dpdk-dev
-      if:   matrix.dpdk != 'no'
-      run:  sudo apt install -y libdpdk-dev
+
+    - name: install DOCA
+      run:  ./.ci/doca-install.sh
+
+    - name: get cached dpdk-dir
+      uses: actions/cache/restore@v5
+      with:
+        path: dpdk-dir
+        key: ${{ needs.build-dpdk.outputs.dpdk_key }}
+        fail-on-cache-miss: true
 
     - name: prepare
       run:  ./.ci/linux-prepare.sh
@@ -665,11 +674,18 @@ jobs:
     - name: build
       run:  ./.ci/linux-build.sh
 
+    - name: stage deb packages
+      run: |
+        mkdir -p deb-packages-out
+        cp -v ../*.deb deb-packages-out/ 2>/dev/null || true
+        ls -la deb-packages-out/
+
     - name: upload deb packages
       uses: actions/upload-artifact@v7
       with:
-        name: deb-packages-${{ matrix.dpdk }}-dpdk
-        path: '/home/runner/work/ovs/*.deb'
+        name: deb-packages-dpdk-doca-${{ github.sha }}
+        path: deb-packages-out/*.deb
+        if-no-files-found: warn
 
   build-linux-rpm:
     name: linux rpm fedora
