@@ -668,8 +668,9 @@ jobs:
     - name: upload deb packages
       uses: actions/upload-artifact@v7
       with:
-        name: deb-packages-${{ matrix.dpdk }}-dpdk
-        path: '/home/runner/work/ovs/*.deb'
+        name: deb-packages-${{ matrix.dpdk }}-dpdk-${{ github.sha }}
+        path: ${{ github.workspace }}/../*.deb
+        if-no-files-found: warn
 
   build-linux-rpm:
     name: linux rpm fedora
