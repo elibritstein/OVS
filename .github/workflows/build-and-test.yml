@@ -665,11 +665,18 @@ jobs:
     - name: build
       run:  ./.ci/linux-build.sh
 
+    - name: stage deb packages
+      run: |
+        mkdir -p deb-packages-out
+        cp -v ../*.deb deb-packages-out/ 2>/dev/null || true
+        ls -la deb-packages-out/
+
     - name: upload deb packages
       uses: actions/upload-artifact@v7
       with:
-        name: deb-packages-${{ matrix.dpdk }}-dpdk
-        path: '/home/runner/work/ovs/*.deb'
+        name: deb-packages-${{ matrix.dpdk }}-dpdk-${{ github.sha }}
+        path: deb-packages-out/*.deb
+        if-no-files-found: warn
 
   build-linux-rpm:
     name: linux rpm fedora
