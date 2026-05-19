@@ -42,6 +42,7 @@ Installation from Source
    general
    netbsd
    userspace
+   doca
    dpdk
    afxdp
 
