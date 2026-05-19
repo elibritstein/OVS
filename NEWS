@@ -18,6 +18,11 @@ Post-v3.7.0
      * The previously deprecated Windows kernel datapath implementation is
        now fully removed as well as support for running or building userspace
        components of Open vSwitch on the Windows platform.
+   - DOCA:
+     * New netdev type "doca", available under "netdev" datapath,
+       (experimental).
+       using the DOCA API for NVIDIA ConnectX and BlueField NICs.
+       See Documentation/howto/doca.rst.
 
 
 v3.7.0 - 16 Feb 2026
