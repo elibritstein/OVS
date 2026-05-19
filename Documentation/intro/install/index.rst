@@ -43,6 +43,7 @@ Installation from Source
    netbsd
    userspace
    dpdk
+   doca
    afxdp
 
 Installation from Packages
