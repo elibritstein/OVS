@@ -223,6 +223,7 @@ m4_define([_OVS_VSWITCHD_START],
 /netdev_linux|INFO|.*device has unknown hardware address family/d
 /ofproto|INFO|datapath ID changed to fedcba9876543210/d
 /dpdk|INFO|DPDK Disabled - Use other_config:dpdk-init to enable/d
+/ovs_doca|INFO|DOCA Disabled - Use other_config:doca-init to enable/d
 /netlink_socket|INFO|netlink: could not enable listening to all nsid/d
 /dpif_offload|INFO|Flow HW offload is enabled/d
 /probe tc:/d
