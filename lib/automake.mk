@@ -452,6 +452,12 @@ lib_libopenvswitch_la_SOURCES += \
 	lib/dpdk-stub.c
 endif
 
+if DOCA_NETDEV
+lib_libopenvswitch_la_SOURCES += \
+	lib/netdev-doca.c \
+	lib/netdev-doca.h
+endif
+
 if HAVE_POSIX_AIO
 lib_libopenvswitch_la_SOURCES += lib/async-append-aio.c
 else
