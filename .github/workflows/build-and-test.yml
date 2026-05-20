@@ -765,6 +765,9 @@ jobs:
     - name: install DOCA
       run:  ./.ci/doca-install.sh
 
+    - name: prepare
+      run:  ./.ci/linux-prepare.sh
+
     - name: build
       run:  ./.ci/doca-build.sh
 
