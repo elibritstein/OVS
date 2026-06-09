@@ -32,6 +32,12 @@ else
 DPDKSTRIP_FLAGS = --nodpdk
 endif
 
+if DOCA_NETDEV
+DOCASTRIP_FLAGS = --doca
+else
+DOCASTRIP_FLAGS = --nodoca
+endif
+
 if NDEBUG
 AM_CPPFLAGS += -DNDEBUG
 AM_CFLAGS += -fomit-frame-pointer
@@ -138,7 +144,8 @@ ro_shell = printf '\043 Generated automatically -- do not modify!    -*- buffer-
 SUFFIXES += .in
 .in:
 	$(AM_V_GEN)PYTHONPATH=$$PYTHONPATH:$(srcdir)/python $(PYTHON3) $(srcdir)/build-aux/soexpand.py -I$(srcdir) < $< | \
-	  $(PYTHON3) $(srcdir)/build-aux/dpdkstrip.py $(DPDKSTRIP_FLAGS) | \
+	  $(PYTHON3) $(srcdir)/build-aux/dpdkstrip.py \
+	    $(DPDKSTRIP_FLAGS) $(DOCASTRIP_FLAGS) | \
 	  sed \
 	    -e 's,[@]PKIDIR[@],$(PKIDIR),g' \
 	    -e 's,[@]LOGDIR[@],$(LOGDIR),g' \
