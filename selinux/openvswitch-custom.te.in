@@ -52,7 +52,12 @@ require {
         class netlink_audit_socket { create nlmsg_relay read write };
         class netlink_netfilter_socket { create read write };
 @begin_dpdk@
+@begin_nodoca@
         class netlink_rdma_socket { setopt getattr getopt bind create };
+@end_nodoca@
+@begin_doca@
+        class netlink_rdma_socket { setopt getattr getopt bind create read write };
+@end_doca@
 @end_dpdk@
         class netlink_socket { setopt getopt create connect getattr write read };
         class sock_file { write };
@@ -84,6 +89,9 @@ allow openvswitch_t self:netlink_netfilter_socket { create read write };
 @begin_dpdk@
 allow openvswitch_t self:netlink_rdma_socket { setopt getattr getopt bind create };
 @end_dpdk@
+@begin_doca@
+allow openvswitch_t self:netlink_rdma_socket { read write };
+@end_doca@
 allow openvswitch_t self:netlink_socket { setopt getopt create connect getattr write read };
 
 allow openvswitch_t hostname_exec_t:file { read getattr open execute execute_no_trans };
