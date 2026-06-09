@@ -17,32 +17,48 @@ import getopt
 import sys
 
 
-def strip_dpdk(check_dpdk, src, dst):
-    disabled_print = False
+def strip_policy(check_dpdk, check_doca, src, dst):
+    skip_dpdk = False
+    skip_doca = False
+    skip_nodoca = False
     while True:
         line = src.readline()
         if not line:
             break
         if '@begin_dpdk@' in line or '@end_dpdk@' in line:
             if not check_dpdk:
-                disabled_print = not disabled_print
+                skip_dpdk = not skip_dpdk
             continue
-        if not disabled_print:
+        if '@begin_doca@' in line or '@end_doca@' in line:
+            if not check_doca:
+                skip_doca = not skip_doca
+            continue
+        if '@begin_nodoca@' in line or '@end_nodoca@' in line:
+            if check_doca:
+                skip_nodoca = not skip_nodoca
+            continue
+        if not skip_dpdk and not skip_doca and not skip_nodoca:
             dst.write(line)
 
 
 if __name__ == '__main__':
     check_dpdk = False
-    options, args = getopt.gnu_getopt(sys.argv[1:], '', ['dpdk', 'nodpdk'])
+    check_doca = False
+    options, args = getopt.gnu_getopt(sys.argv[1:], '', ['dpdk', 'nodpdk',
+                                                         'doca', 'nodoca'])
     for key, value in options:
         if key == '--dpdk':
             check_dpdk = True
         elif key == '--nodpdk':
             check_dpdk = False
+        elif key == '--doca':
+            check_doca = True
+        elif key == '--nodoca':
+            check_doca = False
         else:
             assert False
     if args:
         for arg in args:
-            strip_dpdk(check_dpdk, open(arg), sys.stdout)
+            strip_policy(check_dpdk, check_doca, open(arg), sys.stdout)
     else:
-        strip_dpdk(check_dpdk, sys.stdin, sys.stdout)
+        strip_policy(check_dpdk, check_doca, sys.stdin, sys.stdout)
