@@ -103,8 +103,8 @@ AT_CLEANUP
 
 m4_divert_push([PREPARE_TESTS])
 vlog_filt () {
-    sed 's/.*\(opened log file\).*/\1/
-s/.*|//' "$@"
+    sed -e 's/.*\(opened log file\).*/\1/' \
+        -e 's/.*|//' "$@"
 }
 m4_divert_pop([PREPARE_TESTS])
 

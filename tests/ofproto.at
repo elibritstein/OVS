@@ -3595,10 +3595,9 @@ table_desc:-
     AT_FAIL_IF([test X"$1" != X])
 
     normalize_log () {
-       sed '
-s/ (xid=0x[[0-9a-fA-F]]*)//
-s/ *duration.*//
-s/00:0.$/00:0x/' < monitor.log
+       sed -e 's/ (xid=0x[[0-9a-fA-F]]*)//' \
+           -e 's/ *duration.*//' \
+           -e 's/00:0.$/00:0x/' < monitor.log
     }
 
     OVS_WAIT_UNTIL([test `wc -l < "monitor.log"` -ge `wc -l < "expout"`],
@@ -6487,9 +6486,8 @@ OVS_VSWITCHD_START
 
 add_flow_group_and_meter () {
     AT_CHECK([ovs-ofctl add-flow br0 in_port=1,actions=2])
-    AT_CHECK([ovs-ofctl -O OpenFlow11 add-group br0 group_id=1234,type=all,bucket=output:10
+    AT_CHECK([ovs-ofctl -O OpenFlow11 add-group br0 group_id=1234,type=all,bucket=output:10])
     AT_CHECK([ovs-ofctl -O OpenFlow13 add-meter br0 'meter=1 pktps burst stats bands=type=drop rate=1 burst_size=1'])
-])
 }
 
 verify_added () {
