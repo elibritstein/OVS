@@ -287,22 +287,19 @@ check_logs () {
     #
     # We also ignore the "Spent an unreasonably long XXms dumping flows" as
     # they can appear when large time/warps are used during tests.
-    sed -n "$1
-/reset by peer/d
-/Broken pipe/d
-/is not connected/d
-/timeval.*Unreasonably long [[0-9]]*ms poll interval/d
-/timeval.*faults: [[0-9]]* minor, [[0-9]]* major/d
-/timeval.*disk: [[0-9]]* reads, [[0-9]]* writes/d
-/timeval.*context switches: [[0-9]]* voluntary, [[0-9]]* involuntary/d
-/ovs_rcu.*blocked [[0-9]]* ms waiting for .* to quiesce/d
-/Dropped [[0-9]]* log messages/d
-/setting extended ack support failed/d
-/ETHTOOL_GSSET_INFO/d
-/Spent an unreasonably long .*ms dumping flows/d
-/|WARN|/p
-/|ERR|/p
-/|EMER|/p" ${logs}
+    grep -h -E '\|WARN\||\|ERR\||\|EMER\|' ${logs} | sed -e "$1" \
+        -e '/reset by peer/d' \
+        -e '/Broken pipe/d' \
+        -e '/is not connected/d' \
+        -e '/timeval.*Unreasonably long [[0-9]]*ms poll interval/d' \
+        -e '/timeval.*faults: [[0-9]]* minor, [[0-9]]* major/d' \
+        -e '/timeval.*disk: [[0-9]]* reads, [[0-9]]* writes/d' \
+        -e '/timeval.*context switches: [[0-9]]* voluntary, [[0-9]]* involuntary/d' \
+        -e '/ovs_rcu.*blocked [[0-9]]* ms waiting for .* to quiesce/d' \
+        -e '/Dropped [[0-9]]* log messages/d' \
+        -e '/setting extended ack support failed/d' \
+        -e '/ETHTOOL_GSSET_INFO/d' \
+        -e '/Spent an unreasonably long .*ms dumping flows/d'
 }
 
 # Gets the last line number in ovs-vswitchd.log +1. This can be used to
