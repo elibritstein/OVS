@@ -853,7 +853,12 @@ afsync_thread(void *afsync_)
         }
 
         if (cur != next && afsync->fd != -1) {
-            int error = fsync(afsync->fd) ? errno : 0;
+            int error;
+#if (_POSIX_C_SOURCE >= 199309L || _XOPEN_SOURCE >= 500)
+            error = fdatasync(afsync->fd) ? errno : 0;
+#else
+            error = fsync(afsync->fd) ? errno : 0;
+#endif
             if (!error) {
                 cur = next;
                 atomic_store_explicit(&afsync->cur, cur, memory_order_release);

@@ -40,6 +40,8 @@ EXTRA_OPTS="$EXTRA_OPTS --with-dpdk=$DOCA_LINK --with-doca=$DOCA_LINK"
 make tests/idltest.h
 make ${JOBS}
 ./.ci/check-fsync.sh post tests/test-ovsdb
+# DOCA/DPDK shared-lib builds can be slow to tear down PMD/tunnel state.
+export OVS_CTL_TIMEOUT=60
 make ${JOBS} check TESTSUITEFLAGS="${JOBS} RECHECK=yes"
 
 ovs_version=$(vswitchd/ovs-vswitchd -V 2>&1)
