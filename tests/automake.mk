@@ -442,6 +442,7 @@ noinst_PROGRAMS += tests/test-ovsdb
 tests_test_ovsdb_SOURCES = tests/test-ovsdb.c
 nodist_tests_test_ovsdb_SOURCES = tests/idltest.c tests/idltest.h
 tests_test_ovsdb_LDADD = ovsdb/libovsdb.la lib/libopenvswitch.la
+tests/test-ovsdb.$(OBJEXT): tests/idltest.h
 
 noinst_PROGRAMS += tests/test-lib
 tests_test_lib_SOURCES = \

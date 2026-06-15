@@ -395,6 +395,20 @@ def print_idl(idl, step, terse=False):
     sys.stdout.flush()
 
 
+def wait_for_idl_update(idl, seqno, rpc=None):
+    while idl.change_seqno == seqno:
+        idl.run()
+        if idl.change_seqno != seqno:
+            break
+        poller = ovs.poller.Poller()
+        if rpc is not None:
+            rpc.run()
+        idl.wait(poller)
+        if rpc is not None:
+            rpc.wait(poller)
+        poller.block()
+
+
 def substitute_uuids(json, symtab):
     if isinstance(json, str):
         symbol = symtab.get(json)
@@ -862,13 +876,7 @@ def do_idl(schema_file, remote, *commands):
         else:
             # Wait for update.
             while True:
-                while idl.change_seqno == seqno and not idl.run():
-                    rpc.run()
-
-                    poller = ovs.poller.Poller()
-                    idl.wait(poller)
-                    rpc.wait(poller)
-                    poller.block()
+                wait_for_idl_update(idl, seqno, rpc)
 
                 print_idl(idl, step, terse)
                 step += 1
@@ -926,10 +934,7 @@ def do_idl(schema_file, remote, *commands):
 
     if rpc:
         rpc.close()
-    while idl.change_seqno == seqno and not idl.run():
-        poller = ovs.poller.Poller()
-        idl.wait(poller)
-        poller.block()
+    wait_for_idl_update(idl, seqno)
     print_idl(idl, step)
     step += 1
     idl.close()
@@ -1007,10 +1012,7 @@ def do_idl_cluster(schema_file, remote, pid, *commands):
             command = command[1:]
         else:
             # Wait for update.
-            while idl.change_seqno == seqno and not idl.run():
-                poller = ovs.poller.Poller()
-                idl.wait(poller)
-                poller.block()
+            wait_for_idl_update(idl, seqno)
             step += 1
 
         seqno = idl.change_seqno
