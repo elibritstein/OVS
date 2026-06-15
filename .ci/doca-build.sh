@@ -33,8 +33,12 @@ fi
 sudo ldconfig
 EXTRA_OPTS="$EXTRA_OPTS --with-dpdk=$DOCA_LINK --with-doca=$DOCA_LINK"
 
+./.ci/check-fsync.sh pre
+
 ./boot.sh
 ./configure CFLAGS="${CFLAGS_FOR_OVS}" $EXTRA_OPTS
+make ${JOBS}
+./.ci/check-fsync.sh post tests/test-ovsdb
 make ${JOBS} check TESTSUITEFLAGS="${JOBS} RECHECK=yes"
 
 ovs_version=$(vswitchd/ovs-vswitchd -V 2>&1)
