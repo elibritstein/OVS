@@ -410,9 +410,9 @@ def wait_for_idl_update(idl, seqno, rpc=None):
 
 
 def wait_for_cond_seqno(idl, next_cond_seqno, rpc=None):
-    while idl.cond_seqno != next_cond_seqno:
+    while idl.cond_seqno < next_cond_seqno:
         idl.run()
-        if idl.cond_seqno == next_cond_seqno:
+        if idl.cond_seqno >= next_cond_seqno:
             break
         poller = ovs.poller.Poller()
         if rpc is not None:
@@ -421,6 +421,13 @@ def wait_for_cond_seqno(idl, next_cond_seqno, rpc=None):
         if rpc is not None:
             rpc.wait(poller)
         poller.block()
+
+
+def wait_after_reconnect(idl, seqno, next_cond_seqno, rpc=None):
+    """Wait for reconnect to finish and any in-flight cond_change to apply."""
+    wait_for_idl_update(idl, seqno, rpc)
+    wait_for_cond_seqno(idl, next_cond_seqno, rpc)
+    wait_for_idl_update(idl, idl.change_seqno, rpc)
 
 
 def substitute_uuids(json, symtab):
@@ -891,10 +898,11 @@ def do_idl(schema_file, remote, *commands):
         else:
             # Wait for update.
             while True:
-                wait_for_idl_update(idl, seqno, rpc)
                 if after_reconnect:
-                    wait_for_cond_seqno(idl, next_cond_seqno, rpc)
+                    wait_after_reconnect(idl, seqno, next_cond_seqno, rpc)
                     after_reconnect = False
+                else:
+                    wait_for_idl_update(idl, seqno, rpc)
 
                 print_idl(idl, step, terse)
                 step += 1
