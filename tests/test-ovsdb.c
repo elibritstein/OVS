@@ -21,12 +21,15 @@
 #undef NDEBUG
 #endif
 
+#include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "byte-order.h"
 #include "command-line.h"
@@ -167,6 +170,8 @@ usage(void)
            "  [--magic=MAGIC] "
            " log-io FILE FLAGS COMMAND...\n"
            "    open FILE with FLAGS (and MAGIC), run COMMANDs\n"
+           " log-fsync-check\n"
+           "    exercise ovsdb log fsync paths used by online compaction\n"
            "  default-atoms\n"
            "    test ovsdb_atom_default()\n"
            "  default-data\n"
@@ -408,6 +413,11 @@ do_log_io(struct ovs_cmdl_context *ctx)
             error = ovsdb_log_write_and_free(target, json);
         } else if (!strcmp(command, "commit")) {
             error = ovsdb_log_commit_block(target);
+        } else if (!strcmp(command, "commit_async")) {
+            uint64_t ticket = ovsdb_log_commit_start(target);
+
+            ovsdb_log_commit_wait(target, ticket);
+            error = NULL;
         } else if (!strcmp(command, "replace_start")) {
             ovs_assert(!replacement);
             error = ovsdb_log_replace_start(log, &replacement);
@@ -434,6 +444,41 @@ do_log_io(struct ovs_cmdl_context *ctx)
 
     ovsdb_log_close(log);
     ovsdb_log_close(replacement);
+}
+
+static void
+do_log_fsync_check(struct ovs_cmdl_context *ctx OVS_UNUSED)
+{
+    struct ovsdb_log *log = NULL;
+    struct ovsdb_log *replacement = NULL;
+    struct json *json;
+    uint64_t ticket;
+
+    mkdir("dir", 0755);
+    unlink("db");
+    if (symlink("dir/db", "db") < 0) {
+        ovs_fatal(errno, "failed to create db symlink");
+    }
+
+    check_ovsdb_error(ovsdb_log_open("db", magic, OVSDB_LOG_CREATE, -1, &log));
+
+    json = parse_json("{\"x\":0}");
+    check_ovsdb_error(ovsdb_log_write_and_free(log, json));
+    json = parse_json("{\"x\":1}");
+    check_ovsdb_error(ovsdb_log_write_and_free(log, json));
+
+    check_ovsdb_error(ovsdb_log_replace_start(log, &replacement));
+    json = parse_json("{\"y\":2}");
+    check_ovsdb_error(ovsdb_log_write_and_free(replacement, json));
+    check_ovsdb_error(ovsdb_log_replace_commit(log, replacement));
+    replacement = NULL;
+
+    ticket = ovsdb_log_commit_start(log);
+    ovsdb_log_commit_wait(log, ticket);
+    check_ovsdb_error(ovsdb_log_commit_block(log));
+
+    ovsdb_log_close(log);
+    printf("log-fsync-check: OK\n");
 }
 
 static void
@@ -3664,6 +3709,7 @@ do_idl_table_column_check(struct ovs_cmdl_context *ctx)
 
 static struct ovs_cmdl_command all_commands[] = {
     { "log-io", NULL, 2, INT_MAX, do_log_io, OVS_RO },
+    { "log-fsync-check", NULL, 0, 0, do_log_fsync_check, OVS_RO },
     { "default-atoms", NULL, 0, 0, do_default_atoms, OVS_RO },
     { "default-data", NULL, 0, 0, do_default_data, OVS_RO },
     { "diff-data", NULL, 3, INT_MAX, do_diff_data, OVS_RO },
