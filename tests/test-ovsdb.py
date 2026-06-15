@@ -409,6 +409,12 @@ def wait_for_idl_update(idl, seqno, rpc=None):
         poller.block()
 
 
+def wait_for_idl_ready(idl, seqno, next_cond_seqno, rpc=None):
+    """Wait for an IDL update and any pending monitor_cond_change to finish."""
+    wait_for_idl_update(idl, seqno, rpc)
+    while idl.cond_seqno != next_cond_seqno:
+        wait_for_idl_update(idl, idl.change_seqno, rpc)
+
 def substitute_uuids(json, symtab):
     if isinstance(json, str):
         symbol = symtab.get(json)
@@ -876,7 +882,7 @@ def do_idl(schema_file, remote, *commands):
         else:
             # Wait for update.
             while True:
-                wait_for_idl_update(idl, seqno, rpc)
+                wait_for_idl_ready(idl, seqno, next_cond_seqno, rpc)
 
                 print_idl(idl, step, terse)
                 step += 1
@@ -934,7 +940,7 @@ def do_idl(schema_file, remote, *commands):
 
     if rpc:
         rpc.close()
-    wait_for_idl_update(idl, seqno)
+    wait_for_idl_ready(idl, seqno, next_cond_seqno, rpc)
     print_idl(idl, step)
     step += 1
     idl.close()
