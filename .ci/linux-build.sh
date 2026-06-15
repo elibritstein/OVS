@@ -112,6 +112,8 @@ if [ "$DPDK" ] || [ "$DPDK_SHARED" ]; then
     install_dpdk
 fi
 
+./.ci/check-fsync.sh pre
+
 if [ "$STD" ]; then
     CFLAGS_FOR_OVS="${CFLAGS_FOR_OVS} -std=$STD"
 fi
@@ -146,12 +148,15 @@ if [ "$TESTSUITE" = 'test' ]; then
     # 'distcheck' will reconfigure with required options.
     # Now we only need to prepare the Makefile without sparse-wrapped CC.
     configure_ovs
+    make tests/test-ovsdb
+    ./.ci/check-fsync.sh post tests/test-ovsdb
 
     export DISTCHECK_CONFIGURE_FLAGS="$OPTS"
     make distcheck ${JOBS} CFLAGS="${CFLAGS_FOR_OVS}" \
         TESTSUITEFLAGS=${JOBS} RECHECK=yes
 else
     build_ovs
+    ./.ci/check-fsync.sh post tests/test-ovsdb
     for testsuite in $TESTSUITE; do
         run_as_root=
         if [ "$testsuite" != "check" ] && \
