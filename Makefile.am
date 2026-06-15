@@ -62,6 +62,7 @@ EXTRA_DIST = \
 	MAINTAINERS.rst \
 	README.rst \
 	NOTICE \
+	.ci/check-fsync.sh \
 	.ci/doca-build.sh \
 	.ci/dpdk-build.sh \
 	.ci/dpdk-prepare.sh \

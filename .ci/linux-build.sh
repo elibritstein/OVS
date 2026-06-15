@@ -112,6 +112,8 @@ if [ "$DPDK" ] || [ "$DPDK_SHARED" ]; then
     install_dpdk
 fi
 
+./.ci/check-fsync.sh pre
+
 if [ "$STD" ]; then
     CFLAGS_FOR_OVS="${CFLAGS_FOR_OVS} -std=$STD"
 fi
@@ -152,6 +154,8 @@ if [ "$TESTSUITE" = 'test' ]; then
         TESTSUITEFLAGS=${JOBS} RECHECK=yes
 else
     build_ovs
+    make tests/idltest.h
+    ./.ci/check-fsync.sh post tests/test-ovsdb
     for testsuite in $TESTSUITE; do
         run_as_root=
         if [ "$testsuite" != "check" ] && \
