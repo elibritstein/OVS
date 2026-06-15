@@ -424,10 +424,9 @@ def wait_for_cond_seqno(idl, next_cond_seqno, rpc=None):
 
 
 def wait_after_reconnect(idl, seqno, next_cond_seqno, rpc=None):
-    """Wait for reconnect to finish and any in-flight cond_change to apply."""
+    """Wait for +reconnect to finish and in-flight cond_change to apply."""
     wait_for_idl_update(idl, seqno, rpc)
     wait_for_cond_seqno(idl, next_cond_seqno, rpc)
-    wait_for_idl_update(idl, idl.change_seqno, rpc)
 
 
 def substitute_uuids(json, symtab):
@@ -874,7 +873,7 @@ def do_idl(schema_file, remote, *commands):
         next_cond_seqno = update_condition(idl, commands.pop(0), step)
         step += 1
 
-    after_reconnect = False
+    after_plus_reconnect = False
     for command in commands:
         terse = False
         if command.startswith("?"):
@@ -882,9 +881,11 @@ def do_idl(schema_file, remote, *commands):
             terse = True
             command = command[1:]
 
+        skipped_wait = False
         if command.startswith("+"):
             # The previous transaction didn't change anything.
             command = command[1:]
+            skipped_wait = True
         elif command.startswith("^"):
             # Wait for condition change to be acked by the server.
             command = command[1:]
@@ -898,9 +899,9 @@ def do_idl(schema_file, remote, *commands):
         else:
             # Wait for update.
             while True:
-                if after_reconnect:
+                if after_plus_reconnect:
                     wait_after_reconnect(idl, seqno, next_cond_seqno, rpc)
-                    after_reconnect = False
+                    after_plus_reconnect = False
                 else:
                     wait_for_idl_update(idl, seqno, rpc)
 
@@ -920,7 +921,8 @@ def do_idl(schema_file, remote, *commands):
             sys.stdout.flush()
             step += 1
             idl.force_reconnect()
-            after_reconnect = True
+            if skipped_wait:
+                after_plus_reconnect = True
         elif "condition" in command:
             next_cond_seqno = update_condition(idl, command, step)
             step += 1
