@@ -409,11 +409,19 @@ def wait_for_idl_update(idl, seqno, rpc=None):
         poller.block()
 
 
-def wait_for_idl_ready(idl, seqno, next_cond_seqno, rpc=None):
-    """Wait for an IDL update and any pending monitor_cond_change to finish."""
-    wait_for_idl_update(idl, seqno, rpc)
+def wait_for_cond_seqno(idl, next_cond_seqno, rpc=None):
     while idl.cond_seqno != next_cond_seqno:
-        wait_for_idl_update(idl, idl.change_seqno, rpc)
+        idl.run()
+        if idl.cond_seqno == next_cond_seqno:
+            break
+        poller = ovs.poller.Poller()
+        if rpc is not None:
+            rpc.run()
+        idl.wait(poller)
+        if rpc is not None:
+            rpc.wait(poller)
+        poller.block()
+
 
 def substitute_uuids(json, symtab):
     if isinstance(json, str):
@@ -859,6 +867,7 @@ def do_idl(schema_file, remote, *commands):
         next_cond_seqno = update_condition(idl, commands.pop(0), step)
         step += 1
 
+    after_reconnect = False
     for command in commands:
         terse = False
         if command.startswith("?"):
@@ -882,7 +891,10 @@ def do_idl(schema_file, remote, *commands):
         else:
             # Wait for update.
             while True:
-                wait_for_idl_ready(idl, seqno, next_cond_seqno, rpc)
+                wait_for_idl_update(idl, seqno, rpc)
+                if after_reconnect:
+                    wait_for_cond_seqno(idl, next_cond_seqno, rpc)
+                    after_reconnect = False
 
                 print_idl(idl, step, terse)
                 step += 1
@@ -900,6 +912,7 @@ def do_idl(schema_file, remote, *commands):
             sys.stdout.flush()
             step += 1
             idl.force_reconnect()
+            after_reconnect = True
         elif "condition" in command:
             next_cond_seqno = update_condition(idl, command, step)
             step += 1
@@ -940,7 +953,7 @@ def do_idl(schema_file, remote, *commands):
 
     if rpc:
         rpc.close()
-    wait_for_idl_ready(idl, seqno, next_cond_seqno, rpc)
+    wait_for_idl_update(idl, seqno)
     print_idl(idl, step)
     step += 1
     idl.close()
