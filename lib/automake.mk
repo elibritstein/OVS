@@ -158,6 +158,7 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/multipath.h \
 	lib/namemap.c \
 	lib/netdev-dpdk.h \
+	lib/netdev-dpdk-common.h \
 	lib/netdev-dummy.c \
 	lib/netdev-provider.h \
 	lib/netdev-vport.c \
