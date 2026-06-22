@@ -210,11 +210,6 @@ struct netdev_dpdk_sw_stats {
     uint64_t tx_invalid_hwol_drops;
 };
 
-enum dpdk_dev_type {
-    DPDK_DEV_ETH = 0,
-    DPDK_DEV_VHOST = 1,
-};
-
 /* Quality of Service */
 
 /* An instance of a QoS configuration.  Always associated with a particular
@@ -467,7 +462,6 @@ struct netdev_dpdk {
         int socket_id;
         int buf_size;
         int max_packet_len;
-        enum dpdk_dev_type type;
         enum netdev_flags flags;
         int link_reset_cnt;
         union {
@@ -614,6 +608,12 @@ is_dpdk_class(const struct netdev_class *class)
 {
     return class->destruct == netdev_dpdk_destruct
            || class->destruct == netdev_dpdk_vhost_destruct;
+}
+
+static bool
+netdev_dpdk_is_vhost(const struct netdev *netdev)
+{
+    return netdev->netdev_class->destruct == netdev_dpdk_vhost_destruct;
 }
 
 /* DPDK NIC drivers allocate RX buffers at a particular granularity, typically
@@ -1046,7 +1046,7 @@ dpdk_watchdog(void *dummy OVS_UNUSED)
         ovs_mutex_lock(&dpdk_mutex);
         LIST_FOR_EACH (dev, list_node, &dpdk_list) {
             ovs_mutex_lock(&dev->mutex);
-            if (dev->type == DPDK_DEV_ETH) {
+            if (!netdev_dpdk_is_vhost(&dev->up)) {
                 check_link_status(dev);
             }
             ovs_mutex_unlock(&dev->mutex);
@@ -1506,8 +1506,7 @@ netdev_dpdk_alloc_txq(unsigned int n_txqs)
 }
 
 static int
-common_construct(struct netdev *netdev, dpdk_port_t port_no,
-                 enum dpdk_dev_type type, int socket_id)
+common_construct(struct netdev *netdev, dpdk_port_t port_no, int socket_id)
     OVS_REQUIRES(dpdk_mutex)
 {
     struct netdev_dpdk *dev = netdev_dpdk_cast(netdev);
@@ -1522,7 +1521,6 @@ common_construct(struct netdev *netdev, dpdk_port_t port_no,
     dev->socket_id = socket_id < 0 ? SOCKET0 : socket_id;
     dev->requested_socket_id = dev->socket_id;
     dev->port_id = port_no;
-    dev->type = type;
     dev->flags = 0;
     dev->requested_mtu = RTE_ETHER_MTU;
     dev->max_packet_len = MTU_TO_FRAME_LEN(dev->mtu);
@@ -1572,7 +1570,7 @@ common_construct(struct netdev *netdev, dpdk_port_t port_no,
     dev->rte_xstats_ids_size = 0;
 
     dev->sw_stats = xzalloc(sizeof *dev->sw_stats);
-    dev->sw_stats->tx_retries = (dev->type == DPDK_DEV_VHOST) ? 0 : UINT64_MAX;
+    dev->sw_stats->tx_retries = netdev_dpdk_is_vhost(netdev) ? 0 : UINT64_MAX;
 
     return 0;
 }
@@ -1599,8 +1597,7 @@ vhost_common_construct(struct netdev *netdev)
 
     dev->vhost_max_queue_pairs = VHOST_MAX_QUEUE_PAIRS_DEF;
 
-    return common_construct(netdev, DPDK_ETH_PORT_ID_INVALID,
-                            DPDK_DEV_VHOST, socket_id);
+    return common_construct(netdev, DPDK_ETH_PORT_ID_INVALID, socket_id);
 }
 
 static int
@@ -1707,8 +1704,7 @@ netdev_dpdk_construct(struct netdev *netdev)
     int err;
 
     ovs_mutex_lock(&dpdk_mutex);
-    err = common_construct(netdev, DPDK_ETH_PORT_ID_INVALID,
-                           DPDK_DEV_ETH, SOCKET0);
+    err = common_construct(netdev, DPDK_ETH_PORT_ID_INVALID, SOCKET0);
     ovs_mutex_unlock(&dpdk_mutex);
     return err;
 }
@@ -2273,7 +2269,7 @@ dpdk_set_rx_steer_config(struct netdev *netdev, struct netdev_dpdk *dev,
                   netdev_get_name(netdev), arg);
     }
 
-    if (flags && dev->type != DPDK_DEV_ETH) {
+    if (flags && !netdev_dpdk_is_vhost(netdev)) {
         VLOG_WARN("%s: options:rx-steering "
                   "is only supported on ethernet ports",
                   netdev_get_name(netdev));
@@ -3443,7 +3439,7 @@ netdev_dpdk_set_etheraddr__(struct netdev_dpdk *dev, const struct eth_addr mac)
 {
     int err = 0;
 
-    if (dev->type == DPDK_DEV_ETH) {
+    if (!netdev_dpdk_is_vhost(&dev->up)) {
         struct rte_ether_addr ea;
 
         memcpy(ea.addr_bytes, mac.ea, ETH_ADDR_LEN);
@@ -4363,8 +4359,7 @@ netdev_dpdk_update_flags__(struct netdev_dpdk *dev,
         return 0;
     }
 
-    if (dev->type == DPDK_DEV_ETH) {
-
+    if (!netdev_dpdk_is_vhost(&dev->up)) {
         if ((dev->flags ^ *old_flagsp) & NETDEV_UP) {
             int err;
 
@@ -4390,7 +4385,7 @@ netdev_dpdk_update_flags__(struct netdev_dpdk *dev,
 
         netdev_change_seq_changed(&dev->up);
     } else {
-        /* If DPDK_DEV_VHOST device's NETDEV_UP flag was changed and vhost is
+        /* If a vhost device's NETDEV_UP flag was changed and vhost is
          * running then change netdev's change_seq to trigger link state
          * update. */
 
@@ -6558,7 +6553,7 @@ netdev_dpdk_flow_api_supported(struct netdev *netdev, bool check_only)
 
     dev = netdev_dpdk_cast(netdev);
     ovs_mutex_lock(&dev->mutex);
-    if (dev->type == DPDK_DEV_ETH) {
+    if (!netdev_dpdk_is_vhost(netdev)) {
         if (dev->requested_rx_steer_flags && !check_only) {
             VLOG_WARN("%s: rx-steering is mutually exclusive with hw-offload,"
                       " falling back to default rss mode",
