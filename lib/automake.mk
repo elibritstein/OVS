@@ -443,7 +443,8 @@ lib_libopenvswitch_la_SOURCES += \
 	lib/dpif-offload-dpdk.c \
 	lib/dpif-offload-dpdk-netdev.c \
 	lib/dpif-offload-dpdk-private.h \
-	lib/netdev-dpdk.c
+	lib/netdev-dpdk.c \
+	lib/netdev-dpdk-common.c
 else
 lib_libopenvswitch_la_SOURCES += \
 	lib/dpdk-stub.c
