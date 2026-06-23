@@ -906,7 +906,7 @@ CHECK_MEMPOOL_PARAM([8000], [ALL], [])
 CHECK_MEMPOOL_PARAM([6000], [ALL], [])
 CHECK_MEMPOOL_PARAM([1500], [ALL], [])
 
-AT_CHECK(ovs-appctl vlog/set netdev_dpdk:dbg)
+AT_CHECK(ovs-appctl vlog/set netdev_dpdk_common:dbg)
 
 dnl Add userspace bridge and a dpdk port
 AT_CHECK([ovs-vsctl add-br br10 -- set bridge br10 datapath_type=netdev])
