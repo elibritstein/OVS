@@ -20,17 +20,26 @@
 #include <config.h>
 
 #include "openvswitch/compiler.h"
+#include "netdev-provider.h"
 #include "smap.h"
 
 struct dp_packet;
 struct netdev;
+struct netdev_dpdk_common;
 
 #ifdef DPDK_NETDEV
 
 #include <rte_flow.h>
 
+struct netdev_dpdk_common;
+
+bool netdev_dpdk_is_vhost(const struct netdev *netdev);
 void netdev_dpdk_register(const struct smap *);
 void free_dpdk_buf(struct dp_packet *);
+void netdev_dpdk_vhost_update_dev_flags(struct netdev_dpdk_common *common,
+                                        enum netdev_flags old_flags,
+                                        enum netdev_flags off,
+                                        enum netdev_flags on);
 
 uint32_t netdev_dpdk_extbuf_size(uint32_t);
 void *netdev_dpdk_extbuf_allocate(uint32_t);
