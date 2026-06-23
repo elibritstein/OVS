@@ -18,17 +18,20 @@
 #ifndef NETDEV_DPDK_COMMON_H
 #define NETDEV_DPDK_COMMON_H
 
+#include <stdio.h>
 
 #include <rte_config.h>
 #include <rte_ethdev.h>
 #include <rte_spinlock.h>
 
+#include "dp-packet.h"
 #include "netdev-provider.h"
 #include "util.h"
 
 #include "openvswitch/thread.h"
 
 extern struct ovs_mutex dpdk_common_mutex;
+extern struct ovs_mutex dpdk_mp_mutex;
 extern const struct rte_eth_conf port_conf;
 
 /* Defines. */
@@ -62,6 +65,18 @@ extern const struct rte_eth_conf port_conf;
 /* DPDK library uses uint16_t for port_id. */
 typedef uint16_t dpdk_port_t;
 #define DPDK_PORT_ID_FMT "%"PRIu16
+
+/* Forward declarations. */
+
+struct dp_packet;
+struct dp_packet_batch;
+struct eth_addr;
+struct netdev;
+struct netdev_stats;
+struct rte_eth_xstat;
+struct rte_eth_xstat_name;
+struct smap;
+enum netdev_features;
 
 /* Enum definitions. */
 
@@ -113,6 +128,11 @@ struct netdev_dpdk_sw_stats {
     uint64_t tx_invalid_hwol_drops;
 };
 
+struct netdev_rxq_dpdk {
+    struct netdev_rxq up;
+    dpdk_port_t port_id;
+};
+
 struct netdev_dpdk_common {
     PADDED_MEMBERS_CACHELINE_MARKER(CACHE_LINE_SIZE, cacheline0,
         uint16_t port_id;
@@ -137,8 +157,7 @@ struct netdev_dpdk_common {
 
     PADDED_MEMBERS(CACHE_LINE_SIZE,
         struct netdev up;
-        struct ovs_list list_node
-            OVS_GUARDED_BY(dpdk_common_mutex);
+        struct ovs_list list_node OVS_GUARDED_BY(dpdk_common_mutex);
         bool rx_metadata_delivery_configured;
     );
 
@@ -188,5 +207,186 @@ dpdk_dev_is_started(struct netdev_dpdk_common *common)
     atomic_read_relaxed(&common->started, &started);
     return started;
 }
+
+static inline struct netdev_rxq_dpdk *
+netdev_rxq_dpdk_cast(const struct netdev_rxq *rxq)
+{
+    return CONTAINER_OF(rxq, struct netdev_rxq_dpdk, up);
+}
+
+/* Common functions shared between netdev-dpdk and netdev-doca. */
+
+/* Type-independent helpers. */
+struct rte_mempool *netdev_dpdk_mp_create_pool(const char *pool_name,
+                                               uint32_t n_mbufs,
+                                               uint32_t mbuf_size,
+                                               int socket_id);
+uint32_t netdev_dpdk_buf_size(int mtu);
+
+struct dpdk_mp {
+    struct rte_mempool *mp;
+    int mtu;
+    int socket_id;
+    int refcount;
+    struct ovs_list list_node OVS_GUARDED_BY(dpdk_mp_mutex);
+};
+
+void netdev_dpdk_mempool_init(const struct smap *ovs_other_config);
+int netdev_dpdk_mempool_full(const struct rte_mempool *mp);
+uint32_t netdev_dpdk_mempool_calculate_mbufs_per_port(
+    const struct netdev_dpdk_common *common);
+struct dpdk_mp *netdev_dpdk_mempool_create(struct netdev_dpdk_common *common,
+                                           bool force_per_port, int mtu);
+void netdev_dpdk_mempool_sweep(void);
+int netdev_dpdk_mempool_configure(struct netdev_dpdk_common *common)
+    OVS_REQUIRES(common->mutex);
+void netdev_dpdk_mempool_release(struct dpdk_mp *dpdk_mp);
+void netdev_dpdk_mempool_dump(struct rte_mempool *mp, FILE *stream);
+void netdev_dpdk_mempool_list_dump(FILE *stream);
+
+size_t netdev_dpdk_copy_batch_to_mbuf(struct netdev_dpdk_common *common,
+                                      struct dp_packet_batch *batch);
+const char *netdev_dpdk_link_speed_to_str(uint32_t link_speed);
+void netdev_dpdk_mbuf_dump(const char *prefix, const char *message,
+                           const struct rte_mbuf *mbuf);
+
+/* Functions operating on struct netdev_dpdk_common. */
+void netdev_dpdk_detect_hw_ol_features(struct netdev_dpdk_common *common,
+                                       const struct rte_eth_dev_info *info)
+    OVS_REQUIRES(common->mutex);
+void netdev_dpdk_build_port_conf(struct netdev_dpdk_common *common,
+                                 const struct rte_eth_dev_info *info,
+                                 struct rte_eth_conf *conf);
+void netdev_dpdk_check_link_status(struct netdev_dpdk_common *common);
+
+void *netdev_dpdk_watchdog(void *list);
+
+void netdev_dpdk_update_netdev_flags(struct netdev_dpdk_common *common)
+    OVS_REQUIRES(common->mutex);
+void netdev_dpdk_clear_xstats(struct netdev_dpdk_common *common);
+const char *netdev_dpdk_get_xstat_name(struct netdev_dpdk_common *common,
+                                       uint64_t id)
+    OVS_REQUIRES(common->mutex);
+void netdev_dpdk_configure_xstats(struct netdev_dpdk_common *common)
+    OVS_REQUIRES(common->mutex);
+void netdev_dpdk_set_rxq_config(struct netdev_dpdk_common *common,
+                                const struct smap *args)
+    OVS_REQUIRES(common->mutex);
+int netdev_dpdk_prep_hwol_batch(struct netdev_dpdk_common *common,
+                                struct rte_mbuf **pkts, int pkt_cnt);
+int netdev_dpdk_filter_packet_len(struct netdev_dpdk_common *common,
+                                  struct rte_mbuf **pkts, int pkt_cnt);
+int netdev_dpdk_eth_tx_burst(struct netdev_dpdk_common *common,
+                             dpdk_port_t port_id, int qid,
+                             struct rte_mbuf **pkts, int cnt);
+
+static inline size_t
+netdev_dpdk_prep_tx_batch(struct netdev_dpdk_common *common,
+                          struct dp_packet_batch *batch,
+                          struct netdev_dpdk_sw_stats *stats,
+                          bool prep_hwol)
+{
+    struct rte_mbuf **pkts = (struct rte_mbuf **) batch->packets;
+    size_t cnt, pkt_cnt = dp_packet_batch_size(batch);
+    struct dp_packet *packet;
+    bool need_copy = false;
+
+    memset(stats, 0, sizeof *stats);
+
+    DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
+        if (packet->source != DPBUF_DPDK) {
+            need_copy = true;
+            break;
+        }
+    }
+
+    /* Copy dp-packets to mbufs. */
+    if (OVS_UNLIKELY(need_copy)) {
+        cnt = netdev_dpdk_copy_batch_to_mbuf(common, batch);
+        stats->tx_failure_drops += pkt_cnt - cnt;
+        pkt_cnt = cnt;
+    }
+
+    /* Drop oversized packets. */
+    cnt = netdev_dpdk_filter_packet_len(common, pkts, pkt_cnt);
+    stats->tx_mtu_exceeded_drops += pkt_cnt - cnt;
+    pkt_cnt = cnt;
+
+    if (prep_hwol) {
+        /* Prepare each mbuf for hardware offloading. */
+        cnt = netdev_dpdk_prep_hwol_batch(common, pkts, pkt_cnt);
+        stats->tx_invalid_hwol_drops += pkt_cnt - cnt;
+        pkt_cnt = cnt;
+    }
+
+    return pkt_cnt;
+}
+
+void netdev_dpdk_get_config_common(struct netdev_dpdk_common *common,
+                                   struct smap *args)
+    OVS_REQUIRES(common->mutex);
+int netdev_dpdk_common_construct(struct netdev_dpdk_common *common,
+                                 struct ovs_list *list,
+                                 dpdk_port_t port_no,
+                                 int socket_id,
+                                 uint64_t tx_retries_init)
+    OVS_REQUIRES(dpdk_common_mutex);
+void netdev_dpdk_common_destruct(struct netdev_dpdk_common *common)
+    OVS_REQUIRES(dpdk_common_mutex)
+    OVS_EXCLUDED(common->mutex);
+int netdev_dpdk_common_get_config(const struct netdev *, struct smap *);
+struct netdev_dpdk_common *
+netdev_dpdk_lookup_common_by_port_id(dpdk_port_t port_id,
+                                     struct ovs_list *list)
+    OVS_REQUIRES(dpdk_common_mutex);
+dpdk_port_t netdev_dpdk_get_port_by_devargs(const char *devargs)
+    OVS_REQUIRES(dpdk_common_mutex);
+
+/* Rxq ops shared between dpdk and doca. */
+struct netdev_rxq *netdev_dpdk_rxq_alloc(void);
+int netdev_dpdk_rxq_construct(struct netdev_rxq *rxq);
+void netdev_dpdk_rxq_destruct(struct netdev_rxq *rxq);
+void netdev_dpdk_rxq_dealloc(struct netdev_rxq *rxq);
+
+/* Netdev provider ops usable by both dpdk and doca. */
+int netdev_dpdk_get_numa_id(const struct netdev *netdev);
+int netdev_dpdk_set_tx_multiq(struct netdev *netdev, unsigned int n_txq);
+int netdev_dpdk_set_dev_etheraddr(struct netdev_dpdk_common *common,
+                                  const struct eth_addr mac)
+    OVS_REQUIRES(common->mutex);
+int netdev_dpdk_update_flags(struct netdev *netdev,
+                             enum netdev_flags off, enum netdev_flags on,
+                             enum netdev_flags *old_flagsp);
+int netdev_dpdk_update_dev_flags(struct netdev_dpdk_common *common,
+                                 enum netdev_flags off, enum netdev_flags on,
+                                 enum netdev_flags *old_flagsp)
+    OVS_REQUIRES(common->mutex);
+int netdev_dpdk_set_etheraddr(struct netdev *netdev,
+                              const struct eth_addr mac);
+int netdev_dpdk_get_etheraddr(const struct netdev *netdev,
+                              struct eth_addr *mac);
+int netdev_dpdk_get_mtu(const struct netdev *netdev, int *mtup);
+int netdev_dpdk_get_ifindex(const struct netdev *netdev);
+int netdev_dpdk_get_carrier(const struct netdev *netdev, bool *carrier);
+long long int netdev_dpdk_get_carrier_resets(const struct netdev *netdev);
+int netdev_dpdk_set_miimon(struct netdev *netdev, long long int interval);
+int netdev_dpdk_get_speed(const struct netdev *netdev, uint32_t *current,
+                          uint32_t *max);
+int netdev_dpdk_get_features(const struct netdev *netdev,
+                             enum netdev_features *current,
+                             enum netdev_features *advertised,
+                             enum netdev_features *supported,
+                             enum netdev_features *peer);
+void netdev_dpdk_convert_xstats(struct netdev_stats *stats,
+                                const struct rte_eth_xstat *xstats,
+                                const struct rte_eth_xstat_name *names,
+                                const unsigned int size);
+int netdev_dpdk_get_stats(const struct netdev *netdev,
+                          struct netdev_stats *stats);
+int netdev_dpdk_get_eth_dev_status(const struct netdev *netdev,
+                                   struct smap *args)
+    OVS_EXCLUDED(dpdk_common_mutex,
+                 netdev_dpdk_common_cast(netdev)->mutex);
+struct netdev_dpdk_tx_queue *netdev_dpdk_alloc_txq(unsigned int n_txqs);
 
 #endif /* NETDEV_DPDK_COMMON_H */
