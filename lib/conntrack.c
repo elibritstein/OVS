@@ -1095,8 +1095,6 @@ conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
         }
 
         if (nat_action_info) {
-            nc->nat_action = nat_action_info->nat_action;
-
             if (alg_exp) {
                 if (alg_exp->nat_rpl_dst) {
                     rev_key_node->key.dst.addr = alg_exp->alg_nat_repl_addr;
@@ -1105,18 +1103,24 @@ conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
                     rev_key_node->key.src.addr = alg_exp->alg_nat_repl_addr;
                     nc->nat_action = NAT_ACTION_DST;
                 }
-            } else {
-                bool nat_res = nat_get_unique_tuple(ct, nc, nat_action_info);
+            } else if (nat_action_info->nat_action) {
+                bool nat_res;
+
+                nc->nat_action = nat_action_info->nat_action;
+                nat_res = nat_get_unique_tuple(ct, nc, nat_action_info);
                 if (!nat_res) {
                     goto nat_res_exhaustion;
                 }
             }
 
-            nat_packet(pkt, nc, false, ctx->icmp_related);
-            uint32_t rev_hash = conn_key_hash(&rev_key_node->key,
-                                              ct->hash_basis);
-            cmap_insert(&ct->conns[ctx->key.zone],
-                        &rev_key_node->cm_node, rev_hash);
+            if (nc->nat_action) {
+                uint32_t rev_hash;
+
+                nat_packet(pkt, nc, false, ctx->icmp_related);
+                rev_hash = conn_key_hash(&rev_key_node->key, ct->hash_basis);
+                cmap_insert(&ct->conns[ctx->key.zone],
+                            &rev_key_node->cm_node, rev_hash);
+            }
         }
 
         cmap_insert(&ct->conns[ctx->key.zone],
