@@ -1094,7 +1094,7 @@ conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
             nc->admit_zone = INVALID_ZONE;
         }
 
-        if (nat_action_info) {
+        if (nat_action_info && nat_action_info->nat_action) {
             nc->nat_action = nat_action_info->nat_action;
 
             if (alg_exp) {
@@ -1221,7 +1221,7 @@ check_orig_tuple(struct conntrack *ct, struct dp_packet *pkt,
          !pkt->md.ct_orig_tuple.ipv4.ipv4_proto) ||
         (ctx_in->key.dl_type == htons(ETH_TYPE_IPV6) &&
          !pkt->md.ct_orig_tuple.ipv6.ipv6_proto) ||
-        nat_action_info) {
+        (nat_action_info && nat_action_info->nat_action)) {
         return false;
     }
 
