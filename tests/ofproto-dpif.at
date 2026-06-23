@@ -13364,6 +13364,28 @@ AT_CHECK([tail -1 stdout], [0],
 OVS_VSWITCHD_STOP
 AT_CLEANUP
 
+AT_SETUP([ofproto-dpif - nat - empty nat on ct(commit)])
+OVS_VSWITCHD_START
+
+add_of_ports br0 1 2
+
+dnl SNAT in zone 2, then empty ct(commit,nat) in zone 3.
+AT_DATA([flows.txt], [dnl
+table=0,priority=100,in_port=1,tcp,ct_state=-trk,action=ct(commit,zone=2,nat(src=10.0.0.1:1000),table=1)
+table=1,priority=100,ct_zone=2,tcp,action=ct(commit,zone=3,nat)
+])
+
+AT_CHECK([ovs-ofctl add-flows br0 flows.txt])
+
+AT_CHECK([ovs-appctl netdev-dummy/receive p1 'in_port(1),eth(src=50:54:00:00:00:09,dst=50:54:00:00:00:0a),eth_type(0x0800),ipv4(src=10.1.1.1,dst=10.1.1.2,proto=6,tos=0,ttl=64,frag=no),tcp(src=12345,dst=5201),tcp_flags(syn)'])
+
+AT_CHECK([ovs-appctl dpctl/dump-conntrack zone=3], [0], [dnl
+tcp,orig=(src=10.0.0.1,dst=10.1.1.2,sport=1000,dport=5201),reply=(src=10.1.1.2,dst=10.0.0.1,sport=5201,dport=1000),zone=3,protoinfo=(state=SYN_SENT)
+])
+
+OVS_VSWITCHD_STOP
+AT_CLEANUP
+
 dnl Checks the get/set sweep interval
 AT_SETUP([ofproto-dpif - conntrack - change sweep interval])
 OVS_VSWITCHD_START
