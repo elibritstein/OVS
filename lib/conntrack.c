@@ -1094,9 +1094,7 @@ conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
             nc->admit_zone = INVALID_ZONE;
         }
 
-        if (nat_action_info && nat_action_info->nat_action) {
-            nc->nat_action = nat_action_info->nat_action;
-
+        if (nat_action_info) {
             if (alg_exp) {
                 if (alg_exp->nat_rpl_dst) {
                     rev_key_node->key.dst.addr = alg_exp->alg_nat_repl_addr;
@@ -1105,18 +1103,21 @@ conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
                     rev_key_node->key.src.addr = alg_exp->alg_nat_repl_addr;
                     nc->nat_action = NAT_ACTION_DST;
                 }
-            } else {
+            } else if (nat_action_info->nat_action) {
+                nc->nat_action = nat_action_info->nat_action;
                 bool nat_res = nat_get_unique_tuple(ct, nc, nat_action_info);
                 if (!nat_res) {
                     goto nat_res_exhaustion;
                 }
             }
 
-            nat_packet(pkt, nc, false, ctx->icmp_related);
-            uint32_t rev_hash = conn_key_hash(&rev_key_node->key,
-                                              ct->hash_basis);
-            cmap_insert(&ct->conns[ctx->key.zone],
-                        &rev_key_node->cm_node, rev_hash);
+            if (nc->nat_action) {
+                nat_packet(pkt, nc, false, ctx->icmp_related);
+                uint32_t rev_hash = conn_key_hash(&rev_key_node->key,
+                                                  ct->hash_basis);
+                cmap_insert(&ct->conns[ctx->key.zone],
+                            &rev_key_node->cm_node, rev_hash);
+            }
         }
 
         cmap_insert(&ct->conns[ctx->key.zone],
@@ -1221,7 +1222,7 @@ check_orig_tuple(struct conntrack *ct, struct dp_packet *pkt,
          !pkt->md.ct_orig_tuple.ipv4.ipv4_proto) ||
         (ctx_in->key.dl_type == htons(ETH_TYPE_IPV6) &&
          !pkt->md.ct_orig_tuple.ipv6.ipv6_proto) ||
-        (nat_action_info && nat_action_info->nat_action)) {
+        nat_action_info) {
         return false;
     }
 
