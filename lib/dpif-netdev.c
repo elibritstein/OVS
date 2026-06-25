@@ -8315,6 +8315,10 @@ dp_execute_cb(void *aux_, struct dp_packet_batch *packets_,
                         nat_action_info.nat_action |= NAT_ACTION_DST_PORT;
                     }
                 }
+                nat_action_info.range_specified = ip_min_specified
+                    || ip_max_specified
+                    || proto_num_min_specified
+                    || proto_num_max_specified;
                 break;
             }
             case OVS_CT_ATTR_UNSPEC:
