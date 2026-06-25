@@ -89,6 +89,7 @@ struct nat_action_info_t {
     uint16_t max_port;
     uint16_t nat_action;
     uint16_t nat_flags;
+    bool range_specified;
 };
 
 struct conntrack *conntrack_init(void);
