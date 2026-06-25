@@ -296,3 +296,27 @@ AT_CLEANUP
 AT_SETUP([Conntrack Library - FTP ALG parsing])
 AT_CHECK([ovstest test-conntrack ftp-alg-large-payload])
 AT_CLEANUP
+
+AT_SETUP([Conntrack Library - empty nat on ct(commit)])
+AT_CHECK([ovstest test-conntrack empty-nat-on-commit])
+AT_CLEANUP
+
+AT_SETUP([Conntrack Library - empty nat on first ct(commit)])
+AT_CHECK([ovstest test-conntrack empty-nat-first-commit])
+AT_CLEANUP
+
+AT_SETUP([Conntrack Library - direction-only nat(src)])
+AT_CHECK([ovstest test-conntrack nat-src-direction-only])
+AT_CLEANUP
+
+AT_SETUP([Conntrack Library - nat(src) null binding collision])
+AT_CHECK([ovstest test-conntrack nat-src-null-binding-collision])
+AT_CLEANUP
+
+AT_SETUP([Conntrack Library - direction-only nat(dst)])
+AT_CHECK([ovstest test-conntrack nat-dst-direction-only])
+AT_CLEANUP
+
+AT_SETUP([Conntrack Library - NAT IP range explicit])
+AT_CHECK([ovstest test-conntrack nat-ip-range-explicit])
+AT_CLEANUP

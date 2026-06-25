@@ -8252,6 +8252,8 @@ dp_execute_cb(void *aux_, struct dp_packet_batch *packets_,
                 bool proto_num_min_specified = false;
                 bool ip_max_specified = false;
                 bool proto_num_max_specified = false;
+                size_t ip_addr_len = 0;
+
                 memset(&nat_action_info, 0, sizeof nat_action_info);
                 nat_action_info_ref = &nat_action_info;
 
@@ -8267,12 +8269,16 @@ dp_execute_cb(void *aux_, struct dp_packet_batch *packets_,
                                 ? NAT_ACTION_SRC : NAT_ACTION_DST);
                         break;
                     case OVS_NAT_ATTR_IP_MIN:
+                        ip_addr_len = nl_attr_get_size(b_nest);
                         memcpy(&nat_action_info.min_addr,
                                nl_attr_get(b_nest),
-                               nl_attr_get_size(b_nest));
+                               ip_addr_len);
                         ip_min_specified = true;
                         break;
                     case OVS_NAT_ATTR_IP_MAX:
+                        if (!ip_addr_len) {
+                            ip_addr_len = nl_attr_get_size(b_nest);
+                        }
                         memcpy(&nat_action_info.max_addr,
                                nl_attr_get(b_nest),
                                nl_attr_get_size(b_nest));
@@ -8315,6 +8321,13 @@ dp_execute_cb(void *aux_, struct dp_packet_batch *packets_,
                         nat_action_info.nat_action |= NAT_ACTION_DST_PORT;
                     }
                 }
+
+                conntrack_nat_set_explicit_range(&nat_action_info,
+                                                   ip_min_specified,
+                                                   ip_max_specified,
+                                                   ip_addr_len,
+                                                   proto_num_min_specified,
+                                                   proto_num_max_specified);
                 break;
             }
             case OVS_CT_ATTR_UNSPEC:
