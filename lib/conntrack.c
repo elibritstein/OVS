@@ -120,6 +120,16 @@ static bool
 nat_get_unique_tuple(struct conntrack *ct, struct conn *conn,
                      const struct nat_action_info_t *nat_info);
 
+static bool
+nat_null_binding(struct conntrack *ct, struct conn *conn,
+                 const struct nat_action_info_t *nat_info);
+
+static bool
+nat_has_explicit_range(const struct nat_action_info_t *nat);
+
+static bool
+nat_has_direction(const struct nat_action_info_t *nat);
+
 static uint8_t
 reverse_icmp_type(uint8_t type);
 static uint8_t
@@ -1021,6 +1031,18 @@ ct_verify_helper(const char *helper, enum ct_alg_ctl_type ct_alg_ctl)
     }
 }
 
+static bool
+nat_has_explicit_range(const struct nat_action_info_t *nat)
+{
+    return nat && nat->explicit_range;
+}
+
+static bool
+nat_has_direction(const struct nat_action_info_t *nat)
+{
+    return nat && nat->nat_action;
+}
+
 static struct conn *
 conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
                struct conn_lookup_ctx *ctx, bool commit, long long now,
@@ -1095,8 +1117,6 @@ conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
         }
 
         if (nat_action_info) {
-            nc->nat_action = nat_action_info->nat_action;
-
             if (alg_exp) {
                 if (alg_exp->nat_rpl_dst) {
                     rev_key_node->key.dst.addr = alg_exp->alg_nat_repl_addr;
@@ -1105,18 +1125,28 @@ conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
                     rev_key_node->key.src.addr = alg_exp->alg_nat_repl_addr;
                     nc->nat_action = NAT_ACTION_DST;
                 }
-            } else {
-                bool nat_res = nat_get_unique_tuple(ct, nc, nat_action_info);
+            } else if (nat_has_explicit_range(nat_action_info)) {
+                bool nat_res;
+
+                nc->nat_action = nat_action_info->nat_action;
+                nat_res = nat_get_unique_tuple(ct, nc, nat_action_info);
                 if (!nat_res) {
                     goto nat_res_exhaustion;
                 }
+            } else if (nat_has_direction(nat_action_info)) {
+                if (!nat_null_binding(ct, nc, nat_action_info)) {
+                    /* No collision: leave nc->nat_action unset. */
+                }
             }
 
-            nat_packet(pkt, nc, false, ctx->icmp_related);
-            uint32_t rev_hash = conn_key_hash(&rev_key_node->key,
-                                              ct->hash_basis);
-            cmap_insert(&ct->conns[ctx->key.zone],
-                        &rev_key_node->cm_node, rev_hash);
+            if (nc->nat_action) {
+                uint32_t rev_hash;
+
+                nat_packet(pkt, nc, false, ctx->icmp_related);
+                rev_hash = conn_key_hash(&rev_key_node->key, ct->hash_basis);
+                cmap_insert(&ct->conns[ctx->key.zone],
+                            &rev_key_node->cm_node, rev_hash);
+            }
         }
 
         cmap_insert(&ct->conns[ctx->key.zone],
@@ -1221,7 +1251,7 @@ check_orig_tuple(struct conntrack *ct, struct dp_packet *pkt,
          !pkt->md.ct_orig_tuple.ipv4.ipv4_proto) ||
         (ctx_in->key.dl_type == htons(ETH_TYPE_IPV6) &&
          !pkt->md.ct_orig_tuple.ipv6.ipv6_proto) ||
-        nat_action_info) {
+        nat_has_explicit_range(nat_action_info)) {
         return false;
     }
 
@@ -2590,6 +2620,58 @@ another_round:
  *          range (after testing the port used by the sender).
  *
  * If none can be found, return exhaustion to the caller. */
+static bool
+nat_null_binding(struct conntrack *ct, struct conn *conn,
+                 const struct nat_action_info_t *nat_info)
+{
+    struct conn_key *fwd_key = &conn->key_node[CT_DIR_FWD].key;
+    struct conn_key *rev_key = &conn->key_node[CT_DIR_REV].key;
+    bool pat_proto = fwd_key->nw_proto == IPPROTO_TCP ||
+                     fwd_key->nw_proto == IPPROTO_UDP ||
+                     fwd_key->nw_proto == IPPROTO_SCTP ||
+                     fwd_key->nw_proto == IPPROTO_ICMP;
+    uint16_t min_sport, max_sport, curr_sport;
+    uint16_t min_dport, max_dport, curr_dport;
+
+    if (!pat_proto) {
+        return false;
+    }
+
+    /* Remap ports only when the reverse tuple collides with an existing
+     * connection. */
+    if (!conn_lookup(ct, rev_key, time_msec(), NULL, NULL)) {
+        return false;
+    }
+
+    if (nat_info->nat_action & NAT_ACTION_SRC) {
+        set_sport_range(nat_info, fwd_key, 0, &curr_sport,
+                        &min_sport, &max_sport);
+        if (!nat_get_unique_l4(ct, rev_key, &rev_key->dst.port,
+                               rev_key->nw_proto == IPPROTO_ICMP
+                               ? &rev_key->src.port : NULL,
+                               curr_sport, min_sport, max_sport)) {
+            return false;
+        }
+
+        conn->nat_action = NAT_ACTION_SRC | NAT_ACTION_SRC_PORT;
+        return true;
+    }
+
+    if (nat_info->nat_action & NAT_ACTION_DST) {
+        set_dport_range(nat_info, fwd_key, 0, &curr_dport,
+                        &min_dport, &max_dport);
+        if (!nat_get_unique_l4(ct, rev_key, &rev_key->src.port, NULL,
+                               curr_dport, min_dport, max_dport)) {
+            return false;
+        }
+
+        conn->nat_action = NAT_ACTION_DST | NAT_ACTION_DST_PORT;
+        return true;
+    }
+
+    return false;
+}
+
 static bool
 nat_get_unique_tuple(struct conntrack *ct, struct conn *conn,
                      const struct nat_action_info_t *nat_info)
