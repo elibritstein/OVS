@@ -89,6 +89,7 @@ struct nat_action_info_t {
     uint16_t max_port;
     uint16_t nat_action;
     uint16_t nat_flags;
+    bool explicit_range;
 };
 
 struct conntrack *conntrack_init(void);
@@ -164,5 +165,16 @@ struct conntrack_zone_info zone_limit_get(struct conntrack *ct,
                                           int32_t zone);
 int zone_limit_update(struct conntrack *ct, int32_t zone, uint32_t limit);
 int zone_limit_delete(struct conntrack *ct, int32_t zone);
+bool conntrack_nat_ip_range_explicit(bool ip_min_specified,
+                                     bool ip_max_specified,
+                                     size_t ip_addr_len,
+                                     const union ct_addr *min,
+                                     const union ct_addr *max);
+void conntrack_nat_set_explicit_range(struct nat_action_info_t *,
+                                      bool ip_min_specified,
+                                      bool ip_max_specified,
+                                      size_t ip_addr_len,
+                                      bool proto_min_specified,
+                                      bool proto_max_specified);
 
 #endif /* conntrack.h */
