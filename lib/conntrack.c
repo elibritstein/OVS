@@ -120,6 +120,9 @@ static bool
 nat_get_unique_tuple(struct conntrack *ct, struct conn *conn,
                      const struct nat_action_info_t *nat_info);
 
+static bool
+nat_binding_configured(const struct nat_action_info_t *nat);
+
 static uint8_t
 reverse_icmp_type(uint8_t type);
 static uint8_t
@@ -1021,6 +1024,12 @@ ct_verify_helper(const char *helper, enum ct_alg_ctl_type ct_alg_ctl)
     }
 }
 
+static bool
+nat_binding_configured(const struct nat_action_info_t *nat)
+{
+    return nat && nat->nat_action && nat->range_specified;
+}
+
 static struct conn *
 conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
                struct conn_lookup_ctx *ctx, bool commit, long long now,
@@ -1103,7 +1112,7 @@ conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
                     rev_key_node->key.src.addr = alg_exp->alg_nat_repl_addr;
                     nc->nat_action = NAT_ACTION_DST;
                 }
-            } else if (nat_action_info->nat_action) {
+            } else if (nat_binding_configured(nat_action_info)) {
                 bool nat_res;
 
                 nc->nat_action = nat_action_info->nat_action;
@@ -1225,7 +1234,7 @@ check_orig_tuple(struct conntrack *ct, struct dp_packet *pkt,
          !pkt->md.ct_orig_tuple.ipv4.ipv4_proto) ||
         (ctx_in->key.dl_type == htons(ETH_TYPE_IPV6) &&
          !pkt->md.ct_orig_tuple.ipv6.ipv6_proto) ||
-        nat_action_info) {
+        nat_binding_configured(nat_action_info)) {
         return false;
     }
 
