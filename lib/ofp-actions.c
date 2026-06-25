@@ -7161,11 +7161,10 @@ encode_NAT(const struct ofpact_nat *nat,
     nan = put_NXAST_NAT(out);
     nan->flags = htons(nat->flags);
     if (nat->range_af == AF_INET) {
-        if (nat->range.addr.ipv4.min) {
-            ovs_be32 *min = ofpbuf_put_uninit(out, sizeof *min);
-            *min = nat->range.addr.ipv4.min;
-            range_present |= NX_NAT_RANGE_IPV4_MIN;
-        }
+        ovs_be32 *min = ofpbuf_put_uninit(out, sizeof *min);
+
+        *min = nat->range.addr.ipv4.min;
+        range_present |= NX_NAT_RANGE_IPV4_MIN;
         if (nat->range.addr.ipv4.max) {
             ovs_be32 *max = ofpbuf_put_uninit(out, sizeof *max);
             *max = nat->range.addr.ipv4.max;
@@ -7233,8 +7232,7 @@ decode_NXAST_RAW_NAT(const struct nx_action_nat *nan,
             return OFPERR_OFPBAC_BAD_ARGUMENT;
         }
 
-        if (!NX_NAT_GET_OPT(&nat->range.addr.ipv4.min, opts, len, ovs_be32)
-            || !nat->range.addr.ipv4.min) {
+        if (!NX_NAT_GET_OPT(&nat->range.addr.ipv4.min, opts, len, ovs_be32)) {
             return OFPERR_OFPBAC_BAD_ARGUMENT;
         }
 

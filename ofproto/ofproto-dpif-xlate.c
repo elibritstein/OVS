@@ -34,6 +34,7 @@
 #include "csum.h"
 #include "dp-packet.h"
 #include "dpif.h"
+#include "dpif-netdev.h"
 #include "in-band.h"
 #include "lacp.h"
 #include "learn.h"
@@ -6673,8 +6674,15 @@ put_ct_nat(struct xlate_ctx *ctx)
             nl_msg_put_flag(ctx->odp_actions, OVS_NAT_ATTR_PROTO_RANDOM);
         }
         if (ofn->range_af == AF_INET) {
-            nl_msg_put_be32(ctx->odp_actions, OVS_NAT_ATTR_IP_MIN,
-                           ofn->range.addr.ipv4.min);
+            bool userspace = dpif_is_netdev(
+                ctx->xbridge->ofproto->backer->dpif);
+
+            /* Kernel all-zero SNAT uses nat(src) without an IP range.
+             * Userspace needs OVS_NAT_ATTR_IP_MIN=0 for range_specified. */
+            if (userspace || ofn->range.addr.ipv4.min) {
+                nl_msg_put_be32(ctx->odp_actions, OVS_NAT_ATTR_IP_MIN,
+                                ofn->range.addr.ipv4.min);
+            }
             if (ofn->range.addr.ipv4.max &&
                 (ntohl(ofn->range.addr.ipv4.max)
                  > ntohl(ofn->range.addr.ipv4.min))) {

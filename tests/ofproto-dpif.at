@@ -13364,6 +13364,61 @@ AT_CHECK([tail -1 stdout], [0],
 OVS_VSWITCHD_STOP
 AT_CLEANUP
 
+AT_SETUP([ofproto-dpif - nat - empty nat on ct(commit)])
+OVS_VSWITCHD_START
+
+add_of_ports br0 1 2
+
+dnl SNAT in zone 2, then empty ct(commit,nat) in zone 3.
+AT_DATA([flows.txt], [dnl
+table=0,priority=100,in_port=1,tcp,ct_state=-trk,action=ct(commit,zone=2,nat(src=10.0.0.1:1000),table=1)
+table=1,priority=100,ct_zone=2,tcp,action=ct(commit,zone=3,nat)
+])
+
+AT_CHECK([ovs-ofctl add-flows br0 flows.txt])
+
+AT_CHECK([ovs-appctl netdev-dummy/receive p1 'in_port(1),eth(src=50:54:00:00:00:09,dst=50:54:00:00:00:0a),eth_type(0x0800),ipv4(src=10.1.1.1,dst=10.1.1.2,proto=6,tos=0,ttl=64,frag=no),tcp(src=12345,dst=5201),tcp_flags(syn)'])
+
+AT_CHECK([ovs-appctl dpctl/dump-conntrack zone=3], [0], [dnl
+tcp,orig=(src=10.0.0.1,dst=10.1.1.2,sport=1000,dport=5201),reply=(src=10.1.1.2,dst=10.0.0.1,sport=5201,dport=1000),zone=3,protoinfo=(state=SYN_SENT)
+])
+
+OVS_VSWITCHD_STOP
+AT_CLEANUP
+
+AT_SETUP([ofproto-dpif - nat - OVN DNS multi-zone SNAT])
+OVS_VSWITCHD_START
+
+add_of_ports br0 1 2
+
+dnl Simplified OVN host-DNS pipeline: track in zone 2, then DNAT, marker
+dnl nat(src), and explicit SNAT in one action list (matches OVN table 2).
+AT_DATA([flows.txt], [dnl
+table=0,priority=100,in_port=1,udp,ct_state=-trk,nw_dst=10.96.0.10,action=ct(table=1,zone=2)
+table=0,priority=1,action=drop
+table=1,priority=100,ct_zone=2,udp,ct_state=+trk+new,in_port=1,action=ct(commit,zone=2,nat(dst=10.244.3.3:53)),ct(commit,zone=2,nat(src)),ct(commit,nat(src=100.64.0.5)),2
+])
+
+AT_CHECK([ovs-ofctl add-flows br0 flows.txt])
+
+AT_CHECK([ovs-appctl netdev-dummy/receive p1 'in_port(1),eth(src=50:54:00:00:00:09,dst=50:54:00:00:00:0a),eth_type(0x0800),ipv4(src=169.254.0.2,dst=10.96.0.10,proto=17,tos=0,ttl=64,frag=no),udp(src=34175,dst=53)'])
+
+dnl SNAT binding must appear in zone 0 (reply dst is the SNAT address).
+AT_CHECK([ovs-appctl dpctl/dump-conntrack zone=0], [0], [dnl
+udp,orig=(src=169.254.0.2,dst=10.244.3.3,sport=34175,dport=53),reply=(src=10.244.3.3,dst=100.64.0.5,sport=53,dport=34175)
+])
+
+dnl Zone 2 tracks the pre-DNAT flow; reply must not contain a zero address.
+AT_CHECK([ovs-appctl dpctl/dump-conntrack zone=2], [0], [dnl
+udp,orig=(src=169.254.0.2,dst=10.96.0.10,sport=34175,dport=53),reply=(src=10.244.3.3,dst=169.254.0.2,sport=53,dport=34175),zone=2
+])
+
+dnl No connection entry should contain an all-zero reply address.
+AT_CHECK([ovs-appctl dpctl/dump-conntrack | grep 'src=0.0.0.0'], [1], [])
+
+OVS_VSWITCHD_STOP
+AT_CLEANUP
+
 dnl Checks the get/set sweep interval
 AT_SETUP([ofproto-dpif - conntrack - change sweep interval])
 OVS_VSWITCHD_START
