@@ -17,6 +17,7 @@
 #include <config.h>
 #include "conntrack.h"
 
+#include "ct-dpif.h"
 #include "dp-packet.h"
 #include "fatal-signal.h"
 #include "flow.h"
@@ -144,6 +145,43 @@ build_tcp_packet(struct dp_packet *pkt, uint16_t tcp_src, uint16_t tcp_dst,
         csum_continue(tcp_csum, tcph, TCP_HEADER_LEN + payload_len));
 
     /* Set l3/l4 offsets so conntrack can extract a flow key. */
+    flow_extract(pkt, &flow);
+    return pkt;
+}
+
+static struct dp_packet *
+build_udp_packet(struct dp_packet *pkt, uint16_t udp_src, uint16_t udp_dst,
+                 const char *udp_payload, size_t payload_len)
+{
+    struct udp_header *udph;
+    struct ip_header *iph;
+    uint16_t ip_tot_len;
+    uint32_t udp_csum;
+    struct flow flow;
+
+    ovs_assert(pkt);
+    udph = dp_packet_l4(pkt);
+    ovs_assert(udph);
+
+    udph->udp_src = htons(udp_src);
+    udph->udp_dst = htons(udp_dst);
+    udph->udp_len = htons(UDP_HEADER_LEN + payload_len);
+    udph->udp_csum = 0;
+
+    if (udp_payload && payload_len > 0) {
+        memcpy((char *) udph + UDP_HEADER_LEN, udp_payload, payload_len);
+    }
+
+    iph = dp_packet_l3(pkt);
+    ip_tot_len = IP_HEADER_LEN + UDP_HEADER_LEN + payload_len;
+    iph->ip_tot_len = htons(ip_tot_len);
+    iph->ip_csum = 0;
+    iph->ip_csum = csum(iph, IP_HEADER_LEN);
+
+    udp_csum = packet_csum_pseudoheader(iph);
+    udph->udp_csum = csum_finish(
+        csum_continue(udp_csum, udph, UDP_HEADER_LEN + payload_len));
+
     flow_extract(pkt, &flow);
     return pkt;
 }
@@ -400,12 +438,12 @@ pcap_batch_execute_conntrack(struct conntrack *ct_,
     struct dp_packet_batch new_batch;
     ovs_be16 dl_type = htons(0);
     long long now = time_msec();
+    struct dp_packet *packet;
 
     dp_packet_batch_init(&new_batch);
 
     /* pkt_batch contains packets with different 'dl_type'. We have to
      * call conntrack_execute() on packets with the same 'dl_type'. */
-    struct dp_packet *packet;
     DP_PACKET_BATCH_FOR_EACH (i, packet, pkt_batch) {
         struct flow flow;
 
@@ -491,6 +529,355 @@ test_pcap(struct ovs_cmdl_context *ctx)
     conntrack_destroy(ct);
     ovs_pcap_close(pcap);
 }
+
+static ovs_be32
+ct_zone_reply_src(struct conntrack *tracker, uint16_t zone)
+{
+    struct conntrack_dump dump;
+    struct ct_dpif_entry entry;
+    ovs_be32 reply_src = 0;
+    int tot_bkts;
+
+    conntrack_dump_start(tracker, &dump, &zone, &tot_bkts);
+
+    if (conntrack_dump_next(&dump, &entry) != EOF) {
+        reply_src = entry.tuple_reply.src.ip;
+        ct_dpif_entry_uninit(&entry);
+    }
+
+    conntrack_dump_done(&dump);
+    return reply_src;
+}
+
+static bool
+ct_zone_reply_dport_for_flow(struct conntrack *tracker, uint16_t zone,
+                             ovs_be32 orig_src, ovs_be32 orig_dst,
+                             uint16_t orig_sport, uint16_t orig_dport,
+                             uint16_t *reply_dport)
+{
+    struct conntrack_dump dump;
+    struct ct_dpif_entry entry;
+    bool found = false;
+    int tot_bkts;
+
+    conntrack_dump_start(tracker, &dump, &zone, &tot_bkts);
+
+    while (conntrack_dump_next(&dump, &entry) != EOF) {
+        if (entry.tuple_orig.src.ip == orig_src
+            && entry.tuple_orig.dst.ip == orig_dst
+            && entry.tuple_orig.src_port == htons(orig_sport)
+            && entry.tuple_orig.dst_port == htons(orig_dport)) {
+            *reply_dport = ntohs(entry.tuple_reply.dst_port);
+            found = true;
+            ct_dpif_entry_uninit(&entry);
+            break;
+        }
+
+        ct_dpif_entry_uninit(&entry);
+    }
+
+    conntrack_dump_done(&dump);
+    return found;
+}
+
+static void
+test_empty_nat_on_commit(struct ovs_cmdl_context *ctx OVS_UNUSED)
+{
+    struct eth_addr eth_src = ETH_ADDR_C(50, 54, 00, 00, 00, 09);
+    struct eth_addr eth_dst = ETH_ADDR_C(50, 54, 00, 00, 00, 0a);
+    ovs_be32 ip_src = inet_addr("10.1.1.1");
+    ovs_be32 ip_dst = inet_addr("10.1.1.2");
+    struct nat_action_info_t empty_nat;
+    struct nat_action_info_t snat;
+    struct dp_packet_batch batch;
+    long long now = time_msec();
+    struct dp_packet *syn;
+    ovs_be32 reply_src;
+
+    ct = conntrack_init();
+
+    memset(&snat, 0, sizeof snat);
+    snat.nat_action = NAT_ACTION_SRC | NAT_ACTION_SRC_PORT;
+    snat.min_addr.ipv4 = inet_addr("10.0.0.1");
+    snat.max_addr.ipv4 = inet_addr("10.0.0.1");
+    snat.min_port = 1000;
+    snat.max_port = 1000;
+    snat.explicit_range = true;
+
+    memset(&empty_nat, 0, sizeof empty_nat);
+
+    syn = build_eth_ip_packet(NULL, eth_src, eth_dst, ip_src, ip_dst,
+                              IPPROTO_TCP, 0);
+    build_tcp_packet(syn, 12345, 5201, TCP_SYN, NULL, 0);
+
+    dp_packet_batch_init_packet(&batch, syn);
+    conntrack_execute(ct, &batch, htons(ETH_TYPE_IP), false, true, 2,
+                      NULL, NULL, NULL, &snat, now, 0);
+    dp_packet_delete_batch(&batch, false);
+
+    dp_packet_batch_init_packet(&batch, syn);
+    conntrack_execute(ct, &batch, htons(ETH_TYPE_IP), false, true, 3,
+                      NULL, NULL, NULL, &empty_nat, now, 0);
+    dp_packet_delete_batch(&batch, true);
+
+    reply_src = ct_zone_reply_src(ct, 3);
+    ovs_assert(reply_src == inet_addr("10.1.1.2"));
+    conntrack_destroy(ct);
+}
+
+static void
+test_empty_nat_first_commit(struct ovs_cmdl_context *ctx OVS_UNUSED)
+{
+    struct eth_addr eth_src = ETH_ADDR_C(50, 54, 00, 00, 00, 09);
+    struct eth_addr eth_dst = ETH_ADDR_C(50, 54, 00, 00, 00, 0a);
+    ovs_be32 ip_src = inet_addr("10.1.1.1");
+    ovs_be32 ip_dst = inet_addr("10.1.1.2");
+    struct nat_action_info_t empty_nat;
+    struct dp_packet_batch batch;
+    long long now = time_msec();
+    struct dp_packet *syn;
+
+    ct = conntrack_init();
+
+    memset(&empty_nat, 0, sizeof empty_nat);
+
+    syn = build_eth_ip_packet(NULL, eth_src, eth_dst, ip_src, ip_dst,
+                              IPPROTO_TCP, 0);
+    build_tcp_packet(syn, 12345, 5201, TCP_SYN, NULL, 0);
+
+    dp_packet_batch_init_packet(&batch, syn);
+    conntrack_execute(ct, &batch, htons(ETH_TYPE_IP), false, false, 0,
+                      NULL, NULL, NULL, NULL, now, 0);
+    dp_packet_delete_batch(&batch, false);
+
+    dp_packet_batch_init_packet(&batch, syn);
+    conntrack_execute(ct, &batch, htons(ETH_TYPE_IP), false, true, 0,
+                      NULL, NULL, NULL, &empty_nat, now, 0);
+    dp_packet_delete_batch(&batch, true);
+
+    ovs_assert(ct_zone_reply_src(ct, 0) == ip_dst);
+    conntrack_destroy(ct);
+}
+
+static void
+test_nat_src_null_binding_collision(struct ovs_cmdl_context *ctx OVS_UNUSED)
+{
+    struct eth_addr eth_src = ETH_ADDR_C(50, 54, 00, 00, 00, 09);
+    struct eth_addr eth_dst = ETH_ADDR_C(50, 54, 00, 00, 00, 0a);
+    ovs_be32 ip_dnat = inet_addr("172.1.1.2");
+    ovs_be32 ip_src = inet_addr("10.1.1.1");
+    ovs_be32 ip_dst = inet_addr("10.1.1.2");
+    struct nat_action_info_t src_only;
+    struct nat_action_info_t dnat;
+    struct dp_packet_batch batch;
+    long long now = time_msec();
+    struct dp_packet *pkt1;
+    struct dp_packet *pkt2;
+    uint16_t reply_dport;
+
+    ct = conntrack_init();
+
+    memset(&dnat, 0, sizeof dnat);
+    dnat.nat_action = NAT_ACTION_DST | NAT_ACTION_DST_PORT;
+    dnat.min_addr.ipv4 = ip_dst;
+    dnat.max_addr.ipv4 = ip_dst;
+    dnat.min_port = 80;
+    dnat.max_port = 80;
+    dnat.explicit_range = true;
+
+    memset(&src_only, 0, sizeof src_only);
+    src_only.nat_action = NAT_ACTION_SRC;
+
+    pkt1 = build_eth_ip_packet(NULL, eth_src, eth_dst, ip_src, ip_dnat,
+                               IPPROTO_TCP, 0);
+    build_tcp_packet(pkt1, 30001, 80, TCP_SYN, NULL, 0);
+
+    dp_packet_batch_init_packet(&batch, pkt1);
+    conntrack_execute(ct, &batch, htons(ETH_TYPE_IP), false, true, 0,
+                      NULL, NULL, NULL, &dnat, now, 0);
+    dp_packet_delete_batch(&batch, true);
+
+    pkt2 = build_eth_ip_packet(NULL, eth_src, eth_dst, ip_src, ip_dst,
+                               IPPROTO_TCP, 0);
+    build_tcp_packet(pkt2, 30001, 80, TCP_SYN, NULL, 0);
+
+    dp_packet_batch_init_packet(&batch, pkt2);
+    conntrack_execute(ct, &batch, htons(ETH_TYPE_IP), false, true, 0,
+                      NULL, NULL, NULL, &src_only, now, 0);
+    dp_packet_delete_batch(&batch, true);
+
+    ovs_assert(ct_zone_reply_dport_for_flow(ct, 0, ip_src, ip_dst, 30001, 80,
+                                            &reply_dport));
+    ovs_assert(reply_dport != 30001);
+    conntrack_destroy(ct);
+}
+
+static void
+test_nat_dst_direction_only(struct ovs_cmdl_context *ctx OVS_UNUSED)
+{
+    struct eth_addr eth_src = ETH_ADDR_C(50, 54, 00, 00, 00, 09);
+    struct eth_addr eth_dst = ETH_ADDR_C(50, 54, 00, 00, 00, 0a);
+    ovs_be32 ip_src = inet_addr("10.1.1.1");
+    ovs_be32 ip_dst = inet_addr("10.1.1.2");
+    struct nat_action_info_t dst_only;
+    struct dp_packet_batch batch;
+    long long now = time_msec();
+    struct ip_header *iph;
+    struct dp_packet *syn;
+
+    ct = conntrack_init();
+
+    memset(&dst_only, 0, sizeof dst_only);
+    dst_only.nat_action = NAT_ACTION_DST;
+
+    syn = build_eth_ip_packet(NULL, eth_src, eth_dst, ip_src, ip_dst,
+                              IPPROTO_TCP, 0);
+    build_tcp_packet(syn, 12345, 5201, TCP_SYN, NULL, 0);
+
+    dp_packet_batch_init_packet(&batch, syn);
+    conntrack_execute(ct, &batch, htons(ETH_TYPE_IP), false, true, 0,
+                      NULL, NULL, NULL, &dst_only, now, 0);
+
+    iph = dp_packet_l3(syn);
+    ovs_assert(get_16aligned_be32(&iph->ip_dst) == ip_dst);
+    dp_packet_delete_batch(&batch, true);
+
+    ovs_assert(ct_zone_reply_src(ct, 0) == ip_dst);
+    conntrack_destroy(ct);
+}
+
+static void
+test_nat_src_direction_only(struct ovs_cmdl_context *ctx OVS_UNUSED)
+{
+    struct eth_addr eth_src = ETH_ADDR_C(50, 54, 00, 00, 00, 09);
+    struct eth_addr eth_dst = ETH_ADDR_C(50, 54, 00, 00, 00, 0a);
+    ovs_be32 ip_src = inet_addr("169.254.0.2");
+    ovs_be32 ip_dst = inet_addr("10.96.0.10");
+    struct nat_action_info_t src_only;
+    struct nat_action_info_t dnat;
+    struct nat_action_info_t snat;
+    struct dp_packet_batch batch;
+    long long now = time_msec();
+    struct ip_header *iph;
+    struct dp_packet *pkt;
+
+    ct = conntrack_init();
+
+    memset(&dnat, 0, sizeof dnat);
+    dnat.nat_action = NAT_ACTION_DST | NAT_ACTION_DST_PORT;
+    dnat.min_addr.ipv4 = inet_addr("10.244.3.3");
+    dnat.max_addr.ipv4 = inet_addr("10.244.3.3");
+    dnat.min_port = 53;
+    dnat.max_port = 53;
+    dnat.explicit_range = true;
+
+    memset(&src_only, 0, sizeof src_only);
+    src_only.nat_action = NAT_ACTION_SRC;
+
+    memset(&snat, 0, sizeof snat);
+    snat.nat_action = NAT_ACTION_SRC;
+    snat.min_addr.ipv4 = inet_addr("100.64.0.5");
+    snat.max_addr.ipv4 = inet_addr("100.64.0.5");
+    snat.explicit_range = true;
+
+    pkt = build_eth_ip_packet(NULL, eth_src, eth_dst, ip_src, ip_dst,
+                              IPPROTO_UDP, 0);
+    build_udp_packet(pkt, 34175, 53, NULL, 0);
+
+    dp_packet_batch_init_packet(&batch, pkt);
+    conntrack_execute(ct, &batch, htons(ETH_TYPE_IP), false, false, 2,
+                      NULL, NULL, NULL, NULL, now, 0);
+    dp_packet_delete_batch(&batch, false);
+
+    dp_packet_batch_init_packet(&batch, pkt);
+    conntrack_execute(ct, &batch, htons(ETH_TYPE_IP), false, true, 2,
+                      NULL, NULL, NULL, &dnat, now, 0);
+    dp_packet_delete_batch(&batch, false);
+
+    iph = dp_packet_l3(pkt);
+    ovs_assert(get_16aligned_be32(&iph->ip_dst) == inet_addr("10.244.3.3"));
+
+    dp_packet_batch_init_packet(&batch, pkt);
+    conntrack_execute(ct, &batch, htons(ETH_TYPE_IP), false, true, 2,
+                      NULL, NULL, NULL, &src_only, now, 0);
+    dp_packet_delete_batch(&batch, false);
+
+    iph = dp_packet_l3(pkt);
+    ovs_assert(get_16aligned_be32(&iph->ip_src) == ip_src);
+
+    dp_packet_batch_init_packet(&batch, pkt);
+    conntrack_execute(ct, &batch, htons(ETH_TYPE_IP), false, true, 0,
+                      NULL, NULL, NULL, &snat, now, 0);
+    dp_packet_delete_batch(&batch, false);
+
+    iph = dp_packet_l3(pkt);
+    ovs_assert(get_16aligned_be32(&iph->ip_src) == inet_addr("100.64.0.5"));
+    ovs_assert(get_16aligned_be32(&iph->ip_dst) == inet_addr("10.244.3.3"));
+    ovs_assert(ct_zone_reply_src(ct, 0) == inet_addr("10.244.3.3"));
+    dp_packet_delete(pkt);
+    conntrack_destroy(ct);
+}
+
+static void
+test_nat_ip_range_explicit(struct ovs_cmdl_context *ctx OVS_UNUSED)
+{
+    union ct_addr min, max;
+
+    /* IPv4: all-zero min is direction-only, not an explicit range. */
+    memset(&min, 0, sizeof min);
+    memset(&max, 0, sizeof max);
+    ovs_assert(!conntrack_nat_ip_range_explicit(true, false,
+                                                sizeof(ovs_be32),
+                                                &min, &max));
+
+    /* IPv4: non-zero min is explicit. */
+    min.ipv4 = inet_addr("10.0.0.1");
+    ovs_assert(conntrack_nat_ip_range_explicit(true, false,
+                                               sizeof(ovs_be32),
+                                               &min, &max));
+
+    /* IPv4: all-zero min with distinct non-zero max is explicit. */
+    min.ipv4 = 0;
+    max.ipv4 = inet_addr("10.0.0.1");
+    ovs_assert(conntrack_nat_ip_range_explicit(true, true,
+                                               sizeof(ovs_be32),
+                                               &min, &max));
+
+    /* IPv4: matching all-zero min and max is not explicit. */
+    min.ipv4 = 0;
+    max.ipv4 = 0;
+    ovs_assert(!conntrack_nat_ip_range_explicit(true, true,
+                                                sizeof(ovs_be32),
+                                                &min, &max));
+
+    /* IPv6: :: min is direction-only. */
+    memset(&min, 0, sizeof min);
+    memset(&max, 0, sizeof max);
+    ovs_assert(!conntrack_nat_ip_range_explicit(true, false,
+                                                sizeof(struct in6_addr),
+                                                &min, &max));
+
+    /* IPv6: non-zero min is explicit. */
+    inet_pton(AF_INET6, "100::5", &min.ipv6);
+    ovs_assert(conntrack_nat_ip_range_explicit(true, false,
+                                               sizeof(struct in6_addr),
+                                               &min, &max));
+
+    /* IPv6: :: min with distinct non-zero max is explicit. */
+    memset(&min, 0, sizeof min);
+    inet_pton(AF_INET6, "100::5", &max.ipv6);
+    ovs_assert(conntrack_nat_ip_range_explicit(true, true,
+                                               sizeof(struct in6_addr),
+                                               &min, &max));
+
+    /* IPv6: matching :: min and max is not explicit. */
+    memset(&min, 0, sizeof min);
+    memset(&max, 0, sizeof max);
+    ovs_assert(!conntrack_nat_ip_range_explicit(true, true,
+                                                sizeof(struct in6_addr),
+                                                &min, &max));
+}
+
 
 /* ALG related testing. */
 
@@ -597,6 +984,18 @@ static const struct ovs_cmdl_command commands[] = {
      * is rewritten to the SNAT target rather than causing a crash. */
     {"ftp-alg-large-payload", "", 0, 0,
         test_ftp_alg_large_payload, OVS_RO},
+    {"empty-nat-on-commit", "", 0, 0,
+        test_empty_nat_on_commit, OVS_RO},
+    {"empty-nat-first-commit", "", 0, 0,
+        test_empty_nat_first_commit, OVS_RO},
+    {"nat-src-direction-only", "", 0, 0,
+        test_nat_src_direction_only, OVS_RO},
+    {"nat-src-null-binding-collision", "", 0, 0,
+        test_nat_src_null_binding_collision, OVS_RO},
+    {"nat-dst-direction-only", "", 0, 0,
+        test_nat_dst_direction_only, OVS_RO},
+    {"nat-ip-range-explicit", "", 0, 0,
+        test_nat_ip_range_explicit, OVS_RO},
 
     {NULL, NULL, 0, 0, NULL, OVS_RO},
 };
