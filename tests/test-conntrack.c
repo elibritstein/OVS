@@ -438,12 +438,12 @@ pcap_batch_execute_conntrack(struct conntrack *ct_,
     struct dp_packet_batch new_batch;
     ovs_be16 dl_type = htons(0);
     long long now = time_msec();
+    struct dp_packet *packet;
 
     dp_packet_batch_init(&new_batch);
 
     /* pkt_batch contains packets with different 'dl_type'. We have to
      * call conntrack_execute() on packets with the same 'dl_type'. */
-    struct dp_packet *packet;
     DP_PACKET_BATCH_FOR_EACH (i, packet, pkt_batch) {
         struct flow flow;
 
