@@ -737,12 +737,20 @@ jobs:
         include:
           - compiler:  gcc
             doca_link: static
-          - compiler:  gcc
-            doca_link: shared
           - compiler:  clang
             doca_link: static
-          - compiler:  clang
-            doca_link: shared
+            # Shared DOCA linking is temporarily disabled due to a symbol
+            # version mismatch: libdoca_dpdk_bridge.so v3.3.0 references
+            # rte_pmd_mlx5_disable_steering@@EXPERIMENTAL and
+            # rte_pmd_mlx5_driver_event_cb_register@@EXPERIMENTAL, which
+            # were promoted to stable in DPDK 25.11 and no longer exist
+            # under the @EXPERIMENTAL version tag.
+            # Re-enable once a DOCA SDK release built against a post-
+            # promotion DPDK 25.11 snapshot is available.
+            # - compiler:  gcc
+            #   doca_link: shared
+            # - compiler:  clang
+            #   doca_link: shared
 
     steps:
     - name: checkout
