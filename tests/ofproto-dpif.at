@@ -5671,6 +5671,51 @@ CHECK_COVERAGE([dpif_netdev_output_grow_queues], [1])
 OVS_VSWITCHD_STOP
 AT_CLEANUP
 
+AT_SETUP([ofproto-dpif - fragment handling - reject oversized fragment])
+OVS_VSWITCHD_START
+add_of_ports br0 1 90
+
+AT_DATA([flows.txt], [dnl
+table=0 in_port=90,ip actions=ct(commit),output:1
+])
+AT_CHECK([ovs-ofctl -O OpenFlow11 replace-flows br0 flows.txt])
+
+dnl Last fragment at offset 65528 carrying 28 data bytes: its end offset
+dnl (65555) exceeds the maximum packet size and, truncated to 16 bits,
+dnl wraps to 19. It must not be admitted for reassembly.
+dnl IPv4 Packet content:
+dnl   Ethernet II, Src: 50:54:00:00:00:09, Dst: 50:54:00:00:00:0a
+dnl       Type: IPv4 (0x0800)
+dnl   Internet Protocol Version 4, Src: 10.1.1.1, Dst: 10.1.1.2
+dnl       0100 .... = Version: 4
+dnl       .... 0101 = Header Length: 20 bytes (5)
+dnl       Differentiated Services Field: 0x00 (DSCP: CS0, ECN: Not-ECT)
+dnl       Total Length: 48
+dnl       Identification: 0x0001 (1)
+dnl       001. .... = Flags: 0x1, More fragments
+dnl           0... .... = Reserved bit: Not set
+dnl           .0.. .... = Don't fragment: Not set
+dnl           ..1. .... = More fragments: Set
+dnl       ...1 1111 1111 1111 = Fragment Offset: 65528
+dnl       Time to Live: 64
+dnl       Protocol: UDP (17)
+dnl       Header Checksum: 0x44b9
+dnl   Data (28 bytes)
+eth="50 54 00 00 00 0a 50 54 00 00 00 09 08 00"
+ip="45 00 00 30 00 01 1f ff 40 11 44 b9 0a 01 01 01 0a 01 01 02"
+data="00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 10 11 12 13 14 15 16 17 18 19 1a 1b"
+packet="${eth} ${ip} ${data}"
+AT_CHECK([ovs-appctl netdev-dummy/receive p90 "$packet"])
+
+AT_CHECK([ovs-appctl dpctl/ipf-get-status -m | grep -E 'num frag:|frags accepted:'], [], [dnl
+        num frag: 0
+        v4 frags accepted: 0
+        v6 frags accepted: 0
+])
+
+OVS_VSWITCHD_STOP
+AT_CLEANUP
+
 AT_SETUP([ofproto-dpif - handling of malformed TCP packets])
 OVS_VSWITCHD_START
 add_of_ports br0 1 90
