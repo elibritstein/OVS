@@ -454,6 +454,8 @@ refmap_unref(struct refmap *rfm, void *value)
         return false;
     }
 
+    log_node(rfm, "unref", node);
+
     if (ovs_refcount_unref_if_not_last(&node->refcount)) {
         return false;
     }
