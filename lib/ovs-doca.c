@@ -163,25 +163,25 @@ ovs_doca_log_write(void *c OVS_UNUSED, const char *buf, size_t size)
     enum doca_log_level level = get_buf_log_level(&buf, &size);
 
     switch (level) {
-        case DOCA_LOG_LEVEL_DISABLE:
-            VLOG_ERR("(Failed to parse level): %.*s", (int) size, buf);
-            break;
-        case DOCA_LOG_LEVEL_TRACE:
-        case DOCA_LOG_LEVEL_DEBUG:
-            VLOG_DBG_RL(&dbg_rl, "%.*s", (int) size, buf);
-            break;
-        case DOCA_LOG_LEVEL_INFO:
-            VLOG_INFO_RL(&dbg_rl, "%.*s", (int) size, buf);
-            break;
-        case DOCA_LOG_LEVEL_WARNING:
-            VLOG_WARN_RL(&dbg_rl, "%.*s", (int) size, buf);
-            break;
-        case DOCA_LOG_LEVEL_ERROR:
-            VLOG_ERR_RL(&dbg_rl, "%.*s", (int) size, buf);
-            break;
-        case DOCA_LOG_LEVEL_CRIT:
-            VLOG_EMER("%.*s", (int) size, buf);
-            break;
+    case DOCA_LOG_LEVEL_DISABLE:
+        VLOG_ERR("(Failed to parse level): %.*s", (int) size, buf);
+        break;
+    case DOCA_LOG_LEVEL_TRACE:
+    case DOCA_LOG_LEVEL_DEBUG:
+        VLOG_DBG_RL(&dbg_rl, "%.*s", (int) size, buf);
+        break;
+    case DOCA_LOG_LEVEL_INFO:
+        VLOG_INFO_RL(&dbg_rl, "%.*s", (int) size, buf);
+        break;
+    case DOCA_LOG_LEVEL_WARNING:
+        VLOG_WARN_RL(&dbg_rl, "%.*s", (int) size, buf);
+        break;
+    case DOCA_LOG_LEVEL_ERROR:
+        VLOG_ERR_RL(&dbg_rl, "%.*s", (int) size, buf);
+        break;
+    case DOCA_LOG_LEVEL_CRIT:
+        VLOG_EMER("%.*s", (int) size, buf);
+        break;
     }
 
     return size;
