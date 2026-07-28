@@ -2044,7 +2044,9 @@ netdev_doca_reconfigure(struct netdev *netdev)
 {
     struct netdev_doca *dev = netdev_doca_cast(netdev);
     struct netdev_dpdk_common *common = &dev->common;
+    struct rte_eth_dev_info info;
     int err = 0;
+    int n_txq;
 
     /* If an ESW manager is not attached to OVS, a representor cannot be
      * configured. */
@@ -2101,18 +2103,34 @@ netdev_doca_reconfigure(struct netdev *netdev)
     common->txq_size = common->requested_txq_size;
 
     rte_free(common->tx_q);
-    common->tx_q = NULL;
+    err = -rte_eth_dev_info_get(common->port_id, &info);
+    if (err) {
+        VLOG_ERR("Interface %s rte_eth_dev_info_get error: %s",
+                 common->up.name, rte_strerror(err));
+        goto out;
+    }
+
+    n_txq = MIN(info.max_tx_queues, netdev->n_txq);
+    common->tx_q = netdev_dpdk_alloc_txq(n_txq);
+    if (!common->tx_q) {
+        err = ENOMEM;
+        goto out;
+    }
 
     if (!eth_addr_equals(common->hwaddr, common->requested_hwaddr)) {
         err = netdev_dpdk_set_dev_etheraddr(&dev->common,
                                             common->requested_hwaddr);
         if (err) {
+            rte_free(common->tx_q);
+            common->tx_q = NULL;
             goto out;
         }
     }
 
     err = doca_eth_dev_init(dev);
     if (err) {
+        rte_free(common->tx_q);
+        common->tx_q = NULL;
         goto out;
     }
 
@@ -2128,11 +2146,6 @@ netdev_doca_reconfigure(struct netdev *netdev)
      * configured by the user, as netdev_dpdk_set_dev_etheraddr()
      * will have succeeded to get to this point. */
     common->requested_hwaddr = common->hwaddr;
-
-    common->tx_q = netdev_dpdk_alloc_txq(netdev->n_txq);
-    if (!common->tx_q) {
-        err = ENOMEM;
-    }
 
     netdev_change_seq_changed(netdev);
 
