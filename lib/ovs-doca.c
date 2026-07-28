@@ -306,8 +306,8 @@ out:
  * doca_flow_entries_process() API.  For each processed entry, this callback
  * is called.  The 'qid' argument is the queue-id for which the entry was
  * processed on (which is the same as the one of the initial operation).
- * 'queues' is an array of queues.  Each entry is accessed only the its own
- * queue (which is assigned to a thread), no locks are required here. */
+ * 'queues' is an array of queues.  Each entry is accessed only on its own
+ * queue (each queue is assigned to a thread), so no locks are required here. */
 static void
 ovs_doca_entry_process(struct doca_flow_pipe_entry *entry,
                        uint16_t qid,
