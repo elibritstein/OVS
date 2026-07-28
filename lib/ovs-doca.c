@@ -139,6 +139,10 @@ get_buf_log_level(const char **pbuf, size_t *psize)
         p++;
     }
 
+    if (size < 4) {
+        return DOCA_LOG_LEVEL_DISABLE;
+    }
+
     level = ovs_doca_parse_log_level(NULL, p);
     if (level < 0) {
         return DOCA_LOG_LEVEL_DISABLE;
