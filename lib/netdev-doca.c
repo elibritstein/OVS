@@ -1345,7 +1345,6 @@ netdev_doca_dev_close(struct netdev_doca *dev)
         esw->dev = NULL;
         if (esw->cmd_fd != -1) {
             close(esw->cmd_fd);
-        } else {
             esw->cmd_fd = -1;
         }
     }
