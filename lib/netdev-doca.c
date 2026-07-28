@@ -650,9 +650,11 @@ netdev_doca_slowpath_esw_init(struct netdev *netdev)
         if (rv == DOCA_SUCCESS) {                                         \
             break;                                                        \
         }                                                                 \
+                                                                          \
         VLOG_ERR("%s: eSwitch initialization failed, %s() with error: "   \
                  "%d (%s)", netdev_get_name(netdev), #func, rv,           \
                  doca_error_get_descr(rv));                               \
+        netdev_doca_slowpath_esw_uninit(netdev);                          \
         return rv;                                                        \
     } while (0)
 
