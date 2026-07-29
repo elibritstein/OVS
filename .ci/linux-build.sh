@@ -149,7 +149,7 @@ if [ "$TESTSUITE" = 'test' ]; then
 
     export DISTCHECK_CONFIGURE_FLAGS="$OPTS"
     make distcheck ${JOBS} CFLAGS="${CFLAGS_FOR_OVS}" \
-        TESTSUITEFLAGS=${JOBS} RECHECK=yes
+        TESTSUITEFLAGS="-x ${JOBS} RECHECK=yes"
 else
     build_ovs
     for testsuite in $TESTSUITE; do
