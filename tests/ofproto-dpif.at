@@ -5541,9 +5541,9 @@ ovs-appctl time/warp 10000
 AT_CHECK([ovs-appctl netdev-dummy/receive p90 "0021853763af 0026b98cb0f9 0800 4500 0014 0001 8192 40 06 3316 ac11370d ac11370b"])
 
 dnl Test that no packets flow.
-AT_CHECK([ovs-appctl dpctl/dump-flows filter=in_port\(90\) | sed s'/recirc(.*)/recirc(X)/'], [0], [dnl
+AT_CHECK([ovs-appctl dpctl/dump-flows filter=in_port\(90\) | strip_recirc | sort], [0], [dnl
 flow-dump from the main thread:
-recirc_id(0),in_port(90),packet_type(ns=0,id=0),eth(src=00:26:b9:8c:b0:f9),eth_type(0x0800),ipv4(src=172.17.55.13/128.0.0.0,proto=6,frag=later), packets:0, bytes:0, used:never, actions:ct(commit,zone=10),recirc(X)
+recirc_id(<recirc>),in_port(90),packet_type(ns=0,id=0),eth(src=00:26:b9:8c:b0:f9),eth_type(0x0800),ipv4(src=172.17.55.13/128.0.0.0,proto=6,frag=later), packets:0, bytes:0, used:never, actions:ct(commit,zone=10),recirc(<recirc>)
 ])
 
 dnl Expire second frag.
@@ -5555,9 +5555,9 @@ ovs-appctl time/warp 33000
 AT_CHECK([ovs-appctl netdev-dummy/receive p90 "0021853763af 0026b98cb0f9 0800 4500 0014 0003 8192 40 06 3314 ac11370d ac11370b"])
 
 dnl Test that no packets flow.
-AT_CHECK([ovs-appctl dpctl/dump-flows filter=in_port\(90\) | sed s'/recirc(.*)/recirc(X)/'], [0], [dnl
+AT_CHECK([ovs-appctl dpctl/dump-flows filter=in_port\(90\) | strip_recirc | sort], [0], [dnl
 flow-dump from the main thread:
-recirc_id(0),in_port(90),packet_type(ns=0,id=0),eth(src=00:26:b9:8c:b0:f9),eth_type(0x0800),ipv4(src=172.17.55.13/128.0.0.0,proto=6,frag=later), packets:0, bytes:0, used:never, actions:ct(commit,zone=10),recirc(X)
+recirc_id(<recirc>),in_port(90),packet_type(ns=0,id=0),eth(src=00:26:b9:8c:b0:f9),eth_type(0x0800),ipv4(src=172.17.55.13/128.0.0.0,proto=6,frag=later), packets:0, bytes:0, used:never, actions:ct(commit,zone=10),recirc(<recirc>)
 ])
 
 dnl Purge second frag
@@ -5575,12 +5575,12 @@ $zero1208"])
 AT_CHECK([ovs-appctl netdev-dummy/receive p90 "0021853763af 0026b98cb0f9 0800 4500 04c4 0002 0096 40 06 af61 ac11370d ac11370b dnl
 $zero1208"])
 
-AT_CHECK([ovs-appctl dpctl/dump-flows | sed 's/recirc[[^)]]*)/recirc()/g' | strip_used | sort], [0], [dnl
+AT_CHECK([ovs-appctl dpctl/dump-flows | strip_recirc | strip_used | sort], [0], [dnl
 flow-dump from the main thread:
-recirc(),in_port(90),packet_type(ns=0,id=0),eth(src=00:26:b9:8c:b0:f9),eth_type(0x0800),ipv4(src=172.17.55.13/128.0.0.0,proto=6,frag=first), packets:0, bytes:0, used:never, actions:ct(commit,zone=10),recirc()
-recirc(),in_port(90),packet_type(ns=0,id=0),eth(src=00:26:b9:8c:b0:f9),eth_type(0x0800),ipv4(src=172.17.55.13/128.0.0.0,proto=6,frag=later), packets:0, bytes:0, used:never, actions:ct(commit,zone=10),recirc()
-recirc(),in_port(90),packet_type(ns=0,id=0),eth_type(0x0800),ipv4(proto=6,frag=first), packets:0, bytes:0, used:never, actions:2
-recirc(),in_port(90),packet_type(ns=0,id=0),eth_type(0x0800),ipv4(proto=6,frag=later), packets:0, bytes:0, used:never, actions:2
+recirc_id(<recirc>),in_port(90),packet_type(ns=0,id=0),eth(src=00:26:b9:8c:b0:f9),eth_type(0x0800),ipv4(src=172.17.55.13/128.0.0.0,proto=6,frag=first), packets:0, bytes:0, used:never, actions:ct(commit,zone=10),recirc(<recirc>)
+recirc_id(<recirc>),in_port(90),packet_type(ns=0,id=0),eth(src=00:26:b9:8c:b0:f9),eth_type(0x0800),ipv4(src=172.17.55.13/128.0.0.0,proto=6,frag=later), packets:0, bytes:0, used:never, actions:ct(commit,zone=10),recirc(<recirc>)
+recirc_id(<recirc>),in_port(90),packet_type(ns=0,id=0),eth_type(0x0800),ipv4(proto=6,frag=first), packets:0, bytes:0, used:never, actions:2
+recirc_id(<recirc>),in_port(90),packet_type(ns=0,id=0),eth_type(0x0800),ipv4(proto=6,frag=later), packets:0, bytes:0, used:never, actions:2
 ])
 
 dnl Clear ipf state.
@@ -5620,18 +5620,18 @@ $zero1208"])
 AT_CHECK([ovs-appctl netdev-dummy/receive p1 "0021853763af 0026b98cb0f9 0800 4500 04c4 0002 0096 40 06 af61 ac11370d ac11370b dnl
 $zero1208"])
 
-AT_CHECK([ovs-appctl dpctl/dump-flows | sed 's/recirc[[^)]]*)/recirc()/g' | sed 's/used.*, / /' | sort], [0], [dnl
+AT_CHECK([ovs-appctl dpctl/dump-flows | strip_recirc | sed 's/used.*, / /' | sort], [0], [dnl
 flow-dump from the main thread:
-recirc(),in_port(1),packet_type(ns=0,id=0),eth(src=00:26:b9:8c:b0:f9),eth_type(0x0800),ipv4(src=172.17.55.13/128.0.0.0,proto=6,frag=later), packets:0, bytes:0,  actions:ct(commit,zone=20),recirc()
-recirc(),in_port(1),packet_type(ns=0,id=0),eth(src=11:11:11:11:11:11),eth_type(0x0800),ipv4(src=1.1.1.1/248.0.0.0,proto=6,frag=first), packets:0, bytes:0,  actions:ct(commit,zone=20),recirc()
-recirc(),in_port(1),packet_type(ns=0,id=0),eth(src=11:11:11:11:11:11),eth_type(0x0800),ipv4(src=1.1.1.1/248.0.0.0,proto=6,frag=later), packets:61, bytes:29198,  actions:ct(commit,zone=20),recirc()
-recirc(),in_port(1),packet_type(ns=0,id=0),eth_type(0x0800),ipv4(proto=6,frag=first), packets:0, bytes:0,  actions:3
-recirc(),in_port(1),packet_type(ns=0,id=0),eth_type(0x0800),ipv4(proto=6,frag=later), packets:61, bytes:29198,  actions:3
-recirc(),in_port(90),packet_type(ns=0,id=0),eth(src=00:26:b9:8c:b0:f9),eth_type(0x0800),ipv4(src=172.17.55.13/128.0.0.0,proto=6,frag=later), packets:0, bytes:0,  actions:ct(commit,zone=10),recirc()
-recirc(),in_port(90),packet_type(ns=0,id=0),eth(src=22:22:22:22:22:22),eth_type(0x0800),ipv4(src=2.2.2.2/248.0.0.0,proto=6,frag=first), packets:0, bytes:0,  actions:ct(commit,zone=10),recirc()
-recirc(),in_port(90),packet_type(ns=0,id=0),eth(src=22:22:22:22:22:22),eth_type(0x0800),ipv4(src=2.2.2.2/248.0.0.0,proto=6,frag=later), packets:61, bytes:29198,  actions:ct(commit,zone=10),recirc()
-recirc(),in_port(90),packet_type(ns=0,id=0),eth_type(0x0800),ipv4(proto=6,frag=first), packets:0, bytes:0,  actions:2
-recirc(),in_port(90),packet_type(ns=0,id=0),eth_type(0x0800),ipv4(proto=6,frag=later), packets:61, bytes:29198,  actions:2
+recirc_id(<recirc>),in_port(1),packet_type(ns=0,id=0),eth(src=00:26:b9:8c:b0:f9),eth_type(0x0800),ipv4(src=172.17.55.13/128.0.0.0,proto=6,frag=later), packets:0, bytes:0,  actions:ct(commit,zone=20),recirc(<recirc>)
+recirc_id(<recirc>),in_port(1),packet_type(ns=0,id=0),eth(src=11:11:11:11:11:11),eth_type(0x0800),ipv4(src=1.1.1.1/248.0.0.0,proto=6,frag=first), packets:0, bytes:0,  actions:ct(commit,zone=20),recirc(<recirc>)
+recirc_id(<recirc>),in_port(1),packet_type(ns=0,id=0),eth(src=11:11:11:11:11:11),eth_type(0x0800),ipv4(src=1.1.1.1/248.0.0.0,proto=6,frag=later), packets:61, bytes:29198,  actions:ct(commit,zone=20),recirc(<recirc>)
+recirc_id(<recirc>),in_port(1),packet_type(ns=0,id=0),eth_type(0x0800),ipv4(proto=6,frag=first), packets:0, bytes:0,  actions:3
+recirc_id(<recirc>),in_port(1),packet_type(ns=0,id=0),eth_type(0x0800),ipv4(proto=6,frag=later), packets:61, bytes:29198,  actions:3
+recirc_id(<recirc>),in_port(90),packet_type(ns=0,id=0),eth(src=00:26:b9:8c:b0:f9),eth_type(0x0800),ipv4(src=172.17.55.13/128.0.0.0,proto=6,frag=later), packets:0, bytes:0,  actions:ct(commit,zone=10),recirc(<recirc>)
+recirc_id(<recirc>),in_port(90),packet_type(ns=0,id=0),eth(src=22:22:22:22:22:22),eth_type(0x0800),ipv4(src=2.2.2.2/248.0.0.0,proto=6,frag=first), packets:0, bytes:0,  actions:ct(commit,zone=10),recirc(<recirc>)
+recirc_id(<recirc>),in_port(90),packet_type(ns=0,id=0),eth(src=22:22:22:22:22:22),eth_type(0x0800),ipv4(src=2.2.2.2/248.0.0.0,proto=6,frag=later), packets:61, bytes:29198,  actions:ct(commit,zone=10),recirc(<recirc>)
+recirc_id(<recirc>),in_port(90),packet_type(ns=0,id=0),eth_type(0x0800),ipv4(proto=6,frag=first), packets:0, bytes:0,  actions:2
+recirc_id(<recirc>),in_port(90),packet_type(ns=0,id=0),eth_type(0x0800),ipv4(proto=6,frag=later), packets:61, bytes:29198,  actions:2
 ])
 
 OVS_VSWITCHD_STOP
