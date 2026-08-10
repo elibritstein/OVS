@@ -82,6 +82,7 @@ enum ipf_counter_type {
     IPF_NFRAGS_COMPL_SENT,
     IPF_NFRAGS_EXPIRED,
     IPF_NFRAGS_TOO_SMALL,
+    IPF_NFRAGS_TOO_LARGE,
     IPF_NFRAGS_OVERLAP,
     IPF_NFRAGS_PURGED,
     IPF_NFRAGS_NUM_CNTS,
@@ -434,6 +435,13 @@ ipf_reassemble_v4_frags(struct ipf_list *ipf_list)
     int rest_len = frag_list[ipf_list->last_inuse_idx].end_data_byte -
                    frag_list[1].start_data_byte + 1;
 
+    if (rest_len <= 0) {
+        ipf_print_reass_packet(
+            "Invalid v4 fragment bounds in reassembly; v4 hdr:", l3);
+        dp_packet_delete(pkt);
+        return NULL;
+    }
+
     if (orig_len + rest_len > IPV4_PACKET_MAX_SIZE) {
         ipf_print_reass_packet(
             "Unsupported big reassembled v4 packet; v4 hdr:", l3);
@@ -483,6 +491,13 @@ ipf_reassemble_v6_frags(struct ipf_list *ipf_list)
 
     int rest_len = frag_list[ipf_list->last_inuse_idx].end_data_byte -
                    frag_list[1].start_data_byte + 1;
+
+    if (rest_len <= 0) {
+        ipf_print_reass_packet(
+            "Invalid v6 fragment bounds in reassembly; v6 hdr:", l3);
+        dp_packet_delete(pkt);
+        return NULL;
+    }
 
     if (orig_len + rest_len > IPV6_PACKET_MAX_DATA) {
         ipf_print_reass_packet(
@@ -661,16 +676,26 @@ invalid_pkt:
 }
 
 static bool
-ipf_v4_key_extract(struct dp_packet *pkt, ovs_be16 dl_type, uint16_t zone,
-                   struct ipf_list_key *key, uint16_t *start_data_byte,
-                   uint16_t *end_data_byte, bool *ff, bool *lf)
+ipf_v4_key_extract(struct ipf *ipf, struct dp_packet *pkt, ovs_be16 dl_type,
+                   uint16_t zone, struct ipf_list_key *key,
+                   uint16_t *start_data_byte, uint16_t *end_data_byte,
+                   bool *ff, bool *lf)
 {
     const struct ip_header *l3 = dp_packet_l3(pkt);
     uint16_t ip_tot_len = ntohs(l3->ip_tot_len);
     size_t ip_hdr_len = IP_IHL(l3->ip_ihl_ver) * 4;
+    uint32_t start = ntohs(l3->ip_frag_off & htons(IP_FRAG_OFF_MASK)) * 8;
 
-    *start_data_byte = ntohs(l3->ip_frag_off & htons(IP_FRAG_OFF_MASK)) * 8;
-    *end_data_byte = *start_data_byte + ip_tot_len - ip_hdr_len - 1;
+    /* Fragments with no data or with data ending past 65535 bytes would
+     * wrap the uint16_t fragment bounds, corrupting reassembly. */
+    if (ip_tot_len <= ip_hdr_len
+        || start + (ip_tot_len - ip_hdr_len) - 1 > UINT16_MAX) {
+        ipf_count(ipf, true, IPF_NFRAGS_TOO_LARGE);
+        return false;
+    }
+
+    *start_data_byte = start;
+    *end_data_byte = start + (ip_tot_len - ip_hdr_len) - 1;
     *ff = ipf_is_first_v4_frag(pkt);
     *lf = ipf_is_last_v4_frag(pkt);
     memset(key, 0, sizeof *key);
@@ -742,10 +767,11 @@ invalid_pkt:
 
 }
 
-static void
-ipf_v6_key_extract(struct dp_packet *pkt, ovs_be16 dl_type, uint16_t zone,
-                   struct ipf_list_key *key, uint16_t *start_data_byte,
-                   uint16_t *end_data_byte, bool *ff, bool *lf)
+static bool
+ipf_v6_key_extract(struct ipf *ipf, struct dp_packet *pkt, ovs_be16 dl_type,
+                   uint16_t zone, struct ipf_list_key *key,
+                   uint16_t *start_data_byte, uint16_t *end_data_byte,
+                   bool *ff, bool *lf)
 {
     const struct ovs_16aligned_ip6_hdr *l3 = dp_packet_l3(pkt);
     uint8_t nw_frag = 0;
@@ -758,9 +784,19 @@ ipf_v6_key_extract(struct dp_packet *pkt, ovs_be16 dl_type, uint16_t zone,
                         NULL);
     ovs_assert(nw_frag && frag_hdr);
     ovs_be16 ip6f_offlg = frag_hdr->ip6f_offlg;
-    *start_data_byte = ntohs(ip6f_offlg & IP6F_OFF_MASK) +
+    uint32_t start = ntohs(ip6f_offlg & IP6F_OFF_MASK) +
         sizeof (struct ovs_16aligned_ip6_frag);
-    *end_data_byte = *start_data_byte + dp_packet_l4_size(pkt) - 1;
+    size_t l4_size = dp_packet_l4_size(pkt);
+
+    /* As in ipf_v4_key_extract(), reject fragments that would wrap the
+     * uint16_t fragment bounds. */
+    if (!l4_size || start + l4_size - 1 > UINT16_MAX) {
+        ipf_count(ipf, true, IPF_NFRAGS_TOO_LARGE);
+        return false;
+    }
+
+    *start_data_byte = start;
+    *end_data_byte = start + l4_size - 1;
     *ff = ipf_is_first_v6_frag(ip6f_offlg);
     *lf = ipf_is_last_v6_frag(ip6f_offlg);
     memset(key, 0, sizeof *key);
@@ -773,6 +809,7 @@ ipf_v6_key_extract(struct dp_packet *pkt, ovs_be16 dl_type, uint16_t zone,
     key->nw_proto = 0;   /* Not used for key for V6. */
     key->zone = zone;
     key->recirc_id = pkt->md.recirc_id;
+    return true;
 }
 
 static bool
@@ -892,11 +929,17 @@ ipf_handle_frag(struct ipf *ipf, struct dp_packet *pkt, ovs_be16 dl_type,
     bool v6 = dl_type == htons(ETH_TYPE_IPV6);
 
     if (v6 && ipf_get_v6_enabled(ipf)) {
-        ipf_v6_key_extract(pkt, dl_type, zone, &key, &start_data_byte,
-                           &end_data_byte, &ff, &lf);
+        if (!ipf_v6_key_extract(ipf, pkt, dl_type, zone, &key,
+                                &start_data_byte, &end_data_byte, &ff, &lf)) {
+            dp_packet_delete(pkt);
+            return true;
+        }
     } else if (!v6 && ipf_get_v4_enabled(ipf)) {
-        ipf_v4_key_extract(pkt, dl_type, zone, &key, &start_data_byte,
-                           &end_data_byte, &ff, &lf);
+        if (!ipf_v4_key_extract(ipf, pkt, dl_type, zone, &key,
+                                &start_data_byte, &end_data_byte, &ff, &lf)) {
+            dp_packet_delete(pkt);
+            return true;
+        }
     } else {
         return false;
     }
@@ -1439,6 +1482,8 @@ ipf_get_status(struct ipf *ipf, struct ipf_status *ipf_status)
                         &ipf_status->v4.nfrag_expired_sent);
     atomic_read_relaxed(&ipf->n4frag_cnt[IPF_NFRAGS_TOO_SMALL],
                         &ipf_status->v4.nfrag_too_small);
+    atomic_read_relaxed(&ipf->n4frag_cnt[IPF_NFRAGS_TOO_LARGE],
+                        &ipf_status->v4.nfrag_too_large);
     atomic_read_relaxed(&ipf->n4frag_cnt[IPF_NFRAGS_OVERLAP],
                         &ipf_status->v4.nfrag_overlap);
     atomic_read_relaxed(&ipf->n4frag_cnt[IPF_NFRAGS_PURGED],
@@ -1455,6 +1500,8 @@ ipf_get_status(struct ipf *ipf, struct ipf_status *ipf_status)
                         &ipf_status->v6.nfrag_expired_sent);
     atomic_read_relaxed(&ipf->n6frag_cnt[IPF_NFRAGS_TOO_SMALL],
                         &ipf_status->v6.nfrag_too_small);
+    atomic_read_relaxed(&ipf->n6frag_cnt[IPF_NFRAGS_TOO_LARGE],
+                        &ipf_status->v6.nfrag_too_large);
     atomic_read_relaxed(&ipf->n6frag_cnt[IPF_NFRAGS_OVERLAP],
                         &ipf_status->v6.nfrag_overlap);
     atomic_read_relaxed(&ipf->n6frag_cnt[IPF_NFRAGS_PURGED],
