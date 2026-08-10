@@ -178,6 +178,7 @@ AT_CHECK([ovs-appctl dpctl/ipf-get-status], [], [dnl
         v4 frags completed: 0
         v4 frags expired: 0
         v4 frags too small: 0
+        v4 frags too large: 0
         v4 frags overlapped: 0
         v4 frags duplicate: 0
         v4 frags discarded: 0
@@ -187,6 +188,7 @@ AT_CHECK([ovs-appctl dpctl/ipf-get-status], [], [dnl
         v6 frags completed: 0
         v6 frags expired: 0
         v6 frags too small: 0
+        v6 frags too large: 0
         v6 frags overlapped: 0
         v6 frags duplicate: 0
         v6 frags discarded: 0
@@ -212,6 +214,7 @@ AT_CHECK([ovs-appctl dpctl/ipf-get-status --more], [], [dnl
         v4 frags completed: 30
         v4 frags expired: 0
         v4 frags too small: 0
+        v4 frags too large: 0
         v4 frags overlapped: 0
         v4 frags duplicate: 0
         v4 frags discarded: 0
@@ -221,6 +224,7 @@ AT_CHECK([ovs-appctl dpctl/ipf-get-status --more], [], [dnl
         v6 frags completed: 0
         v6 frags expired: 0
         v6 frags too small: 0
+        v6 frags too large: 0
         v6 frags overlapped: 0
         v6 frags duplicate: 0
         v6 frags discarded: 0
@@ -249,6 +253,7 @@ AT_CHECK([ovs-appctl dpctl/ipf-get-status --more], [], [dnl
         v4 frags completed: 0
         v4 frags expired: 0
         v4 frags too small: 0
+        v4 frags too large: 0
         v4 frags overlapped: 0
         v4 frags duplicate: 0
         v4 frags discarded: 0
@@ -258,6 +263,7 @@ AT_CHECK([ovs-appctl dpctl/ipf-get-status --more], [], [dnl
         v6 frags completed: 30
         v6 frags expired: 0
         v6 frags too small: 0
+        v6 frags too large: 0
         v6 frags overlapped: 0
         v6 frags duplicate: 0
         v6 frags discarded: 0
@@ -293,6 +299,7 @@ AT_CHECK([ovs-appctl dpctl/ipf-get-status -m | FORMAT_FRAG_LIST()], [], [dnl
         v4 frags completed: 0
         v4 frags expired: 0
         v4 frags too small: 0
+        v4 frags too large: 0
         v4 frags overlapped: 0
         v4 frags duplicate: 0
         v4 frags discarded: 0
@@ -302,6 +309,7 @@ AT_CHECK([ovs-appctl dpctl/ipf-get-status -m | FORMAT_FRAG_LIST()], [], [dnl
         v6 frags completed: 0
         v6 frags expired: 0
         v6 frags too small: 0
+        v6 frags too large: 0
         v6 frags overlapped: 0
         v6 frags duplicate: 0
         v6 frags discarded: 0
