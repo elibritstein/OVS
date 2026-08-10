@@ -823,8 +823,8 @@ ipf_is_frag_duped(const struct ipf_frag *frag_list, int last_inuse_idx,
 }
 
 /* Adds a fragment to a list of fragments, if the fragment is not a
- * duplicate. If the fragment is a duplicate, that fragment is marked
- * invalid to avoid the work that conntrack would do to mark the fragment
+ * duplicate. If the fragment is a duplicate, the fragment is dropped
+ * to avoid the work that conntrack would do to mark the fragment
  * as invalid, which it will in all cases. */
 static bool
 ipf_process_frag(struct ipf *ipf, struct ipf_list *ipf_list,
@@ -852,8 +852,8 @@ ipf_process_frag(struct ipf *ipf, struct ipf_list *ipf_list,
         }
     } else {
         ipf_count(ipf, v6, IPF_NFRAGS_OVERLAP);
-        pkt->md.ct_state = CS_INVALID;
-        return false;
+        dp_packet_delete(pkt);
+        return true;
     }
     return true;
 }

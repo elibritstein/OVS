@@ -5669,6 +5669,58 @@ CHECK_COVERAGE([dpif_netdev_output_grow_queues], [1])
 OVS_VSWITCHD_STOP
 AT_CLEANUP
 
+AT_SETUP([ofproto-dpif - fragment handling - drop duplicate fragment])
+OVS_VSWITCHD_START
+add_of_ports --pcap br0 1 90
+
+AT_DATA([flows.txt], [dnl
+table=0 in_port=90,ip actions=ct(commit),output:1
+])
+AT_CHECK([ovs-ofctl -O OpenFlow11 replace-flows br0 flows.txt])
+
+dnl Send the same fragment twice.  It is a last fragment (MF=0) at offset 400,
+dnl so it bypasses the minimum fragment size check and is admitted, yet it
+dnl cannot complete reassembly on its own (bytes 0..399 are missing).  The
+dnl second copy is a duplicate and must be dropped, rather than marked CT
+dnl invalid and returned to the datapath, so it is never forwarded.
+dnl
+dnl Last fragment carrying bytes 400..799 (MF clear).
+dnl   Ethernet II, Src: 50:54:00:00:00:09, Dst: 50:54:00:00:00:0a
+dnl       Type: IPv4 (0x0800)
+dnl   Internet Protocol Version 4, Src: 10.1.1.1, Dst: 10.1.1.2
+dnl       0100 .... = Version: 4
+dnl       .... 0101 = Header Length: 20 bytes (5)
+dnl       Differentiated Services Field: 0x00 (DSCP: CS0, ECN: Not-ECT)
+dnl       Total Length: 420
+dnl       Identification: 0x0020 (32)
+dnl       000. .... = Flags: 0x0 (Last fragment)
+dnl       ...0 0000 0011 0010 = Fragment Offset: 400
+dnl       Time to Live: 64
+dnl       Protocol: UDP (17)
+dnl       Header Checksum: 0x62f3
+dnl   Data (400 bytes)
+eth="50 54 00 00 00 0a 50 54 00 00 00 09 08 00"
+ip="45 00 01 a4 00 20 00 32 40 11 62 f3"
+addrs="0a 01 01 01 0a 01 01 02"
+data=$(printf '%0*d' 800 0)
+packet="${eth}${ip}${addrs}${data}"
+
+AT_CHECK([ovs-appctl netdev-dummy/receive p90 "$packet"])
+AT_CHECK([ovs-appctl netdev-dummy/receive p90 "$packet"])
+
+AT_CHECK([ovs-appctl dpctl/ipf-get-status -m \
+| grep -E 'v4 frags accepted:|v4 frags overlapped:'], [], [dnl
+        v4 frags accepted: 1
+        v4 frags overlapped: 1
+])
+
+dnl The duplicate fragment is dropped, not marked invalid and forwarded, so
+dnl nothing must be transmitted on the output port.
+AT_CHECK([test 0 = `ovs-ofctl parse-pcap p1-tx.pcap | wc -l`])
+
+OVS_VSWITCHD_STOP
+AT_CLEANUP
+
 AT_SETUP([ofproto-dpif - handling of malformed TCP packets])
 OVS_VSWITCHD_START
 add_of_ports br0 1 90
