@@ -822,10 +822,26 @@ ipf_is_frag_duped(const struct ipf_frag *frag_list, int last_inuse_idx,
     return false;
 }
 
-/* Adds a fragment to a list of fragments, if the fragment is not a
- * duplicate. If the fragment is a duplicate, that fragment is marked
- * invalid to avoid the work that conntrack would do to mark the fragment
- * as invalid, which it will in all cases. */
+/* Drops the entire fragment list: deletes every fragment packet held by the
+ * list and removes the list from the tracking datastructures.  Per RFC 5722
+ * and RFC 8200, when an overlapping fragment is detected the whole datagram
+ * and all of its already received fragments must be silently discarded. */
+static void
+ipf_drop_frag_chain(struct ipf *ipf, struct ipf_list *ipf_list)
+    OVS_REQUIRES(ipf->ipf_lock)
+{
+    for (int i = 0; i <= ipf_list->last_inuse_idx; i++) {
+        dp_packet_delete(ipf_list->frag_list[i].pkt);
+        atomic_count_dec(&ipf->nfrag);
+    }
+
+    ipf_list_clean(&ipf->frag_lists, ipf_list);
+}
+
+/* Adds a fragment to a list of fragments, if the fragment does not overlap
+ * an existing fragment.  If it overlaps, the whole fragment list is dropped.
+ * (see ipf_drop_frag_chain()), avoiding the work that conntrack would
+ * otherwise do to mark the fragments as invalid. */
 static bool
 ipf_process_frag(struct ipf *ipf, struct ipf_list *ipf_list,
                  struct dp_packet *pkt, uint16_t start_data_byte,
@@ -852,8 +868,8 @@ ipf_process_frag(struct ipf *ipf, struct ipf_list *ipf_list,
         }
     } else {
         ipf_count(ipf, v6, IPF_NFRAGS_OVERLAP);
-        pkt->md.ct_state = CS_INVALID;
-        return false;
+        dp_packet_delete(pkt);
+        ipf_drop_frag_chain(ipf, ipf_list);
     }
     return true;
 }
