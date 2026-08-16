@@ -27,6 +27,7 @@ struct ipf_proto_status {
    uint64_t nfrag_completed_sent;
    uint64_t nfrag_expired_sent;
    uint64_t nfrag_too_small;
+   uint64_t nfrag_too_large;
    uint64_t nfrag_overlap;
    uint64_t nfrag_purged;
    unsigned int min_frag_size;
