@@ -98,6 +98,7 @@ struct ipf_frag {
     struct dp_packet *pkt;
     uint16_t start_data_byte;
     uint16_t end_data_byte;
+    bool last_frag;                /* True if this was the MF=0 fragment. */
 };
 
 /* The key for a collection of fragments potentially making up an unfragmented
@@ -397,8 +398,14 @@ ipf_list_complete(const struct ipf_list *ipf_list)
             != ipf_list->frag_list[i].start_data_byte) {
             return false;
         }
+
+        /* Only the final fragment may have MF=0; data past it is invalid. */
+        if (ipf_list->frag_list[i - 1].last_frag) {
+            return false;
+        }
     }
-    return true;
+
+    return ipf_list->frag_list[ipf_list->last_inuse_idx].last_frag;
 }
 
 /* Runs O(n) for a sorted or almost sorted list. */
@@ -859,6 +866,28 @@ ipf_is_frag_duped(const struct ipf_frag *frag_list, int last_inuse_idx,
     return false;
 }
 
+/* Returns true if accepting this fragment would place data past an MF=0
+ * (last) fragment, which is illegal for IP reassembly. */
+static bool
+ipf_is_beyond_last_frag(const struct ipf_frag *frag_list, int last_inuse_idx,
+                        uint16_t start_data_byte, uint16_t end_data_byte,
+                        bool lf)
+    /* OVS_REQUIRES(ipf_lock) */
+{
+    for (int i = 0; i <= last_inuse_idx; i++) {
+        if (frag_list[i].last_frag
+            && start_data_byte > frag_list[i].end_data_byte) {
+            return true;
+        }
+
+        if (lf && frag_list[i].end_data_byte > end_data_byte) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 /* Adds a fragment to a list of fragments, if the fragment is not a
  * duplicate. If the fragment is a duplicate, the fragment is dropped
  * to avoid the work that conntrack would do to mark the fragment
@@ -872,14 +901,17 @@ ipf_process_frag(struct ipf *ipf, struct ipf_list *ipf_list,
 {
     bool duped_frag = ipf_is_frag_duped(ipf_list->frag_list,
         ipf_list->last_inuse_idx, start_data_byte, end_data_byte);
+    bool beyond_last = ipf_is_beyond_last_frag(ipf_list->frag_list,
+        ipf_list->last_inuse_idx, start_data_byte, end_data_byte, lf);
     int last_inuse_idx = ipf_list->last_inuse_idx;
 
-    if (!duped_frag) {
+    if (!duped_frag && !beyond_last) {
         if (last_inuse_idx < ipf_list->size - 1) {
             struct ipf_frag *frag = &ipf_list->frag_list[last_inuse_idx + 1];
             frag->pkt = pkt;
             frag->start_data_byte = start_data_byte;
             frag->end_data_byte = end_data_byte;
+            frag->last_frag = lf;
             ipf_list->last_inuse_idx++;
             atomic_count_inc(&ipf->nfrag);
             ipf_count(ipf, v6, IPF_NFRAGS_ACCEPTED);
