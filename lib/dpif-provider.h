@@ -133,6 +133,7 @@ struct dpif_ipf_proto_status {
    uint64_t nfrag_overlap;
    uint64_t nfrag_duplicate;
    uint64_t nfrag_discarded;
+   uint64_t nfrag_beyond_last;
    uint64_t nfrag_purged;
    unsigned int min_frag_size;
    bool enabled;
