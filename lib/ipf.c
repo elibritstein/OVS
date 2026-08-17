@@ -86,6 +86,7 @@ enum ipf_counter_type {
     IPF_NFRAGS_OVERLAP,
     IPF_NFRAGS_DUPLICATE,
     IPF_NFRAGS_DISCARDED,
+    IPF_NFRAGS_BEYOND_LAST,
     IPF_NFRAGS_PURGED,
     IPF_NFRAGS_NUM_CNTS,
 };
@@ -100,6 +101,7 @@ struct ipf_frag {
     struct dp_packet *pkt;
     uint16_t start_data_byte;
     uint16_t end_data_byte;
+    bool last_frag;                /* True if this was the MF=0 fragment. */
 };
 
 /* The key for a collection of fragments potentially making up an unfragmented
@@ -399,8 +401,14 @@ ipf_list_complete(const struct ipf_list *ipf_list)
             != ipf_list->frag_list[i].start_data_byte) {
             return false;
         }
+
+        /* Only the final fragment may have MF=0, data past it is invalid. */
+        if (ipf_list->frag_list[i - 1].last_frag) {
+            return false;
+        }
     }
-    return true;
+
+    return ipf_list->frag_list[ipf_list->last_inuse_idx].last_frag;
 }
 
 /* Runs O(n) for a sorted or almost sorted list. */
@@ -896,6 +904,32 @@ ipf_is_frag_overlap(const struct ipf_frag *frag_list, int last_inuse_idx,
     return false;
 }
 
+/* Returns true if accepting this fragment would be inconsistent with an
+ * MF=0 (last) fragment.  The last fragment fixes the datagram's total length,
+ * so any octet at a higher offset is invalid per the IPv4 (RFC 791) and IPv6
+ * (RFC 8200, Section 4.5) reassembly procedures.  This covers two cases, a
+ * fragment starting past an already seen last fragment, and an incoming last
+ * fragment that ends before data already queued beyond it. */
+static bool
+ipf_is_beyond_last_frag(const struct ipf_frag *frag_list, int last_inuse_idx,
+                        uint16_t start_data_byte, uint16_t end_data_byte,
+                        bool lf)
+    /* OVS_REQUIRES(ipf_lock) */
+{
+    for (int i = 0; i <= last_inuse_idx; i++) {
+        if (frag_list[i].last_frag
+            && start_data_byte > frag_list[i].end_data_byte) {
+            return true;
+        }
+
+        if (lf && frag_list[i].end_data_byte > end_data_byte) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 /* Drops the entire fragment list: deletes every fragment packet held by the
  * list and removes the list from the tracking datastructures.  Per RFC 5722
  * and RFC 8200, when an overlapping fragment is detected the whole datagram
@@ -916,7 +950,9 @@ ipf_drop_frag_chain(struct ipf *ipf, struct ipf_list *ipf_list, bool v6)
 /* Adds a fragment to a list of fragments.  An exact duplicate fragment is
  * dropped on its own, keeping the rest of the list (RFC 8200).  An
  * overlapping (but not duplicate) fragment causes the whole fragment list to
- * be dropped (see ipf_drop_frag_chain(), RFC 5722 / RFC 8200). */
+ * be dropped (see ipf_drop_frag_chain(), RFC 5722 / RFC 8200).  A fragment
+ * with data beyond an already seen last (MF=0) fragment is dropped on its own
+ * (RFC 791 / RFC 8200). */
 static bool
 ipf_process_frag(struct ipf *ipf, struct ipf_list *ipf_list,
                  struct dp_packet *pkt, uint16_t start_data_byte,
@@ -928,14 +964,17 @@ ipf_process_frag(struct ipf *ipf, struct ipf_list *ipf_list,
         ipf_list->last_inuse_idx, start_data_byte, end_data_byte);
     bool overlap_frag = ipf_is_frag_overlap(ipf_list->frag_list,
         ipf_list->last_inuse_idx, start_data_byte, end_data_byte);
+    bool beyond_last = ipf_is_beyond_last_frag(ipf_list->frag_list,
+        ipf_list->last_inuse_idx, start_data_byte, end_data_byte, lf);
     int last_inuse_idx = ipf_list->last_inuse_idx;
 
-    if (!duped_frag && !overlap_frag) {
+    if (!duped_frag && !overlap_frag && !beyond_last) {
         if (last_inuse_idx < ipf_list->size - 1) {
             struct ipf_frag *frag = &ipf_list->frag_list[last_inuse_idx + 1];
             frag->pkt = pkt;
             frag->start_data_byte = start_data_byte;
             frag->end_data_byte = end_data_byte;
+            frag->last_frag = lf;
             ipf_list->last_inuse_idx++;
             atomic_count_inc(&ipf->nfrag);
             ipf_count(ipf, v6, IPF_NFRAGS_ACCEPTED);
@@ -945,14 +984,38 @@ ipf_process_frag(struct ipf *ipf, struct ipf_list *ipf_list,
         }
     } else if (duped_frag) {
         /* RFC 8200: an exact duplicate may be dropped while keeping the rest
-         * of the fragment list for later reassembly. */
+         * of the fragment list for later reassembly.  If it is a consistent
+         * last fragment and the stored copy was not marked last, keep the
+         * MF=0 copy so the forwarded fragments end with MF=0. */
         ipf_count(ipf, v6, IPF_NFRAGS_DUPLICATE);
+        if (lf && !beyond_last) {
+            struct ipf_frag *frag_list = ipf_list->frag_list;
+
+            for (int i = 0; i <= ipf_list->last_inuse_idx; i++) {
+                if (start_data_byte == frag_list[i].start_data_byte &&
+                    end_data_byte == frag_list[i].end_data_byte &&
+                    !frag_list[i].last_frag) {
+                    struct dp_packet *stored = frag_list[i].pkt;
+
+                    frag_list[i].pkt = pkt;
+                    frag_list[i].last_frag = true;
+                    pkt = stored;
+                    *rp = ipf_list_state_transition(ipf, ipf_list, ff, lf, v6);
+                    break;
+                }
+            }
+        }
+
         dp_packet_delete(pkt);
-    } else {
+    } else if (overlap_frag) {
         ipf_count(ipf, v6, IPF_NFRAGS_OVERLAP);
         dp_packet_delete(pkt);
         ipf_drop_frag_chain(ipf, ipf_list, v6);
+    } else {
+        ipf_count(ipf, v6, IPF_NFRAGS_BEYOND_LAST);
+        dp_packet_delete(pkt);
     }
+
     return true;
 }
 
@@ -1551,6 +1614,8 @@ ipf_get_status(struct ipf *ipf, struct ipf_status *ipf_status)
                         &ipf_status->v4.nfrag_duplicate);
     atomic_read_relaxed(&ipf->n4frag_cnt[IPF_NFRAGS_DISCARDED],
                         &ipf_status->v4.nfrag_discarded);
+    atomic_read_relaxed(&ipf->n4frag_cnt[IPF_NFRAGS_BEYOND_LAST],
+                        &ipf_status->v4.nfrag_beyond_last);
     atomic_read_relaxed(&ipf->n4frag_cnt[IPF_NFRAGS_PURGED],
                         &ipf_status->v4.nfrag_purged);
 
@@ -1573,6 +1638,8 @@ ipf_get_status(struct ipf *ipf, struct ipf_status *ipf_status)
                         &ipf_status->v6.nfrag_duplicate);
     atomic_read_relaxed(&ipf->n6frag_cnt[IPF_NFRAGS_DISCARDED],
                         &ipf_status->v6.nfrag_discarded);
+    atomic_read_relaxed(&ipf->n6frag_cnt[IPF_NFRAGS_BEYOND_LAST],
+                        &ipf_status->v6.nfrag_beyond_last);
     atomic_read_relaxed(&ipf->n6frag_cnt[IPF_NFRAGS_PURGED],
                         &ipf_status->v6.nfrag_purged);
     return 0;
