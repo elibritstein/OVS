@@ -5842,6 +5842,80 @@ AT_CHECK([ovs-appctl dpctl/ipf-get-status -m \
 OVS_VSWITCHD_STOP
 AT_CLEANUP
 
+AT_SETUP([ofproto-dpif - fragment handling - reject fragment beyond last])
+OVS_VSWITCHD_START
+add_of_ports br0 1 90
+
+AT_DATA([flows.txt], [dnl
+table=0 in_port=90,ip actions=ct(commit),output:1
+])
+AT_CHECK([ovs-ofctl -O OpenFlow11 replace-flows br0 flows.txt])
+
+dnl The minimum fragment size is clamped to 400 bytes, so a non-last fragment
+dnl must be at least that large to be admitted for reassembly.
+AT_CHECK([ovs-appctl dpctl/ipf-set-min-frag v4 400], [], [dnl
+setting minimum fragment size successful
+])
+
+dnl First admit a last (MF=0) fragment carrying bytes 400..799, then reject a
+dnl new fragment carrying bytes 800..1199, whose data lies entirely beyond the
+dnl end of the last fragment and so must not be reassembled.
+dnl
+dnl Packet 1 (admitted).  Last fragment carrying bytes 400..799 (MF clear).
+dnl   Ethernet II, Src: 50:54:00:00:00:09, Dst: 50:54:00:00:00:0a
+dnl       Type: IPv4 (0x0800)
+dnl   Internet Protocol Version 4, Src: 10.1.1.1, Dst: 10.1.1.2
+dnl       0100 .... = Version: 4
+dnl       .... 0101 = Header Length: 20 bytes (5)
+dnl       Differentiated Services Field: 0x00 (DSCP: CS0, ECN: Not-ECT)
+dnl       Total Length: 420
+dnl       Identification: 0x0020 (32)
+dnl       000. .... = Flags: 0x0 (Last fragment)
+dnl       ...0 0000 0011 0010 = Fragment Offset: 400
+dnl       Time to Live: 64
+dnl       Protocol: UDP (17)
+dnl       Header Checksum: 0x62f3
+dnl   Data (400 bytes)
+eth="50 54 00 00 00 0a 50 54 00 00 00 09 08 00"
+ip1="45 00 01 a4 00 20 00 32 40 11 62 f3"
+addrs="0a 01 01 01 0a 01 01 02"
+data1=$(printf '%0*d' 800 0)
+packet1="${eth}${ip1}${addrs}${data1}"
+
+dnl Packet 2 (rejected as beyond last).  Fragment carrying bytes 800..1199
+dnl (MF set), starting past packet 1's last-fragment end.
+dnl   Ethernet II, Src: 50:54:00:00:00:09, Dst: 50:54:00:00:00:0a
+dnl       Type: IPv4 (0x0800)
+dnl   Internet Protocol Version 4, Src: 10.1.1.1, Dst: 10.1.1.2
+dnl       0100 .... = Version: 4
+dnl       .... 0101 = Header Length: 20 bytes (5)
+dnl       Differentiated Services Field: 0x00 (DSCP: CS0, ECN: Not-ECT)
+dnl       Total Length: 420
+dnl       Identification: 0x0020 (32)
+dnl       001. .... = Flags: 0x1 (More fragments)
+dnl       ...0 0000 0110 0100 = Fragment Offset: 800
+dnl       Time to Live: 64
+dnl       Protocol: UDP (17)
+dnl       Header Checksum: 0x42c1
+dnl   Data (400 bytes)
+ip2="45 00 01 a4 00 20 20 64 40 11 42 c1"
+data2=$(printf '%0*d' 800 0)
+packet2="${eth}${ip2}${addrs}${data2}"
+
+AT_CHECK([ovs-appctl netdev-dummy/receive p90 "$packet1"])
+AT_CHECK([ovs-appctl netdev-dummy/receive p90 "$packet2"])
+
+AT_CHECK([ovs-appctl dpctl/ipf-get-status -m \
+| grep -E 'num frag:|v4 frags accepted:|v4 frags completed:|v4 frags beyond last:'], [], [dnl
+        num frag: 1
+        v4 frags accepted: 1
+        v4 frags completed: 0
+        v4 frags beyond last: 1
+])
+
+OVS_VSWITCHD_STOP
+AT_CLEANUP
+
 AT_SETUP([ofproto-dpif - handling of malformed TCP packets])
 OVS_VSWITCHD_START
 add_of_ports br0 1 90
