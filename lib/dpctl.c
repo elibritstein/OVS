@@ -2631,6 +2631,8 @@ dpctl_ct_ipf_get_status(int argc, const char *argv[],
                         dpif_ipf_status.v4.nfrag_overlap);
             dpctl_print(dpctl_p, "        v4 frags duplicate: %"PRIu64"\n",
                         dpif_ipf_status.v4.nfrag_duplicate);
+            dpctl_print(dpctl_p, "        v4 frags beyond last: %"PRIu64"\n",
+                        dpif_ipf_status.v4.nfrag_beyond_last);
             dpctl_print(dpctl_p, "        v4 frags purged: %"PRIu64"\n",
                         dpif_ipf_status.v4.nfrag_purged);
 
@@ -2650,6 +2652,8 @@ dpctl_ct_ipf_get_status(int argc, const char *argv[],
                         dpif_ipf_status.v6.nfrag_overlap);
             dpctl_print(dpctl_p, "        v6 frags duplicate: %"PRIu64"\n",
                         dpif_ipf_status.v6.nfrag_duplicate);
+            dpctl_print(dpctl_p, "        v6 frags beyond last: %"PRIu64"\n",
+                        dpif_ipf_status.v6.nfrag_beyond_last);
             dpctl_print(dpctl_p, "        v6 frags purged: %"PRIu64"\n",
                         dpif_ipf_status.v6.nfrag_purged);
         } else {
