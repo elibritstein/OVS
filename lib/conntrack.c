@@ -1195,9 +1195,17 @@ conn_update_state(struct conntrack *ct, struct dp_packet *pkt,
 
 static void
 handle_nat(struct dp_packet *pkt, struct conn *conn,
-           uint16_t zone, bool reply, bool related)
+           uint16_t zone, bool reply, bool related,
+           const struct nat_action_info_t *nat_action_info)
 {
+    bool nat_config = nat_action_info->nat_action &
+                      (NAT_ACTION_SRC | NAT_ACTION_DST);
+
+    /* Like the kernel datapath, do not infer an existing NAT mapping for a
+     * packet in the new state.  Applying NAT in this state requires an
+     * explicit source or destination NAT action. */
     if (conn->nat_action &&
+        (!(pkt->md.ct_state & CS_NEW) || nat_config) &&
         (!(pkt->md.ct_state & (CS_SRC_NAT | CS_DST_NAT)) ||
           (pkt->md.ct_state & (CS_SRC_NAT | CS_DST_NAT) &&
            zone != pkt->md.ct_zone))) {
@@ -1320,7 +1328,8 @@ process_one_fast(uint16_t zone, const uint32_t *setmark,
                  struct conn *conn, struct dp_packet *pkt)
 {
     if (nat_action_info) {
-        handle_nat(pkt, conn, zone, pkt->md.reply, pkt->md.icmp_related);
+        handle_nat(pkt, conn, zone, pkt->md.reply, pkt->md.icmp_related,
+                   nat_action_info);
         pkt->md.conn = NULL;
     }
 
@@ -1410,7 +1419,8 @@ process_one(struct conntrack *ct, struct dp_packet *pkt,
             create_new_conn = conn_update_state(ct, pkt, ctx, conn, now);
         }
         if (nat_action_info && !create_new_conn) {
-            handle_nat(pkt, conn, zone, ctx->reply, ctx->icmp_related);
+            handle_nat(pkt, conn, zone, ctx->reply, ctx->icmp_related,
+                       nat_action_info);
         }
 
     } else if (check_orig_tuple(ct, pkt, ctx, now, &conn, nat_action_info)) {

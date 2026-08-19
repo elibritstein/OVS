@@ -1,5 +1,12 @@
 Post-v4.0.0
 --------------------
+   - Conntrack:
+     * A bare ct(nat) action (without an explicit src/dst parameter) no longer
+       infers and applies an existing NAT mapping to a packet in the "new"
+       state, matching the Linux kernel datapath behavior.  In particular, a
+       +new+trk packet recirculated through a second zone is no longer
+       translated by a bare ct(nat) action; an explicit src or dst NAT action
+       is now required to translate a new packet.
 
 
 v4.0.0 - 17 Aug 2026
