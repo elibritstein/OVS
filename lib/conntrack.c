@@ -867,14 +867,17 @@ pat_packet(struct dp_packet *pkt, const struct conn_key *key)
 static uint16_t
 nat_action_reverse(uint16_t nat_action)
 {
+    uint16_t rev = nat_action & (NAT_ACTION_SRC_PORT | NAT_ACTION_DST_PORT);
+
     if (nat_action & NAT_ACTION_SRC) {
-        nat_action ^= NAT_ACTION_SRC;
-        nat_action |= NAT_ACTION_DST;
-    } else if (nat_action & NAT_ACTION_DST) {
-        nat_action ^= NAT_ACTION_DST;
-        nat_action |= NAT_ACTION_SRC;
+        rev |= NAT_ACTION_DST;
     }
-    return nat_action;
+
+    if (nat_action & NAT_ACTION_DST) {
+        rev |= NAT_ACTION_SRC;
+    }
+
+    return rev;
 }
 
 static void
@@ -885,7 +888,9 @@ nat_packet_ipv4(struct dp_packet *pkt, const struct conn_key *key,
 
     if (nat_action & NAT_ACTION_SRC) {
         packet_set_ipv4_addr(pkt, &nh->ip_src, key->dst.addr.ipv4);
-    } else if (nat_action & NAT_ACTION_DST) {
+    }
+
+    if (nat_action & NAT_ACTION_DST) {
         packet_set_ipv4_addr(pkt, &nh->ip_dst, key->src.addr.ipv4);
     }
 }
@@ -899,7 +904,9 @@ nat_packet_ipv6(struct dp_packet *pkt, const struct conn_key *key,
     if (nat_action & NAT_ACTION_SRC) {
         packet_set_ipv6_addr(pkt, key->nw_proto, nh6->ip6_src.be32,
                              &key->dst.addr.ipv6, true);
-    } else if (nat_action & NAT_ACTION_DST) {
+    }
+
+    if (nat_action & NAT_ACTION_DST) {
         packet_set_ipv6_addr(pkt, key->nw_proto, nh6->ip6_dst.be32,
                              &key->src.addr.ipv6, true);
     }
@@ -967,6 +974,38 @@ nat_inner_packet(struct dp_packet *pkt, struct conn_key *key,
 }
 
 static void
+nat_packet_fix_checksum(struct dp_packet *pkt)
+{
+    struct ip_header *nh = dp_packet_l3(pkt);
+    size_t l4_size;
+
+    if (!nh || dp_packet_l4_checksum_good(pkt)) {
+        return;
+    }
+
+    l4_size = dp_packet_l4_size(pkt);
+    if (nh->ip_proto == IPPROTO_TCP && l4_size >= TCP_HEADER_LEN) {
+        uint32_t tcp_csum = packet_csum_pseudoheader(nh);
+        struct tcp_header *th = dp_packet_l4(pkt);
+
+        th->tcp_csum = 0;
+        th->tcp_csum = csum_finish(csum_continue(tcp_csum, th, l4_size));
+        dp_packet_l4_checksum_set_good(pkt);
+    } else if (nh->ip_proto == IPPROTO_UDP && l4_size >= UDP_HEADER_LEN) {
+        struct udp_header *uh = dp_packet_l4(pkt);
+
+        uh->udp_csum = 0;
+        uh->udp_csum = csum_finish(csum_continue(packet_csum_pseudoheader(nh),
+                                                 uh, l4_size));
+        if (!uh->udp_csum) {
+            uh->udp_csum = htons(0xffff);
+        }
+
+        dp_packet_l4_checksum_set_good(pkt);
+    }
+}
+
+static void
 nat_packet(struct dp_packet *pkt, struct conn *conn, bool reply, bool related)
 {
     enum key_dir dir = reply ? CT_DIR_FWD : CT_DIR_REV;
@@ -977,7 +1016,9 @@ nat_packet(struct dp_packet *pkt, struct conn *conn, bool reply, bool related)
     /* Update ct_state. */
     if (nat_action & NAT_ACTION_SRC) {
         pkt->md.ct_state |= CS_SRC_NAT;
-    } else if (nat_action & NAT_ACTION_DST) {
+    }
+
+    if (nat_action & NAT_ACTION_DST) {
         pkt->md.ct_state |= CS_DST_NAT;
     }
 
@@ -995,6 +1036,8 @@ nat_packet(struct dp_packet *pkt, struct conn *conn, bool reply, bool related)
         } else {
             pat_packet(pkt, key);
         }
+
+        nat_packet_fix_checksum(pkt);
     }
 }
 
@@ -1277,8 +1320,8 @@ handle_nat(struct dp_packet *pkt, struct conn *conn,
 
 static bool
 check_orig_tuple(struct conntrack *ct, struct dp_packet *pkt,
-                 struct conn_lookup_ctx *ctx_in, long long now,
-                 struct conn **conn,
+                 struct conn_lookup_ctx *ctx_in, uint16_t zone,
+                 long long now, struct conn **conn,
                  const struct nat_action_info_t *nat_action_info)
 {
     if (!(pkt->md.ct_state & (CS_SRC_NAT | CS_DST_NAT)) ||
@@ -1326,8 +1369,27 @@ check_orig_tuple(struct conntrack *ct, struct dp_packet *pkt,
     }
 
     key.dl_type = ctx_in->key.dl_type;
-    key.zone = pkt->md.ct_zone;
+    key.zone = zone;
+
+    /* Orig-tuple lookup is only valid for reply packets: the wire tuple
+     * must be the reverse of the pre-NAT forward tuple.  Without this,
+     * stale ct_orig_tuple metadata can match the wrong connection when a
+     * new forward flow reuses overlapping state across zones. */
+    if (key.nw_proto == IPPROTO_UDP || key.nw_proto == IPPROTO_TCP
+        || key.nw_proto == IPPROTO_SCTP) {
+        if (ctx_in->key.src.port != key.dst.port
+            || ctx_in->key.dst.port != key.src.port) {
+            return false;
+        }
+    }
+
     conn_lookup(ct, &key, now, conn, NULL);
+    if (*conn
+        && conn_key_cmp(&(*conn)->key_node[CT_DIR_REV].key, &ctx_in->key)) {
+        *conn = NULL;
+        return false;
+    }
+
     return *conn ? true : false;
 }
 
@@ -1480,8 +1542,21 @@ process_one(struct conntrack *ct, struct dp_packet *pkt,
                        nat_action_info);
         }
 
-    } else if (check_orig_tuple(ct, pkt, ctx, now, &conn, nat_action_info)) {
-        create_new_conn = conn_update_state(ct, pkt, ctx, conn, now);
+    } else if (check_orig_tuple(ct, pkt, ctx, zone, now, &conn,
+                                 nat_action_info)) {
+        /* Matched the orig (pre-NAT forward) tuple: this is a reply. */
+        ctx->reply = true;
+        if (OVS_LIKELY(!conn_update_state_alg(ct, pkt, ctx, conn,
+                                              nat_action_info,
+                                              ct_alg_ctl, now,
+                                              &create_new_conn))) {
+            create_new_conn = conn_update_state(ct, pkt, ctx, conn, now);
+        }
+
+        if (nat_action_info && !create_new_conn) {
+            handle_nat(pkt, conn, zone, ctx->reply, ctx->icmp_related,
+                       nat_action_info);
+        }
     } else {
         if (ctx->icmp_related) {
             /* An icmp related conn should always be found; no new

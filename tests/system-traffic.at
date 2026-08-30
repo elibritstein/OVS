@@ -4848,6 +4848,12 @@ OVS_TRAFFIC_VSWITCHD_STOP(["dnl
 /execute ct.*Invalid argument/d"])
 AT_CLEANUP
 
+AT_SETUP([conntrack - orig tuple rejects stale forward query])
+CHECK_CONNTRACK()
+CHECK_CONNTRACK_NAT()
+OVS_CONNTRACK_ORIG_TUPLE_STALE_FORWARD()
+AT_CLEANUP
+
 AT_SETUP([conntrack - generic IP protocol])
 CHECK_CONNTRACK()
 OVS_TRAFFIC_VSWITCHD_START()

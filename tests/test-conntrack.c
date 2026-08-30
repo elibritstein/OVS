@@ -17,6 +17,12 @@
 #include <config.h>
 #include "conntrack.h"
 
+#include "packets.h"
+
+#include "ct-dpif.h"
+
+#include <arpa/inet.h>
+
 #include "dp-packet.h"
 #include "fatal-signal.h"
 #include "flow.h"
@@ -146,6 +152,72 @@ build_tcp_packet(struct dp_packet *pkt, uint16_t tcp_src, uint16_t tcp_dst,
     /* Set l3/l4 offsets so conntrack can extract a flow key. */
     flow_extract(pkt, &flow);
     return pkt;
+}
+
+static struct dp_packet *
+build_udp_packet(struct dp_packet *pkt, uint16_t udp_src, uint16_t udp_dst,
+                 const char *udp_payload, size_t payload_len)
+{
+    struct udp_header *udph;
+    struct ip_header *iph;
+    uint16_t ip_tot_len;
+    uint32_t udp_csum;
+    struct flow flow;
+
+    ovs_assert(pkt);
+    udph = dp_packet_l4(pkt);
+    ovs_assert(udph);
+
+    udph->udp_src = htons(udp_src);
+    udph->udp_dst = htons(udp_dst);
+    udph->udp_len = htons(UDP_HEADER_LEN + payload_len);
+    udph->udp_csum = 0;
+
+    if (udp_payload && payload_len > 0) {
+        memcpy((char *) udph + UDP_HEADER_LEN, udp_payload, payload_len);
+    }
+
+    iph = dp_packet_l3(pkt);
+    ip_tot_len = IP_HEADER_LEN + UDP_HEADER_LEN + payload_len;
+    iph->ip_tot_len = htons(ip_tot_len);
+    iph->ip_csum = 0;
+    iph->ip_csum = csum(iph, IP_HEADER_LEN);
+
+    udp_csum = packet_csum_pseudoheader(iph);
+    udph->udp_csum = csum_finish(
+        csum_continue(udp_csum, udph, UDP_HEADER_LEN + payload_len));
+
+    flow_extract(pkt, &flow);
+    return pkt;
+}
+
+static void
+set_ct_orig_tuple_ipv4(struct dp_packet *pkt, ovs_be32 src, ovs_be32 dst,
+                       uint16_t src_port, uint16_t dst_port, uint8_t proto)
+{
+    pkt->md.ct_orig_tuple_ipv6 = false;
+    pkt->md.ct_orig_tuple.ipv4 = (struct ovs_key_ct_tuple_ipv4) {
+        src, dst, htons(src_port), htons(dst_port), proto,
+    };
+}
+
+static unsigned int
+ct_zone_conn_count(struct conntrack *tracker, uint16_t zone)
+{
+    struct conntrack_dump dump;
+    struct ct_dpif_entry entry;
+    unsigned int count = 0;
+    int tot_bkts;
+
+    conntrack_dump_start(tracker, &dump, &zone, &tot_bkts);
+
+    while (conntrack_dump_next(&dump, &entry) != EOF) {
+        count++;
+        ct_dpif_entry_uninit(&entry);
+    }
+
+    conntrack_dump_done(&dump);
+    return count;
 }
 
 static struct dp_packet_batch *
@@ -576,6 +648,49 @@ test_ftp_alg_large_payload(struct ovs_cmdl_context *ctx OVS_UNUSED)
     conntrack_destroy(ct);
 }
 
+static void
+test_orig_tuple_rejects_stale_forward(struct ovs_cmdl_context *ctx OVS_UNUSED)
+{
+    struct eth_addr eth_src = ETH_ADDR_C(50, 54, 00, 00, 00, 09);
+    struct eth_addr eth_dst = ETH_ADDR_C(50, 54, 00, 00, 00, 0a);
+    ovs_be32 ip_src = inet_addr("12.12.12.11");
+    ovs_be32 ip_dst = inet_addr("8.8.0.10");
+    struct nat_action_info_t src_only;
+    struct dp_packet_batch batch;
+    long long now = time_msec();
+    struct dp_packet *pkt;
+
+    ct = conntrack_init();
+
+    memset(&src_only, 0, sizeof src_only);
+    src_only.nat_action = NAT_ACTION_SRC;
+
+    pkt = build_eth_ip_packet(NULL, eth_src, eth_dst, ip_src, ip_dst,
+                              IPPROTO_UDP, 0);
+    build_udp_packet(pkt, 45112, 53, NULL, 0);
+
+    dp_packet_batch_init_packet(&batch, pkt);
+    conntrack_execute(ct, &batch, htons(ETH_TYPE_IP), false, true, 1,
+                      NULL, NULL, NULL, &src_only, now, 0);
+    dp_packet_delete_batch(&batch, false);
+
+    ovs_assert(ct_zone_conn_count(ct, 1) == 1);
+
+    build_udp_packet(pkt, 37319, 53, NULL, 0);
+    pkt->md.ct_state = CS_SRC_NAT;
+    pkt->md.ct_zone = 1;
+    set_ct_orig_tuple_ipv4(pkt, ip_src, ip_dst, 45112, 53, IPPROTO_UDP);
+
+    dp_packet_batch_init_packet(&batch, pkt);
+    conntrack_execute(ct, &batch, htons(ETH_TYPE_IP), false, true, 1,
+                      NULL, NULL, NULL, &src_only, now, 0);
+    ovs_assert(pkt->md.ct_state & CS_NEW);
+    ovs_assert(!(pkt->md.ct_state & CS_REPLY_DIR));
+    dp_packet_delete_batch(&batch, true);
+
+    ovs_assert(ct_zone_conn_count(ct, 1) == 2);
+    conntrack_destroy(ct);
+}
 
 static const struct ovs_cmdl_command commands[] = {
     /* Connection tracker tests. */
@@ -601,6 +716,8 @@ static const struct ovs_cmdl_command commands[] = {
      * is rewritten to the SNAT target rather than causing a crash. */
     {"ftp-alg-large-payload", "", 0, 0,
         test_ftp_alg_large_payload, OVS_RO},
+    {"orig-tuple-rejects-stale-forward", "", 0, 0,
+        test_orig_tuple_rejects_stale_forward, OVS_RO},
 
     {NULL, NULL, 0, 0, NULL, OVS_RO},
 };
