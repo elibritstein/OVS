@@ -7,6 +7,9 @@ Post-v4.0.0
        +new+trk packet recirculated through a second zone is no longer
        translated by a bare ct(nat) action; an explicit src or dst NAT action
        is now required to translate a new packet.
+     * A bare ct(commit,nat) action (no src/dst direction and no address or
+       port range) now commits the connection without a NAT binding instead of
+       installing an invalid reverse tuple, matching the Linux kernel datapath.
 
 
 v4.0.0 - 17 Aug 2026
