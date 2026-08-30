@@ -4663,6 +4663,62 @@ NXST_FLOW reply:
 OVS_TRAFFIC_VSWITCHD_STOP
 AT_CLEANUP
 
+AT_SETUP([conntrack - bare NAT on repeated new UDP connection])
+CHECK_CONNTRACK()
+CHECK_CONNTRACK_NAT()
+OVS_TRAFFIC_VSWITCHD_START()
+
+AT_CHECK([ovs-vsctl -- add-port br0 p0 -- set Interface p0 type=internal dnl
+          ofport_request=1])
+
+AT_DATA([flows.txt], [dnl
+table=0,priority=100,in_port=1,udp,actions=ct(table=1,zone=42,nat)
+table=1,cookie=0x1,priority=200,udp,nw_dst=10.1.1.64,ct_state=+new+trk-dnat,ct_mark=0,actions=ct(commit,table=2,zone=42,nat(dst=10.1.1.2:53),exec(set_field:0x1->ct_mark))
+table=1,cookie=0x2,priority=200,udp,nw_dst=10.1.1.64,ct_state=+new+trk-dnat,ct_mark=0x1,actions=ct(commit,table=2,zone=42,nat(dst=10.1.1.2:53))
+table=1,cookie=0x3,priority=0,actions=drop
+table=2,cookie=0x4,priority=100,udp,nw_dst=10.1.1.2,ct_state=+new+trk+dnat,ct_mark=0x1,actions=drop
+table=2,cookie=0x5,priority=0,actions=drop
+])
+
+AT_CHECK([ovs-ofctl --bundle add-flows br0 flows.txt])
+
+dnl 10.1.1.1:40000 -> 10.1.1.64:53, with the UDP checksum disabled.
+packet=50540000000a50540000000908004500001c000000004011648f0a0101010a0101409c40003500080000
+
+dnl The first packet creates the DNAT entry and stores the mark.
+AT_CHECK([ovs-ofctl -O OpenFlow13 packet-out br0 dnl
+          "in_port=1,packet=${packet},actions=resubmit(,0)"])
+OVS_WAIT_UNTIL([ovs-appctl dpctl/dump-conntrack zone=42 | grep -q "mark=1"])
+
+dnl With no reply seen, the second packet remains new.  A bare ct(nat) must
+dnl leave it untranslated so that the explicit DNAT action is reached again.
+AT_CHECK([ovs-ofctl -O OpenFlow13 packet-out br0 dnl
+          "in_port=1,packet=${packet},actions=resubmit(,0)"])
+
+AT_CHECK([ovs-ofctl dump-flows br0 cookie=0x1/-1 | dnl
+          grep -o "n_packets=[[0-9]]*"], [0], [dnl
+n_packets=1
+])
+AT_CHECK([ovs-ofctl dump-flows br0 cookie=0x2/-1 | dnl
+          grep -o "n_packets=[[0-9]]*"], [0], [dnl
+n_packets=1
+])
+AT_CHECK([ovs-ofctl dump-flows br0 cookie=0x3/-1 | dnl
+          grep -o "n_packets=[[0-9]]*"], [0], [dnl
+n_packets=0
+])
+AT_CHECK([ovs-ofctl dump-flows br0 cookie=0x4/-1 | dnl
+          grep -o "n_packets=[[0-9]]*"], [0], [dnl
+n_packets=2
+])
+AT_CHECK([ovs-ofctl dump-flows br0 cookie=0x5/-1 | dnl
+          grep -o "n_packets=[[0-9]]*"], [0], [dnl
+n_packets=0
+])
+
+OVS_TRAFFIC_VSWITCHD_STOP
+AT_CLEANUP
+
 AT_SETUP([conntrack - generic IP protocol])
 CHECK_CONNTRACK()
 OVS_TRAFFIC_VSWITCHD_START()
