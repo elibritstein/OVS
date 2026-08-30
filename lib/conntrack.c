@@ -1297,6 +1297,20 @@ check_orig_tuple(struct conntrack *ct, struct dp_packet *pkt,
     key.dl_type = ctx_in->key.dl_type;
     key.zone = pkt->md.ct_zone;
     conn_lookup(ct, &key, now, conn, NULL);
+
+    /* The ct_orig_tuple metadata records the pre-NAT (forward) tuple, so a
+     * lookup by it can match an existing connection on its forward key.  That
+     * is only a valid match if the current packet is actually the reply to
+     * that connection, that is the wire tuple equals the connection's reverse
+     * key.  Otherwise the metadata is stale (e.g. carried over from a prior
+     * NAT flow) and must not alias this connection; reject it so a new
+     * connection is created for the current packet. */
+    if (*conn
+        && conn_key_cmp(&(*conn)->key_node[CT_DIR_REV].key, &ctx_in->key)) {
+        *conn = NULL;
+        return false;
+    }
+
     return *conn ? true : false;
 }
 

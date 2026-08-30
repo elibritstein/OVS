@@ -384,6 +384,15 @@ m4_define([CHECK_EXTERNAL_CT],
     AT_SKIP_IF([:])
 ])
 
+# OVS_CONNTRACK_ORIG_TUPLE_STALE_FORWARD()
+#
+# Userspace regression for stale ct_orig_tuple on a forward query.  The
+# kernel datapath uses a separate smoke test in system-kmod-macros.at.
+m4_define([OVS_CONNTRACK_ORIG_TUPLE_STALE_FORWARD],
+[
+    AT_CHECK([ovstest test-conntrack orig-tuple-rejects-stale-forward])
+])
+
 # ADD_EXTERNAL_CT()
 #
 # The userspace datapath does not support external ct.

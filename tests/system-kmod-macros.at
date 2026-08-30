@@ -279,6 +279,51 @@ m4_define([CHECK_NO_DPDK_OFFLOAD])
 # The kernel module tests do not use TC offload.
 m4_define([CHECK_NO_TC_OFFLOAD])
 
+# OVS_CONNTRACK_ORIG_TUPLE_STALE_FORWARD()
+#
+# Kernel datapath smoke test: two distinct UDP flows in zone 1 must create
+# two conntrack entries through the OpenFlow NAT commit path.
+m4_define([OVS_CONNTRACK_ORIG_TUPLE_STALE_FORWARD],
+[
+OVS_TRAFFIC_VSWITCHD_START()
+
+ADD_NAMESPACES(at_ns0)
+ADD_VETH(p0, at_ns0, br0, "10.1.1.1/24")
+
+AT_DATA([flows.txt], [dnl
+table=0,priority=100,in_port=1,udp,actions=ct(zone=1,table=1,nat)
+table=1,cookie=0x1,priority=200,udp,tp_src=45112,ct_state=+new+trk,actions=ct(commit,zone=1,nat(src),table=2)
+table=1,cookie=0x2,priority=200,udp,tp_src=37319,ct_state=+new+trk,actions=ct(commit,zone=1,nat(src),table=2)
+table=1,priority=0,actions=drop
+table=2,priority=0,actions=drop
+])
+
+AT_CHECK([ovs-ofctl --bundle add-flows br0 flows.txt])
+AT_CHECK([ovs-appctl dpctl/flush-conntrack])
+
+flow_l3="eth_src=50:54:00:00:00:09,eth_dst=50:54:00:00:00:0a,dl_type=0x0800,nw_src=10.1.1.1,nw_dst=8.8.0.10,nw_proto=17,nw_ttl=64,nw_frag=no"
+
+AT_CHECK([first_pkt=$(ovs-ofctl compose-packet --bare "$flow_l3, udp_src=45112,udp_dst=53"); dnl
+          ovs-ofctl -O OpenFlow13 packet-out br0 dnl
+          "in_port=1,packet=${first_pkt},actions=resubmit(,0)"])
+
+OVS_WAIT_UNTIL([ovs-appctl dpctl/dump-conntrack zone=1 | grep -q "sport=45112,dport=53"])
+
+AT_CHECK([second_pkt=$(ovs-ofctl compose-packet --bare "$flow_l3, udp_src=37319,udp_dst=53"); dnl
+          ovs-ofctl -O OpenFlow13 packet-out br0 dnl
+          "in_port=1,packet=${second_pkt},actions=resubmit(,0)"])
+
+OVS_WAIT_UNTIL([ovs-appctl dpctl/dump-conntrack zone=1 | grep -q "sport=37319,dport=53"])
+
+AT_CHECK([ovs-appctl dpctl/dump-conntrack zone=1 | grep "sport=37319,dport=53"], [0], [dnl
+udp,orig=(src=10.1.1.1,dst=8.8.0.10,sport=37319,dport=53),reply=(src=8.8.0.10,dst=10.1.1.1,sport=53,dport=37319),zone=1
+])
+
+AT_CHECK([sh -c 'test $(ovs-appctl dpctl/dump-conntrack zone=1 | grep -c "orig=.src=10\.1\.1\.1,dst=8\.8\.0\.10,") -eq 2'])
+
+OVS_TRAFFIC_VSWITCHD_STOP
+])
+
 # OVS_CHECK_BAREUDP()
 #
 # The feature needs to be enabled in the kernel configuration (CONFIG_BAREUDP)
