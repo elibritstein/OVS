@@ -4719,6 +4719,135 @@ n_packets=0
 OVS_TRAFFIC_VSWITCHD_STOP
 AT_CLEANUP
 
+AT_SETUP([conntrack - empty nat on first ct(commit)])
+CHECK_CONNTRACK()
+CHECK_CONNTRACK_NAT()
+OVS_TRAFFIC_VSWITCHD_START()
+
+ADD_NAMESPACES(at_ns0)
+ADD_VETH(p0, at_ns0, br0, "10.1.1.1/24")
+
+AT_DATA([flows.txt], [dnl
+table=0,priority=100,in_port=1,udp,actions=ct(commit,nat,table=2)
+table=2,priority=0,actions=drop
+])
+
+AT_CHECK([ovs-ofctl --bundle add-flows br0 flows.txt])
+AT_CHECK([ovs-appctl dpctl/flush-conntrack])
+
+flow_l3="eth_src=50:54:00:00:00:09,eth_dst=50:54:00:00:00:0a,dl_type=0x0800,nw_src=10.1.1.1,nw_dst=10.1.1.2,nw_proto=17,nw_ttl=64,nw_frag=no"
+
+AT_CHECK([syn_pkt=$(ovs-ofctl compose-packet --bare "$flow_l3, udp_src=12345,udp_dst=5201"); dnl
+          ovs-ofctl -O OpenFlow13 packet-out br0 dnl
+          "in_port=1,packet=${syn_pkt},actions=resubmit(,0)"])
+
+OVS_WAIT_UNTIL([ovs-appctl dpctl/dump-conntrack | grep -q "orig=.src=10\.1\.1\.1,"])
+
+AT_CHECK([ovs-appctl dpctl/dump-conntrack | grep "orig=.src=10\.1\.1\.1,"], [0], [dnl
+udp,orig=(src=10.1.1.1,dst=10.1.1.2,sport=12345,dport=5201),reply=(src=10.1.1.2,dst=10.1.1.1,sport=5201,dport=12345)
+])
+
+OVS_TRAFFIC_VSWITCHD_STOP
+AT_CLEANUP
+
+AT_SETUP([conntrack - nat(src) null binding collision])
+CHECK_CONNTRACK()
+CHECK_CONNTRACK_NAT()
+OVS_TRAFFIC_VSWITCHD_START()
+
+ADD_NAMESPACES(at_ns0)
+ADD_VETH(p0, at_ns0, br0, "10.1.1.1/24")
+
+AT_DATA([flows.txt], [dnl
+table=0,priority=100,in_port=1,udp,actions=ct(table=1,nat)
+table=1,cookie=0x1,priority=200,udp,nw_dst=172.1.1.2,tp_dst=80,ct_state=+new+trk,actions=ct(commit,nat(dst=10.1.1.2:80),table=2)
+table=1,cookie=0x2,priority=200,udp,nw_dst=10.1.1.2,tp_dst=80,ct_state=+new+trk,actions=ct(commit,nat(src),table=2)
+table=1,priority=0,actions=drop
+table=2,priority=0,actions=drop
+])
+
+AT_CHECK([ovs-ofctl --bundle add-flows br0 flows.txt])
+AT_CHECK([ovs-appctl dpctl/flush-conntrack])
+
+flow_l3="eth_src=50:54:00:00:00:09,eth_dst=50:54:00:00:00:0a,dl_type=0x0800,nw_src=10.1.1.1,nw_proto=17,nw_ttl=64,nw_frag=no"
+
+AT_CHECK([dnat_pkt=$(ovs-ofctl compose-packet --bare "$flow_l3, nw_dst=172.1.1.2, udp_src=30001,udp_dst=80"); dnl
+          ovs-ofctl -O OpenFlow13 packet-out br0 dnl
+          "in_port=1,packet=${dnat_pkt},actions=resubmit(,0)"])
+
+OVS_WAIT_UNTIL([ovs-appctl dpctl/dump-conntrack | grep -q "orig=.src=10\.1\.1\.1,dst=172\.1\.1\.2,"])
+
+AT_CHECK([ovs-appctl dpctl/dump-conntrack | grep "orig=.src=10\.1\.1\.1,dst=172\.1\.1\.2,"], [0], [dnl
+udp,orig=(src=10.1.1.1,dst=172.1.1.2,sport=30001,dport=80),reply=(src=10.1.1.2,dst=10.1.1.1,sport=80,dport=30001)
+])
+
+AT_CHECK([plain_pkt=$(ovs-ofctl compose-packet --bare "$flow_l3, nw_dst=10.1.1.2, udp_src=30001,udp_dst=80"); dnl
+          ovs-ofctl -O OpenFlow13 packet-out br0 dnl
+          "in_port=1,packet=${plain_pkt},actions=resubmit(,0)"])
+
+AT_CHECK([sh -c 'line=$(ovs-appctl dpctl/dump-conntrack | grep "orig=(src=10.1.1.1,dst=10.1.1.2,sport=30001,dport=80)"); test -n "$line"; echo "$line" | grep -q "reply=(src=10.1.1.2,dst=10.1.1.1,sport=80,dport="; echo "$line" | grep -vq ",dport=30001)"'])
+
+AT_CHECK([plain_pkt=$(ovs-ofctl compose-packet --bare "$flow_l3, nw_dst=10.1.1.2, udp_src=30001,udp_dst=80"); dnl
+          ovs-ofctl -O OpenFlow13 packet-out br0 dnl
+          "in_port=1,packet=${plain_pkt},actions=ct(commit,zone=1,nat,table=2)"])
+
+AT_CHECK([ovs-appctl dpctl/dump-conntrack zone=1 | grep "orig=.src=10\.1\.1\.1,"], [0], [dnl
+udp,orig=(src=10.1.1.1,dst=10.1.1.2,sport=30001,dport=80),reply=(src=10.1.1.2,dst=10.1.1.1,sport=80,dport=30001),zone=1
+])
+
+OVS_TRAFFIC_VSWITCHD_STOP
+AT_CLEANUP
+
+AT_SETUP([conntrack - nat(dst) null binding collision])
+CHECK_CONNTRACK()
+CHECK_CONNTRACK_NAT()
+OVS_TRAFFIC_VSWITCHD_START()
+
+ADD_NAMESPACES(at_ns0)
+ADD_VETH(p0, at_ns0, br0, "10.1.1.1/24")
+
+AT_DATA([flows.txt], [dnl
+table=0,priority=100,in_port=1,udp,actions=ct(table=1,nat)
+table=1,cookie=0x1,priority=200,udp,nw_dst=172.1.1.2,tp_dst=80,ct_state=+new+trk,actions=ct(commit,nat(dst=10.1.1.2:80),table=2)
+table=1,cookie=0x2,priority=200,udp,nw_dst=10.1.1.2,tp_dst=80,ct_state=+new+trk,actions=ct(commit,nat(dst),table=2)
+table=1,priority=0,actions=drop
+table=2,priority=0,actions=drop
+])
+
+AT_CHECK([ovs-ofctl --bundle add-flows br0 flows.txt])
+AT_CHECK([ovs-appctl dpctl/flush-conntrack])
+
+flow_l3="eth_src=50:54:00:00:00:09,eth_dst=50:54:00:00:00:0a,dl_type=0x0800,nw_src=10.1.1.1,nw_proto=17,nw_ttl=64,nw_frag=no"
+
+AT_CHECK([dnat_pkt=$(ovs-ofctl compose-packet --bare "$flow_l3, nw_dst=172.1.1.2, udp_src=30001,udp_dst=80"); dnl
+          ovs-ofctl -O OpenFlow13 packet-out br0 dnl
+          "in_port=1,packet=${dnat_pkt},actions=resubmit(,0)"])
+
+OVS_WAIT_UNTIL([ovs-appctl dpctl/dump-conntrack | grep -q "orig=.src=10\.1\.1\.1,dst=172\.1\.1\.2,"])
+
+AT_CHECK([ovs-appctl dpctl/dump-conntrack | grep "orig=.src=10\.1\.1\.1,dst=172\.1\.1\.2,"], [0], [dnl
+udp,orig=(src=10.1.1.1,dst=172.1.1.2,sport=30001,dport=80),reply=(src=10.1.1.2,dst=10.1.1.1,sport=80,dport=30001)
+])
+
+AT_CHECK([plain_pkt=$(ovs-ofctl compose-packet --bare "$flow_l3, nw_dst=10.1.1.2, udp_src=30001,udp_dst=80"); dnl
+          ovs-ofctl -O OpenFlow13 packet-out br0 dnl
+          "in_port=1,packet=${plain_pkt},actions=resubmit(,0)"])
+
+AT_CHECK([sh -c 'line=$(ovs-appctl dpctl/dump-conntrack | grep "orig=(src=10.1.1.1,dst=10.1.1.2,sport=30001,dport=80)"); test -n "$line"; echo "$line" | grep -q "reply=(src=.*,dst=10.1.1.1,sport=80,dport="; echo "$line" | grep -vq ",dport=30001)"'])
+
+AT_CHECK([plain_pkt=$(ovs-ofctl compose-packet --bare "$flow_l3, nw_dst=10.1.1.2, udp_src=30001,udp_dst=80"); dnl
+          ovs-ofctl -O OpenFlow13 packet-out br0 dnl
+          "in_port=1,packet=${plain_pkt},actions=ct(commit,zone=1,nat,table=2)"])
+
+AT_CHECK([ovs-appctl dpctl/dump-conntrack zone=1 | grep "orig=.src=10\.1\.1\.1,"], [0], [dnl
+udp,orig=(src=10.1.1.1,dst=10.1.1.2,sport=30001,dport=80),reply=(src=10.1.1.2,dst=10.1.1.1,sport=80,dport=30001),zone=1
+])
+
+dnl The kernel datapath rejects bare ct commit with nat dst and EINVAL.
+OVS_TRAFFIC_VSWITCHD_STOP(["dnl
+/execute ct.*Invalid argument/d"])
+AT_CLEANUP
+
 AT_SETUP([conntrack - generic IP protocol])
 CHECK_CONNTRACK()
 OVS_TRAFFIC_VSWITCHD_START()
