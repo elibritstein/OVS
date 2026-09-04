@@ -36,7 +36,7 @@ EXTRA_OPTS="$EXTRA_OPTS --with-dpdk=$DOCA_LINK --with-doca"
 
 ./boot.sh
 ./configure CFLAGS="${CFLAGS_FOR_OVS}" $EXTRA_OPTS
-make ${JOBS} check TESTSUITEFLAGS="${JOBS} RECHECK=yes"
+make ${JOBS} check TESTSUITEFLAGS="${JOBS}" RECHECK=yes
 
 ovs_version=$(vswitchd/ovs-vswitchd -V 2>&1)
 dpdk_version=$(pkg-config --modversion libdpdk)
