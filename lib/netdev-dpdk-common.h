@@ -39,8 +39,10 @@ struct dpdk_qos_ingress_policer;
 struct dpdk_qos_conf;
 struct smap;
 
-extern struct ovs_mutex dpdk_mutex;
-extern struct ovs_mutex dpdk_mp_mutex OVS_ACQ_AFTER(dpdk_mutex);
+extern struct ovs_mutex dpdk_eth_mutex;
+extern struct ovs_mutex dpdk_vhost_mutex;
+extern struct ovs_mutex dpdk_mp_mutex
+    OVS_ACQ_AFTER(dpdk_eth_mutex, dpdk_vhost_mutex);
 
 /*
  * need to reserve tons of extra space in the mbufs so we can align the

@@ -51,7 +51,8 @@ BUILD_ASSERT_DECL(MAX_NB_MBUF % ROUND_DOWN_POW2(MAX_NB_MBUF / MIN_NB_MBUF)
 BUILD_ASSERT_DECL((MAX_NB_MBUF / ROUND_DOWN_POW2(MAX_NB_MBUF / MIN_NB_MBUF))
                   % MP_CACHE_SZ == 0);
 
-struct ovs_mutex dpdk_mp_mutex OVS_ACQ_AFTER(dpdk_mutex)
+struct ovs_mutex dpdk_mp_mutex
+    OVS_ACQ_AFTER(dpdk_eth_mutex, dpdk_vhost_mutex)
     = OVS_MUTEX_INITIALIZER;
 
 /* Contains all 'struct dpdk_mp's. */
