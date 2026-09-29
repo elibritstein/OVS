@@ -6001,6 +6001,17 @@ static const struct dpdk_qos_ops trtcm_policer_ops = {
     .qos_queue_dump_state_init = trtcm_policer_qos_queue_dump_state_init
 };
 
+static void
+set_error(struct rte_flow_error *error, enum rte_flow_error_type type)
+{
+    if (!error) {
+        return;
+    }
+    error->type = type;
+    error->cause = NULL;
+    error->message = NULL;
+}
+
 static int
 dpdk_rx_steer_add_flow(struct netdev_dpdk *dev,
                       const struct rte_flow_item items[],

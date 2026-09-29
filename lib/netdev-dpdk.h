@@ -56,17 +56,6 @@ netdev_dpdk_rte_flow_query_count(struct netdev *netdev,
 int
 netdev_dpdk_get_port_id(struct netdev *netdev);
 
-static inline void
-set_error(struct rte_flow_error *error, enum rte_flow_error_type type)
-{
-    if (!error) {
-        return;
-    }
-    error->type = type;
-    error->cause = NULL;
-    error->message = NULL;
-}
-
 #else
 
 static inline void
