@@ -740,12 +740,22 @@ dpdk_mp_sweep(void) OVS_REQUIRES(dpdk_mp_mutex)
     }
 }
 
+struct dpdk_mp_config {
+    char *name;
+    int mtu;
+    int socket_id;
+    int n_rxq;
+    int rxq_size;
+    int n_txq;
+    int txq_size;
+};
+
 /* Calculating the required number of mbufs differs depending on the
  * mempool model being used. Check if per port memory is in use before
  * calculating.
  */
 static uint32_t
-dpdk_calculate_mbufs(struct netdev_dpdk *dev, int mtu)
+dpdk_calculate_mbufs(struct dpdk_mp_config *cfg, int mtu)
 {
     uint32_t n_mbufs;
 
@@ -770,9 +780,9 @@ dpdk_calculate_mbufs(struct netdev_dpdk *dev, int mtu)
          * + <packets in the pmd threads>
          * + <additional memory for corner cases>
          */
-        n_mbufs = dev->requested_n_rxq * dev->requested_rxq_size
-                  + dev->requested_n_txq * dev->requested_txq_size
-                  + MIN(RTE_MAX_LCORE, dev->requested_n_rxq) * NETDEV_MAX_BURST
+        n_mbufs = cfg->n_rxq * cfg->rxq_size
+                  + cfg->n_txq * cfg->txq_size
+                  + MIN(RTE_MAX_LCORE, cfg->n_rxq) * NETDEV_MAX_BURST
                   + MIN_NB_MBUF;
     }
 
@@ -780,11 +790,11 @@ dpdk_calculate_mbufs(struct netdev_dpdk *dev, int mtu)
 }
 
 static struct dpdk_mp *
-dpdk_mp_create(struct netdev_dpdk *dev, int mtu)
+dpdk_mp_create(struct dpdk_mp_config *cfg, int mtu)
 {
     char mp_name[RTE_MEMPOOL_NAMESIZE];
-    const char *netdev_name = netdev_get_name(&dev->up);
-    int socket_id = dev->requested_socket_id;
+    const char *netdev_name = cfg->name;
+    int socket_id = cfg->socket_id;
     uint32_t n_mbufs = 0;
     uint32_t mbuf_size = 0;
     uint32_t aligned_mbuf_size = 0;
@@ -805,7 +815,7 @@ dpdk_mp_create(struct netdev_dpdk *dev, int mtu)
     /* Get the size of each mbuf, based on the MTU */
     mbuf_size = MTU_TO_FRAME_LEN(mtu);
 
-    n_mbufs = dpdk_calculate_mbufs(dev, mtu);
+    n_mbufs = dpdk_calculate_mbufs(cfg, mtu);
 
     do {
         /* Full DPDK memory pool name must be unique and cannot be
@@ -830,7 +840,7 @@ dpdk_mp_create(struct netdev_dpdk *dev, int mtu)
                   "on socket %d for %d Rx and %d Tx queues, "
                   "cache line size of %u",
                   netdev_name, n_mbufs, mbuf_size, socket_id,
-                  dev->requested_n_rxq, dev->requested_n_txq,
+                  cfg->n_rxq, cfg->n_txq,
                   RTE_CACHE_LINE_SIZE);
 
         /* The size of the mbuf's private area (i.e. area that holds OvS'
@@ -891,8 +901,9 @@ dpdk_mp_create(struct netdev_dpdk *dev, int mtu)
 }
 
 static struct dpdk_mp *
-dpdk_mp_get(struct netdev_dpdk *dev, int mtu)
+dpdk_mp_get(struct dpdk_mp_config *cfg)
 {
+    int mtu = FRAME_LEN_TO_MTU(dpdk_buf_size(cfg->mtu));
     struct dpdk_mp *dmp = NULL, *next;
     bool reuse = false;
 
@@ -902,10 +913,10 @@ dpdk_mp_get(struct netdev_dpdk *dev, int mtu)
     if (!per_port_memory) {
         /* If user has provided defined mempools, check if one is suitable
          * and get new buffer size.*/
-        mtu = dpdk_get_user_adjusted_mtu(mtu, dev->requested_mtu,
-                                         dev->requested_socket_id);
+        mtu = dpdk_get_user_adjusted_mtu(mtu, cfg->mtu,
+                                         cfg->socket_id);
         LIST_FOR_EACH (dmp, list_node, &dpdk_mp_list) {
-            if (dmp->socket_id == dev->requested_socket_id
+            if (dmp->socket_id == cfg->socket_id
                 && dmp->mtu == mtu) {
                 VLOG_DBG("Reusing mempool \"%s\"", dmp->mp->name);
                 dmp->refcount++;
@@ -918,7 +929,7 @@ dpdk_mp_get(struct netdev_dpdk *dev, int mtu)
     dpdk_mp_sweep();
 
     if (!reuse) {
-        dmp = dpdk_mp_create(dev, mtu);
+        dmp = dpdk_mp_create(cfg, mtu);
         if (dmp) {
             /* Shared memory will hit the reuse case above so will not
              * request a mempool that already exists but we need to check
@@ -967,26 +978,26 @@ dpdk_mp_put(struct dpdk_mp *dmp)
  * requested_mtu. On success, a new configuration will be applied.
  * On error, device will be left unchanged. */
 static int
-netdev_dpdk_mempool_configure(struct netdev_dpdk *dev)
+netdev_dpdk_mempool_configure(struct netdev_dpdk *dev,
+                              struct dpdk_mp_config *cfg)
     OVS_REQUIRES(dev->mutex)
 {
-    uint32_t buf_size = dpdk_buf_size(dev->requested_mtu);
     struct dpdk_mp *dmp;
     int ret = 0;
 
     /* With shared memory we do not need to configure a mempool if the MTU
      * and socket ID have not changed, the previous configuration is still
      * valid so return 0 */
-    if (!per_port_memory && dev->mtu == dev->requested_mtu
-        && dev->socket_id == dev->requested_socket_id) {
+    if (!per_port_memory && dev->mtu == cfg->mtu
+        && dev->socket_id == cfg->socket_id) {
         return ret;
     }
 
-    dmp = dpdk_mp_get(dev, FRAME_LEN_TO_MTU(buf_size));
+    dmp = dpdk_mp_get(cfg);
     if (!dmp) {
         VLOG_ERR("Failed to create memory pool for netdev "
                  "%s, with MTU %d on socket %d: %s\n",
-                 dev->up.name, dev->requested_mtu, dev->requested_socket_id,
+                 dev->up.name, cfg->mtu, cfg->socket_id,
                  rte_strerror(rte_errno));
         ret = rte_errno;
     } else {
@@ -1004,8 +1015,8 @@ netdev_dpdk_mempool_configure(struct netdev_dpdk *dev)
             dpdk_mp_put(dev->dpdk_mp);
         }
         dev->dpdk_mp = dmp;
-        dev->mtu = dev->requested_mtu;
-        dev->socket_id = dev->requested_socket_id;
+        dev->mtu = cfg->mtu;
+        dev->socket_id = cfg->socket_id;
         dev->max_packet_len = MTU_TO_FRAME_LEN(dev->mtu);
     }
 
@@ -6323,6 +6334,7 @@ static int
 netdev_dpdk_eth_reconfigure(struct netdev *netdev)
 {
     struct netdev_dpdk *dev = netdev_dpdk_cast(netdev);
+    struct dpdk_mp_config mp_cfg;
     bool pending_reset;
     bool try_rx_steer;
     int err = 0;
@@ -6370,7 +6382,16 @@ retry:
 
     dev->started = false;
 
-    err = netdev_dpdk_mempool_configure(dev);
+    mp_cfg = (struct dpdk_mp_config){
+        .name = dev->up.name,
+        .mtu = dev->requested_mtu,
+        .socket_id = dev->requested_socket_id,
+        .n_rxq = dev->requested_n_rxq,
+        .rxq_size = dev->requested_rxq_size,
+        .n_txq = dev->requested_n_txq,
+        .txq_size = dev->requested_txq_size,
+    };
+    err = netdev_dpdk_mempool_configure(dev, &mp_cfg);
     if (err && err != EEXIST) {
         goto out;
     }
@@ -6464,9 +6485,18 @@ dpdk_vhost_reconfigure_helper(struct netdev_dpdk *dev)
     netdev_dpdk_remap_txqs(dev);
 
     if (netdev_dpdk_get_vid(dev) >= 0) {
+        struct dpdk_mp_config mp_cfg = {
+            .name = dev->up.name,
+            .mtu = dev->requested_mtu,
+            .socket_id = dev->requested_socket_id,
+            .n_rxq = dev->requested_n_rxq,
+            .rxq_size = dev->requested_rxq_size,
+            .n_txq = dev->requested_n_txq,
+            .txq_size = dev->requested_txq_size,
+        };
         int err;
 
-        err = netdev_dpdk_mempool_configure(dev);
+        err = netdev_dpdk_mempool_configure(dev, &mp_cfg);
         if (!err) {
             /* A new mempool was created or re-used. */
             netdev_change_seq_changed(&dev->up);
