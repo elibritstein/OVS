@@ -1503,8 +1503,6 @@ netdev_dpdk_alloc_txq(unsigned int n_txqs)
     txqs = dpdk_rte_mzalloc(n_txqs * sizeof *txqs);
     if (txqs) {
         for (i = 0; i < n_txqs; i++) {
-            /* Initialize map for vhost devices. */
-            txqs[i].map = OVS_VHOST_QUEUE_MAP_UNKNOWN;
             rte_spinlock_init(&txqs[i].tx_lock);
         }
     }
@@ -1526,7 +1524,7 @@ netdev_dpdk_vhost_alloc(void)
 }
 
 static void
-common_construct(struct netdev *netdev, dpdk_port_t port_no, int socket_id)
+common_construct(struct netdev *netdev, int socket_id)
     OVS_REQUIRES(dpdk_mutex)
 {
     struct netdev_dpdk *dev = netdev_dpdk_cast(netdev);
@@ -1540,16 +1538,8 @@ common_construct(struct netdev *netdev, dpdk_port_t port_no, int socket_id)
      * use 'SOCKET0'. */
     dev->socket_id = socket_id < 0 ? SOCKET0 : socket_id;
     dev->requested_socket_id = dev->socket_id;
-    dev->port_id = port_no;
-    dev->flags = 0;
     dev->requested_mtu = RTE_ETHER_MTU;
     dev->max_packet_len = MTU_TO_FRAME_LEN(dev->mtu);
-    dev->requested_lsc_interrupt_mode = 0;
-    ovsrcu_index_init(&dev->vid, -1);
-    dev->vhost_reconfigured = false;
-    dev->virtio_features_state = OVS_VIRTIO_F_CLEAN;
-    dev->attached = false;
-    dev->started = false;
 
     ovsrcu_init(&dev->qos_conf, NULL);
 
@@ -1559,35 +1549,17 @@ common_construct(struct netdev *netdev, dpdk_port_t port_no, int socket_id)
 
     netdev->n_rxq = 0;
     netdev->n_txq = 0;
-    dev->user_n_rxq = NR_QUEUE;
     dev->requested_n_rxq = NR_QUEUE;
     dev->requested_n_txq = NR_QUEUE;
-    dev->requested_rxq_size = NIC_PORT_DEFAULT_RXQ_SIZE;
-    dev->requested_txq_size = NIC_PORT_DEFAULT_TXQ_SIZE;
-    dev->requested_rx_steer_flags = 0;
-    dev->rx_steer_flags = 0;
-    dev->rx_steer_flows_num = 0;
-    dev->rx_steer_flows = NULL;
-
-    /* Initialize the flow control to NULL */
-    memset(&dev->fc_conf, 0, sizeof dev->fc_conf);
 
     /* Initilize the hardware offload flags to 0 */
     dev->hw_ol_features = 0;
-
-    dev->rx_metadata_delivery_configured = false;
 
     dev->flags = NETDEV_UP | NETDEV_PROMISC;
 
     ovs_list_push_back(&dpdk_list, &dev->list_node);
 
     netdev_request_reconfigure(netdev);
-
-    dev->rte_xstats_names = NULL;
-    dev->rte_xstats_names_size = 0;
-
-    dev->rte_xstats_ids = NULL;
-    dev->rte_xstats_ids_size = 0;
 
     dev->sw_stats = xzalloc(sizeof *dev->sw_stats);
 }
@@ -1609,12 +1581,18 @@ vhost_common_construct(struct netdev *netdev)
         rte_free(dev->vhost_rxq_enabled);
         return ENOMEM;
     }
+    for (unsigned i = 0; i < OVS_VHOST_MAX_QUEUE_NUM; i++) {
+        dev->tx_q[i].map = OVS_VHOST_QUEUE_MAP_UNKNOWN;
+    }
 
+    ovsrcu_index_init(&dev->vid, -1);
+    dev->vhost_reconfigured = false;
+    dev->virtio_features_state = OVS_VIRTIO_F_CLEAN;
     atomic_init(&dev->vhost_tx_retries_max, VHOST_ENQ_RETRY_DEF);
 
     dev->vhost_max_queue_pairs = VHOST_MAX_QUEUE_PAIRS_DEF;
 
-    common_construct(netdev, DPDK_ETH_PORT_ID_INVALID, socket_id);
+    common_construct(netdev, socket_id);
     return 0;
 }
 
@@ -1722,7 +1700,25 @@ netdev_dpdk_eth_construct(struct netdev *netdev)
     struct netdev_dpdk *dev = netdev_dpdk_cast(netdev);
 
     ovs_mutex_lock(&dpdk_mutex);
-    common_construct(netdev, DPDK_ETH_PORT_ID_INVALID, SOCKET0);
+    common_construct(netdev, SOCKET0);
+
+    dev->port_id = DPDK_ETH_PORT_ID_INVALID;
+    dev->attached = false;
+    dev->started = false;
+    dev->requested_lsc_interrupt_mode = 0;
+    dev->user_n_rxq = NR_QUEUE;
+    dev->requested_rxq_size = NIC_PORT_DEFAULT_RXQ_SIZE;
+    dev->requested_txq_size = NIC_PORT_DEFAULT_TXQ_SIZE;
+    dev->requested_rx_steer_flags = 0;
+    dev->rx_steer_flags = 0;
+    dev->rx_steer_flows_num = 0;
+    dev->rx_steer_flows = NULL;
+    memset(&dev->fc_conf, 0, sizeof dev->fc_conf);
+    dev->rx_metadata_delivery_configured = false;
+    dev->rte_xstats_names = NULL;
+    dev->rte_xstats_names_size = 0;
+    dev->rte_xstats_ids = NULL;
+    dev->rte_xstats_ids_size = 0;
     dev->sw_stats->tx_retries = UINT64_MAX;
     ovs_mutex_unlock(&dpdk_mutex);
     return 0;
@@ -1775,6 +1771,9 @@ netdev_dpdk_eth_destruct(struct netdev *netdev)
                 continue;
             }
             LIST_FOR_EACH (sibling, list_node, &dpdk_list) {
+                if (!is_eth_class(sibling->up.netdev_class)) {
+                    continue;
+                }
                 if (sibling->port_id != sibling_port_id) {
                     continue;
                 }
@@ -2044,6 +2043,9 @@ netdev_dpdk_lookup_by_port_id(dpdk_port_t port_id)
     struct netdev_dpdk *dev;
 
     LIST_FOR_EACH (dev, list_node, &dpdk_list) {
+        if (!is_eth_class(dev->up.netdev_class)) {
+            continue;
+        }
         if (dev->port_id == port_id) {
             return dev;
         }
@@ -4822,6 +4824,9 @@ netdev_dpdk_detach(struct unixctl_conn *conn, int argc OVS_UNUSED,
         struct netdev_dpdk *dev;
 
         LIST_FOR_EACH (dev, list_node, &dpdk_list) {
+            if (!is_eth_class(dev->up.netdev_class)) {
+                continue;
+            }
             if (dev->port_id != sibling_port_id) {
                 continue;
             }
@@ -5001,6 +5006,9 @@ new_device(int vid)
     ovs_mutex_lock(&dpdk_mutex);
     /* Add device to the vhost port with the same name as that passed down. */
     LIST_FOR_EACH(dev, list_node, &dpdk_list) {
+        if (!is_vhost_class(dev->up.netdev_class)) {
+            continue;
+        }
         ovs_mutex_lock(&dev->mutex);
         if (nullable_string_is_equal(ifname, dev->vhost_id)) {
             uint32_t qp_num = rte_vhost_get_vring_num(vid) / VIRTIO_QNUM;
@@ -5117,6 +5125,9 @@ destroy_device(int vid)
 
     ovs_mutex_lock(&dpdk_mutex);
     LIST_FOR_EACH (dev, list_node, &dpdk_list) {
+        if (!is_vhost_class(dev->up.netdev_class)) {
+            continue;
+        }
         if (netdev_dpdk_get_vid(dev) == vid) {
 
             ovs_mutex_lock(&dev->mutex);
@@ -5177,6 +5188,9 @@ vring_state_changed__(struct vhost_state_change *sc)
 
     ovs_mutex_lock(&dpdk_mutex);
     LIST_FOR_EACH (dev, list_node, &dpdk_list) {
+        if (!is_vhost_class(dev->up.netdev_class)) {
+            continue;
+        }
         ovs_mutex_lock(&dev->mutex);
         if (nullable_string_is_equal(sc->ifname, dev->vhost_id)) {
             if (is_rx) {
@@ -5283,6 +5297,9 @@ destroy_connection(int vid)
 
     ovs_mutex_lock(&dpdk_mutex);
     LIST_FOR_EACH (dev, list_node, &dpdk_list) {
+        if (!is_vhost_class(dev->up.netdev_class)) {
+            continue;
+        }
         ovs_mutex_lock(&dev->mutex);
         if (nullable_string_is_equal(ifname, dev->vhost_id)) {
             uint32_t qp_num = NR_QUEUE;
@@ -6490,9 +6507,9 @@ dpdk_vhost_reconfigure_helper(struct netdev_dpdk *dev)
             .mtu = dev->requested_mtu,
             .socket_id = dev->requested_socket_id,
             .n_rxq = dev->requested_n_rxq,
-            .rxq_size = dev->requested_rxq_size,
+            .rxq_size = NIC_PORT_DEFAULT_RXQ_SIZE,
             .n_txq = dev->requested_n_txq,
-            .txq_size = dev->requested_txq_size,
+            .txq_size = NIC_PORT_DEFAULT_TXQ_SIZE,
         };
         int err;
 
