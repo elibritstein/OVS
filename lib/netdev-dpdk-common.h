@@ -21,22 +21,57 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include <rte_ether.h>
 #include <rte_ethdev.h>
+#include <rte_mempool.h>
 
 #include "netdev-provider.h"
 #include "openvswitch/compiler.h"
 #include "ovs-thread.h"
+#include "packets.h"
 
 struct dpdk_tx_queue;
 struct ingress_policer;
 struct qos_conf;
+struct smap;
 
+extern struct ovs_mutex dpdk_mutex;
+extern struct ovs_mutex dpdk_mp_mutex OVS_ACQ_AFTER(dpdk_mutex);
+
+/*
+ * need to reserve tons of extra space in the mbufs so we can align the
+ * DMA addresses to 4KB.
+ * The minimum mbuf size is limited to avoid scatter behaviour and drop in
+ * performance for standard Ethernet MTU.
+ */
 #define ETHER_HDR_MAX_LEN           (RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN \
                                      + (2 * VLAN_HEADER_LEN))
+#define MTU_TO_FRAME_LEN(mtu)       ((mtu) + RTE_ETHER_HDR_LEN + \
+                                     RTE_ETHER_CRC_LEN)
 #define MTU_TO_MAX_FRAME_LEN(mtu)   ((mtu) + ETHER_HDR_MAX_LEN)
+#define FRAME_LEN_TO_MTU(frame_len) ((frame_len)                    \
+                                     - RTE_ETHER_HDR_LEN - RTE_ETHER_CRC_LEN)
+#define NETDEV_DPDK_MBUF_ALIGN      1024
 #define NETDEV_DPDK_MAX_PKT_LEN     9728
+
+/* Max and min number of packets in the mempool. OVS tries to allocate a
+ * mempool with MAX_NB_MBUF: if this fails (because the system doesn't have
+ * enough hugepages) we keep halving the number until the allocation succeeds
+ * or we reach MIN_NB_MBUF */
+
+#define MAX_NB_MBUF          (4096 * 64)
+#define MIN_NB_MBUF          (4096 * 4)
+#define MP_CACHE_SZ          RTE_MEMPOOL_CACHE_MAX_SIZE
+
+struct dpdk_mp {
+     struct rte_mempool *mp;
+     int mtu;
+     int socket_id;
+     int refcount;
+     struct ovs_list list_node OVS_GUARDED_BY(dpdk_mp_mutex);
+};
 
 /* Custom software stats for dpdk ports */
 struct netdev_dpdk_sw_stats {
@@ -224,5 +259,30 @@ int netdev_dpdk_common_set_mtu(struct netdev_dpdk_common *common, int mtu);
 void
 netdev_dpdk_common_get_sw_custom_stats(struct netdev_dpdk_common *common,
                                        struct netdev_custom_stats *stats);
+
+/* Allocates an area of 'sz' bytes from DPDK.  The memory is zero'ed.
+ *
+ * Unlike xmalloc(), this function can return NULL on failure. */
+static inline void *
+dpdk_zmalloc(size_t sz)
+{
+    return rte_zmalloc("ovs_dpdk", sz, CACHE_LINE_SIZE);
+}
+
+struct dpdk_mp_config {
+    char *name;
+    int mtu;
+    int socket_id;
+    int n_rxq;
+    int rxq_size;
+    int n_txq;
+    int txq_size;
+};
+
+void dpdk_mp_init(const struct smap *ovs_other_config);
+bool dpdk_mp_per_port_memory(void);
+struct dpdk_mp * dpdk_mp_get(struct dpdk_mp_config *cfg);
+void dpdk_mp_put(struct dpdk_mp *dmp);
+void dpdk_mp_dump(FILE *stream, struct dpdk_mp *dmp);
 
 #endif /* NETDEV_DPDK_COMMON_H */
