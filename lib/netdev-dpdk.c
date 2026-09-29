@@ -4335,13 +4335,6 @@ netdev_dpdk_get_carrier_resets(const struct netdev *netdev)
 }
 
 static int
-netdev_dpdk_set_miimon(struct netdev *netdev OVS_UNUSED,
-                       long long int interval OVS_UNUSED)
-{
-    return EOPNOTSUPP;
-}
-
-static int
 netdev_dpdk_update_flags__(struct netdev_dpdk *dev,
                            enum netdev_flags off, enum netdev_flags on,
                            enum netdev_flags *old_flagsp)
@@ -6757,93 +6750,134 @@ parse_vhost_config(const struct smap *ovs_other_config)
               vhost_postcopy_enabled ? "enabled" : "disabled");
 }
 
-#define NETDEV_DPDK_CLASS_COMMON                            \
-    .is_pmd = true,                                         \
-    .alloc = netdev_dpdk_alloc,                             \
-    .dealloc = netdev_dpdk_dealloc,                         \
-    .get_numa_id = netdev_dpdk_get_numa_id,                 \
-    .set_etheraddr = netdev_dpdk_set_etheraddr,             \
-    .get_etheraddr = netdev_dpdk_get_etheraddr,             \
-    .get_mtu = netdev_dpdk_get_mtu,                         \
-    .set_mtu = netdev_dpdk_set_mtu,                         \
-    .get_ifindex = netdev_dpdk_get_ifindex,                 \
-    .get_carrier_resets = netdev_dpdk_get_carrier_resets,   \
-    .set_miimon_interval = netdev_dpdk_set_miimon,          \
-    .set_policing = netdev_dpdk_set_policing,               \
-    .get_qos_types = netdev_dpdk_get_qos_types,             \
-    .get_qos = netdev_dpdk_get_qos,                         \
-    .set_qos = netdev_dpdk_set_qos,                         \
-    .get_queue = netdev_dpdk_get_queue,                     \
-    .set_queue = netdev_dpdk_set_queue,                     \
-    .delete_queue = netdev_dpdk_delete_queue,               \
-    .get_queue_stats = netdev_dpdk_get_queue_stats,         \
-    .queue_dump_start = netdev_dpdk_queue_dump_start,       \
-    .queue_dump_next = netdev_dpdk_queue_dump_next,         \
-    .queue_dump_done = netdev_dpdk_queue_dump_done,         \
-    .update_flags = netdev_dpdk_update_flags,               \
-    .rxq_alloc = netdev_dpdk_rxq_alloc,                     \
-    .rxq_construct = netdev_dpdk_rxq_construct,             \
-    .rxq_destruct = netdev_dpdk_rxq_destruct,               \
-    .rxq_dealloc = netdev_dpdk_rxq_dealloc
-
-#define NETDEV_DPDK_CLASS_BASE                          \
-    NETDEV_DPDK_CLASS_COMMON,                           \
-    .init = netdev_dpdk_class_init,                     \
-    .run = netdev_dpdk_run,                             \
-    .wait = netdev_dpdk_wait,                           \
-    .destruct = netdev_dpdk_destruct,                   \
-    .set_tx_multiq = netdev_dpdk_set_tx_multiq,         \
-    .get_carrier = netdev_dpdk_get_carrier,             \
-    .get_stats = netdev_dpdk_get_stats,                 \
-    .get_custom_stats = netdev_dpdk_get_custom_stats,   \
-    .get_features = netdev_dpdk_get_features,           \
-    .get_speed = netdev_dpdk_get_speed,                 \
-    .get_duplex = netdev_dpdk_get_duplex,               \
-    .get_status = netdev_dpdk_get_status,               \
-    .reconfigure = netdev_dpdk_reconfigure,             \
-    .rxq_recv = netdev_dpdk_rxq_recv
-
 static const struct netdev_class dpdk_class = {
     .type = "dpdk",
-    NETDEV_DPDK_CLASS_BASE,
+    .is_pmd = true,
+    .init = netdev_dpdk_class_init,
+    .run = netdev_dpdk_run,
+    .wait = netdev_dpdk_wait,
+    .alloc = netdev_dpdk_alloc,
     .construct = netdev_dpdk_construct,
+    .destruct = netdev_dpdk_destruct,
+    .dealloc = netdev_dpdk_dealloc,
     .get_config = netdev_dpdk_get_config,
     .set_config = netdev_dpdk_set_config,
+    .get_numa_id = netdev_dpdk_get_numa_id,
+    .set_tx_multiq = netdev_dpdk_set_tx_multiq,
     .send = netdev_dpdk_eth_send,
+    .set_etheraddr = netdev_dpdk_set_etheraddr,
+    .get_etheraddr = netdev_dpdk_get_etheraddr,
+    .get_mtu = netdev_dpdk_get_mtu,
+    .set_mtu = netdev_dpdk_set_mtu,
+    .get_ifindex = netdev_dpdk_get_ifindex,
+    .get_carrier = netdev_dpdk_get_carrier,
+    .get_carrier_resets = netdev_dpdk_get_carrier_resets,
+    .get_stats = netdev_dpdk_get_stats,
+    .get_custom_stats = netdev_dpdk_get_custom_stats,
+    .get_features = netdev_dpdk_get_features,
+    .get_speed = netdev_dpdk_get_speed,
+    .get_duplex = netdev_dpdk_get_duplex,
+    .set_policing = netdev_dpdk_set_policing,
+    .get_qos_types = netdev_dpdk_get_qos_types,
+    .get_qos = netdev_dpdk_get_qos,
+    .set_qos = netdev_dpdk_set_qos,
+    .get_queue = netdev_dpdk_get_queue,
+    .set_queue = netdev_dpdk_set_queue,
+    .delete_queue = netdev_dpdk_delete_queue,
+    .get_queue_stats = netdev_dpdk_get_queue_stats,
+    .queue_dump_start = netdev_dpdk_queue_dump_start,
+    .queue_dump_next = netdev_dpdk_queue_dump_next,
+    .queue_dump_done = netdev_dpdk_queue_dump_done,
+    .get_status = netdev_dpdk_get_status,
+    .update_flags = netdev_dpdk_update_flags,
+    .reconfigure = netdev_dpdk_reconfigure,
+    .rxq_alloc = netdev_dpdk_rxq_alloc,
+    .rxq_construct = netdev_dpdk_rxq_construct,
+    .rxq_destruct = netdev_dpdk_rxq_destruct,
+    .rxq_dealloc = netdev_dpdk_rxq_dealloc,
+    .rxq_recv = netdev_dpdk_rxq_recv,
 };
 
 static const struct netdev_class dpdk_vhost_class = {
     .type = "dpdkvhostuser",
-    NETDEV_DPDK_CLASS_COMMON,
+    .is_pmd = true,
     .init = netdev_dpdk_vhost_class_init,
+    .alloc = netdev_dpdk_alloc,
     .construct = netdev_dpdk_vhost_construct,
     .destruct = netdev_dpdk_vhost_destruct,
+    .dealloc = netdev_dpdk_dealloc,
+    .get_numa_id = netdev_dpdk_get_numa_id,
     .send = netdev_dpdk_vhost_send,
+    .set_etheraddr = netdev_dpdk_set_etheraddr,
+    .get_etheraddr = netdev_dpdk_get_etheraddr,
+    .get_mtu = netdev_dpdk_get_mtu,
+    .set_mtu = netdev_dpdk_set_mtu,
+    .get_ifindex = netdev_dpdk_get_ifindex,
     .get_carrier = netdev_dpdk_vhost_get_carrier,
     .get_stats = netdev_dpdk_vhost_get_stats,
     .get_custom_stats = netdev_dpdk_vhost_get_custom_stats,
+    .set_policing = netdev_dpdk_set_policing,
+    .get_qos_types = netdev_dpdk_get_qos_types,
+    .get_qos = netdev_dpdk_get_qos,
+    .set_qos = netdev_dpdk_set_qos,
+    .get_queue = netdev_dpdk_get_queue,
+    .set_queue = netdev_dpdk_set_queue,
+    .delete_queue = netdev_dpdk_delete_queue,
+    .get_queue_stats = netdev_dpdk_get_queue_stats,
+    .queue_dump_start = netdev_dpdk_queue_dump_start,
+    .queue_dump_next = netdev_dpdk_queue_dump_next,
+    .queue_dump_done = netdev_dpdk_queue_dump_done,
     .get_status = netdev_dpdk_vhost_user_get_status,
+    .update_flags = netdev_dpdk_update_flags,
     .reconfigure = netdev_dpdk_vhost_reconfigure,
-    .rxq_recv = netdev_dpdk_vhost_rxq_recv,
+    .rxq_alloc = netdev_dpdk_rxq_alloc,
+    .rxq_construct = netdev_dpdk_rxq_construct,
+    .rxq_destruct = netdev_dpdk_rxq_destruct,
+    .rxq_dealloc = netdev_dpdk_rxq_dealloc,
     .rxq_enabled = netdev_dpdk_vhost_rxq_enabled,
+    .rxq_recv = netdev_dpdk_vhost_rxq_recv,
 };
 
 static const struct netdev_class dpdk_vhost_client_class = {
     .type = "dpdkvhostuserclient",
-    NETDEV_DPDK_CLASS_COMMON,
+    .is_pmd = true,
     .init = netdev_dpdk_vhost_class_init,
+    .alloc = netdev_dpdk_alloc,
     .construct = netdev_dpdk_vhost_client_construct,
     .destruct = netdev_dpdk_vhost_destruct,
+    .dealloc = netdev_dpdk_dealloc,
     .get_config = netdev_dpdk_vhost_client_get_config,
     .set_config = netdev_dpdk_vhost_client_set_config,
+    .get_numa_id = netdev_dpdk_get_numa_id,
     .send = netdev_dpdk_vhost_send,
+    .set_etheraddr = netdev_dpdk_set_etheraddr,
+    .get_etheraddr = netdev_dpdk_get_etheraddr,
+    .get_mtu = netdev_dpdk_get_mtu,
+    .set_mtu = netdev_dpdk_set_mtu,
+    .get_ifindex = netdev_dpdk_get_ifindex,
     .get_carrier = netdev_dpdk_vhost_get_carrier,
     .get_stats = netdev_dpdk_vhost_get_stats,
     .get_custom_stats = netdev_dpdk_vhost_get_custom_stats,
+    .set_policing = netdev_dpdk_set_policing,
+    .get_qos_types = netdev_dpdk_get_qos_types,
+    .get_qos = netdev_dpdk_get_qos,
+    .set_qos = netdev_dpdk_set_qos,
+    .get_queue = netdev_dpdk_get_queue,
+    .set_queue = netdev_dpdk_set_queue,
+    .delete_queue = netdev_dpdk_delete_queue,
+    .get_queue_stats = netdev_dpdk_get_queue_stats,
+    .queue_dump_start = netdev_dpdk_queue_dump_start,
+    .queue_dump_next = netdev_dpdk_queue_dump_next,
+    .queue_dump_done = netdev_dpdk_queue_dump_done,
     .get_status = netdev_dpdk_vhost_user_get_status,
+    .update_flags = netdev_dpdk_update_flags,
     .reconfigure = netdev_dpdk_vhost_client_reconfigure,
-    .rxq_recv = netdev_dpdk_vhost_rxq_recv,
+    .rxq_alloc = netdev_dpdk_rxq_alloc,
+    .rxq_construct = netdev_dpdk_rxq_construct,
+    .rxq_destruct = netdev_dpdk_rxq_destruct,
+    .rxq_dealloc = netdev_dpdk_rxq_dealloc,
     .rxq_enabled = netdev_dpdk_vhost_rxq_enabled,
+    .rxq_recv = netdev_dpdk_vhost_rxq_recv,
 };
 
 void
