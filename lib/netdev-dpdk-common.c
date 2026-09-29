@@ -16,6 +16,9 @@
 
 #include <config.h>
 
+#include <errno.h>
+#include <stdarg.h>
+
 #include <rte_malloc.h>
 #include <rte_mbuf.h>
 #include <rte_mempool.h>
@@ -30,9 +33,12 @@
 #include "ovs-thread.h"
 #include "smap.h"
 #include "sset.h"
+#include "unaligned.h"
+#include "userspace-tso.h"
 #include "util.h"
 
 VLOG_DEFINE_THIS_MODULE(netdev_dpdk_common);
+static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
 
 static bool per_port_memory = false; /* Status of per port memory support */
 
@@ -544,6 +550,49 @@ static const struct dpdk_qos_ops *const qos_confs[] = {
     NULL
 };
 
+void
+netdev_dpdk_common_vlog_rl(enum vlog_level level, const char *format, ...)
+{
+    va_list args;
+
+    if (vlog_should_drop(&this_module, level, &rl)) {
+        return;
+    }
+
+    va_start(args, format);
+    vlog_valist(&this_module, level, format, args);
+    va_end(args);
+}
+
+void
+netdev_dpdk_mbuf_dump(const char *prefix, const char *message,
+                      const struct rte_mbuf *mbuf)
+{
+    static struct vlog_rate_limit dump_rl = VLOG_RATE_LIMIT_INIT(5, 5);
+    char *response = NULL;
+    FILE *stream;
+    size_t size;
+
+    if (VLOG_DROP_DBG(&dump_rl)) {
+        return;
+    }
+
+    stream = open_memstream(&response, &size);
+    if (!stream) {
+        VLOG_ERR("Unable to open memstream for mbuf dump: %s.",
+                 ovs_strerror(errno));
+        return;
+    }
+
+    rte_pktmbuf_dump(stream, mbuf, rte_pktmbuf_pkt_len(mbuf));
+
+    fclose(stream);
+
+    VLOG_DBG(prefix ? "%s: %s:\n%s" : "%s%s:\n%s",
+             prefix ? prefix : "", message, response);
+    free(response);
+}
+
 static bool
 srtcm_policer_pkt_handle(struct rte_meter_srtcm *meter,
                          struct rte_meter_srtcm_profile *profile,
@@ -599,6 +648,185 @@ dpdk_qos_ingress_policer_run(struct dpdk_qos_ingress_policer *policer,
     rte_spinlock_unlock(&policer->policer_lock);
 
     return cnt;
+}
+
+uint32_t
+netdev_dpdk_extbuf_size(uint32_t data_len)
+{
+    uint32_t buf_len = data_len;
+
+    buf_len += sizeof(struct rte_mbuf_ext_shared_info) + sizeof(uintptr_t);
+    buf_len = RTE_ALIGN_CEIL(buf_len, sizeof(uintptr_t));
+
+    return buf_len;
+}
+
+void *
+netdev_dpdk_extbuf_allocate(uint32_t buf_len)
+{
+    return rte_malloc(NULL, buf_len, RTE_CACHE_LINE_SIZE);
+}
+
+static void
+netdev_dpdk_extbuf_free(void *addr OVS_UNUSED, void *opaque)
+{
+    rte_free(opaque);
+}
+
+void
+netdev_dpdk_extbuf_replace(struct dp_packet *b, void *buf, uint32_t data_len)
+{
+    struct rte_mbuf *pkt = (struct rte_mbuf *) b;
+    struct rte_mbuf_ext_shared_info *shinfo;
+    uint16_t buf_len = data_len;
+
+    shinfo = rte_pktmbuf_ext_shinfo_init_helper(buf, &buf_len,
+                                                netdev_dpdk_extbuf_free,
+                                                buf);
+    ovs_assert(shinfo != NULL);
+
+    if (RTE_MBUF_HAS_EXTBUF(pkt)) {
+        rte_pktmbuf_detach_extbuf(pkt);
+    }
+    rte_pktmbuf_attach_extbuf(pkt, buf, rte_malloc_virt2iova(buf), buf_len,
+                              shinfo);
+    /* OVS only supports mono segment.
+     * Packet size did not change, restore the current segment length. */
+    pkt->data_len = pkt->pkt_len;
+}
+
+static struct rte_mbuf *
+dpdk_pktmbuf_attach_extbuf(struct rte_mbuf *pkt, uint32_t data_len)
+{
+    uint32_t total_len = RTE_PKTMBUF_HEADROOM + data_len;
+    struct rte_mbuf_ext_shared_info *shinfo = NULL;
+    uint16_t buf_len;
+    void *buf;
+
+    total_len = netdev_dpdk_extbuf_size(total_len);
+    if (OVS_UNLIKELY(total_len > UINT16_MAX)) {
+        VLOG_ERR("Can't copy packet: too big %u", total_len);
+        return NULL;
+    }
+
+    buf_len = total_len;
+    buf = netdev_dpdk_extbuf_allocate(buf_len);
+    if (OVS_UNLIKELY(buf == NULL)) {
+        VLOG_ERR("Failed to allocate memory using rte_malloc: %u", buf_len);
+        return NULL;
+    }
+
+    /* Initialize shinfo. */
+    shinfo = rte_pktmbuf_ext_shinfo_init_helper(buf, &buf_len,
+                                                netdev_dpdk_extbuf_free,
+                                                buf);
+    if (OVS_UNLIKELY(shinfo == NULL)) {
+        netdev_dpdk_extbuf_free(NULL, buf);
+        VLOG_ERR("Failed to initialize shared info for mbuf while "
+                 "attempting to attach an external buffer.");
+        return NULL;
+    }
+
+    rte_pktmbuf_attach_extbuf(pkt, buf, rte_malloc_virt2iova(buf), buf_len,
+                              shinfo);
+    rte_pktmbuf_reset_headroom(pkt);
+
+    return pkt;
+}
+
+struct rte_mbuf *
+dpdk_pktmbuf_alloc(struct rte_mempool *mp, uint32_t data_len)
+{
+    struct rte_mbuf *pkt = rte_pktmbuf_alloc(mp);
+
+    if (OVS_UNLIKELY(!pkt)) {
+        return NULL;
+    }
+
+    if (rte_pktmbuf_tailroom(pkt) >= data_len) {
+        return pkt;
+    }
+
+    if (dpdk_pktmbuf_attach_extbuf(pkt, data_len)) {
+        return pkt;
+    }
+
+    rte_pktmbuf_free(pkt);
+
+    return NULL;
+}
+
+struct dp_packet *
+dpdk_copy_dp_packet_to_mbuf(struct rte_mempool *mp, struct dp_packet *pkt_orig)
+{
+    struct rte_mbuf *mbuf_dest;
+    struct dp_packet *pkt_dest;
+    uint32_t pkt_len;
+
+    pkt_len = dp_packet_size(pkt_orig);
+    mbuf_dest = dpdk_pktmbuf_alloc(mp, pkt_len);
+    if (OVS_UNLIKELY(mbuf_dest == NULL)) {
+            return NULL;
+    }
+
+    pkt_dest = CONTAINER_OF(mbuf_dest, struct dp_packet, mbuf);
+    memcpy(dp_packet_data(pkt_dest), dp_packet_data(pkt_orig), pkt_len);
+    dp_packet_set_size(pkt_dest, pkt_len);
+
+    mbuf_dest->tx_offload = pkt_orig->mbuf.tx_offload;
+    mbuf_dest->packet_type = pkt_orig->mbuf.packet_type;
+    mbuf_dest->ol_flags |= (pkt_orig->mbuf.ol_flags &
+                            ~(RTE_MBUF_F_EXTERNAL | RTE_MBUF_F_INDIRECT));
+    mbuf_dest->tso_segsz = pkt_orig->mbuf.tso_segsz;
+
+    memcpy(&pkt_dest->l2_pad_size, &pkt_orig->l2_pad_size,
+           sizeof(struct dp_packet) - offsetof(struct dp_packet, l2_pad_size));
+
+    if (dp_packet_l3(pkt_dest)) {
+        if (dp_packet_eth(pkt_dest)) {
+            mbuf_dest->l2_len = (char *) dp_packet_l3(pkt_dest)
+                                - (char *) dp_packet_eth(pkt_dest);
+        } else {
+            mbuf_dest->l2_len = 0;
+        }
+        if (dp_packet_l4(pkt_dest)) {
+            mbuf_dest->l3_len = (char *) dp_packet_l4(pkt_dest)
+                                - (char *) dp_packet_l3(pkt_dest);
+        } else {
+            mbuf_dest->l3_len = 0;
+        }
+    }
+
+    return pkt_dest;
+}
+
+/* Replace packets in a 'batch' with their corresponding copies using
+ * DPDK memory.
+ *
+ * Returns the number of good packets in the batch. */
+size_t
+dpdk_copy_batch_to_mbuf(struct netdev_dpdk_common *common,
+                        struct dp_packet_batch *batch)
+{
+    size_t i, size = dp_packet_batch_size(batch);
+    struct dp_packet *packet;
+
+    DP_PACKET_BATCH_REFILL_FOR_EACH (i, size, packet, batch) {
+        if (OVS_UNLIKELY(packet->source == DPBUF_DPDK)) {
+            dp_packet_batch_add(batch, packet);
+        } else {
+            struct dp_packet *pktcopy;
+
+            pktcopy = dpdk_copy_dp_packet_to_mbuf(common->dpdk_mp->mp, packet);
+            if (pktcopy) {
+                dp_packet_batch_add(batch, pktcopy);
+            }
+
+            dp_packet_delete(packet);
+        }
+    }
+
+    return dp_packet_batch_size(batch);
 }
 
 struct dpdk_qos_ingress_policer *

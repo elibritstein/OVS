@@ -27,8 +27,10 @@
 #include <rte_ethdev.h>
 #include <rte_mempool.h>
 
+#include "dp-packet.h"
 #include "netdev-provider.h"
 #include "openvswitch/compiler.h"
+#include "openvswitch/vlog.h"
 #include "ovs-thread.h"
 #include "packets.h"
 
@@ -326,5 +328,274 @@ int netdev_dpdk_common_queue_dump_next(const struct netdev_dpdk_common *common,
                                        struct smap *details);
 int netdev_dpdk_common_queue_dump_done(const struct netdev *netdev,
                                        void *state_);
+
+void netdev_dpdk_mbuf_dump(const char *prefix, const char *message,
+                           const struct rte_mbuf *mbuf);
+
+void netdev_dpdk_common_vlog_rl(enum vlog_level, const char *format, ...)
+    OVS_PRINTF_FORMAT(2, 3);
+
+uint32_t netdev_dpdk_extbuf_size(uint32_t data_len);
+void *netdev_dpdk_extbuf_allocate(uint32_t buf_len);
+void netdev_dpdk_extbuf_replace(struct dp_packet *b, void *buf,
+                                uint32_t data_len);
+
+struct rte_mbuf *dpdk_pktmbuf_alloc(struct rte_mempool *mp, uint32_t data_len);
+struct dp_packet *dpdk_copy_dp_packet_to_mbuf(struct rte_mempool *mp,
+                                              struct dp_packet *pkt_orig);
+size_t dpdk_copy_batch_to_mbuf(struct netdev_dpdk_common *common,
+                               struct dp_packet_batch *batch);
+
+/* Prepare the packet for HWOL.
+ * Return True if the packet is OK to continue. */
+static inline bool
+netdev_dpdk_prep_hwol_packet(struct netdev_dpdk_common *common,
+                             struct rte_mbuf *mbuf)
+{
+    struct dp_packet *pkt = CONTAINER_OF(mbuf, struct dp_packet, mbuf);
+    uint64_t unexpected = mbuf->ol_flags & RTE_MBUF_F_TX_OFFLOAD_MASK;
+    struct netdev *netdev = &common->up;
+    const struct ip_header *ip;
+    bool is_sctp;
+    bool l3_csum;
+    bool l4_csum;
+    bool is_tcp;
+    bool is_udp;
+    void *l2;
+    void *l3;
+    void *l4;
+
+    if (OVS_UNLIKELY(unexpected)) {
+        netdev_dpdk_common_vlog_rl(VLL_WARN,
+                                   "%s: Unexpected Tx offload flags: %#"PRIx64,
+                                   netdev_get_name(netdev), unexpected);
+        netdev_dpdk_mbuf_dump(netdev_get_name(netdev),
+                              "Packet with unexpected ol_flags", mbuf);
+        return false;
+    }
+
+    if (!dp_packet_ip_checksum_partial(pkt)
+        && !dp_packet_inner_ip_checksum_partial(pkt)
+        && !dp_packet_l4_checksum_partial(pkt)
+        && !dp_packet_inner_l4_checksum_partial(pkt)
+        && !mbuf->tso_segsz) {
+
+        return true;
+    }
+
+    if (dp_packet_tunnel(pkt)) {
+        mbuf->outer_l2_len = (char *) dp_packet_l3(pkt) -
+                             (char *) dp_packet_eth(pkt);
+        mbuf->outer_l3_len = (char *) dp_packet_l4(pkt) -
+                             (char *) dp_packet_l3(pkt);
+
+        if (dp_packet_tunnel_geneve(pkt)) {
+            mbuf->ol_flags |= RTE_MBUF_F_TX_TUNNEL_GENEVE;
+        } else if (dp_packet_tunnel_vxlan(pkt)) {
+            mbuf->ol_flags |= RTE_MBUF_F_TX_TUNNEL_VXLAN;
+        } else {
+            ovs_assert(dp_packet_tunnel_gre(pkt));
+            mbuf->ol_flags |= RTE_MBUF_F_TX_TUNNEL_GRE;
+        }
+
+        if (dp_packet_ip_checksum_partial(pkt)) {
+            mbuf->ol_flags |= RTE_MBUF_F_TX_OUTER_IP_CKSUM;
+        }
+
+        if (dp_packet_l4_checksum_partial(pkt)) {
+            ovs_assert(dp_packet_l4_proto_udp(pkt));
+            mbuf->ol_flags |= RTE_MBUF_F_TX_OUTER_UDP_CKSUM;
+        }
+
+        ip = dp_packet_l3(pkt);
+        mbuf->ol_flags |= IP_VER(ip->ip_ihl_ver) == 4
+                          ? RTE_MBUF_F_TX_OUTER_IPV4
+                          : RTE_MBUF_F_TX_OUTER_IPV6;
+
+        /* Inner L2 length must account for the tunnel header length. */
+        l2 = dp_packet_l4(pkt);
+        l3 = dp_packet_inner_l3(pkt);
+        l3_csum = dp_packet_inner_ip_checksum_partial(pkt);
+        l4 = dp_packet_inner_l4(pkt);
+        l4_csum = dp_packet_inner_l4_checksum_partial(pkt);
+        is_tcp = dp_packet_inner_l4_proto_tcp(pkt);
+        is_udp = dp_packet_inner_l4_proto_udp(pkt);
+        is_sctp = dp_packet_inner_l4_proto_sctp(pkt);
+    } else {
+        mbuf->outer_l2_len = 0;
+        mbuf->outer_l3_len = 0;
+
+        l2 = dp_packet_eth(pkt);
+        l3 = dp_packet_l3(pkt);
+        l3_csum = dp_packet_ip_checksum_partial(pkt);
+        l4 = dp_packet_l4(pkt);
+        l4_csum = dp_packet_l4_checksum_partial(pkt);
+        is_tcp = dp_packet_l4_proto_tcp(pkt);
+        is_udp = dp_packet_l4_proto_udp(pkt);
+        is_sctp = dp_packet_l4_proto_sctp(pkt);
+    }
+
+    ovs_assert(l4);
+
+    ip = l3;
+    mbuf->ol_flags |= IP_VER(ip->ip_ihl_ver) == 4
+                      ? RTE_MBUF_F_TX_IPV4 : RTE_MBUF_F_TX_IPV6;
+
+    if (l3_csum) {
+        mbuf->ol_flags |= RTE_MBUF_F_TX_IP_CKSUM;
+    }
+
+    if (l4_csum) {
+        if (is_tcp) {
+            mbuf->ol_flags |= RTE_MBUF_F_TX_TCP_CKSUM;
+        } else if (is_udp) {
+            mbuf->ol_flags |= RTE_MBUF_F_TX_UDP_CKSUM;
+        } else {
+            ovs_assert(is_sctp);
+            mbuf->ol_flags |= RTE_MBUF_F_TX_SCTP_CKSUM;
+        }
+    }
+
+    mbuf->l2_len = (char *) l3 - (char *) l2;
+    mbuf->l3_len = (char *) l4 - (char *) l3;
+
+    if (mbuf->tso_segsz) {
+        struct tcp_header *th = l4;
+        int hdr_len;
+
+        mbuf->l4_len = TCP_OFFSET(th->tcp_ctl) * 4;
+
+        hdr_len = mbuf->l2_len + mbuf->l3_len + mbuf->l4_len;
+        if (dp_packet_tunnel(pkt)) {
+            hdr_len += mbuf->outer_l2_len + mbuf->outer_l3_len;
+        }
+
+        if (OVS_UNLIKELY((hdr_len + mbuf->tso_segsz)
+                         > common->max_packet_len)) {
+            netdev_dpdk_common_vlog_rl(VLL_WARN,
+                                       "%s: Oversized TSO packet. hdr: %"PRIu32
+                                       ", gso: %"PRIu32", max len: %"PRIu32"",
+                                       netdev->name, hdr_len, mbuf->tso_segsz,
+                                       common->max_packet_len);
+            return false;
+        }
+        mbuf->ol_flags |= RTE_MBUF_F_TX_TCP_SEG;
+
+        /* DPDK API mandates IPv4 checksum when requesting TSO. */
+        if (IP_VER(ip->ip_ihl_ver) == 4) {
+            mbuf->ol_flags |= RTE_MBUF_F_TX_IP_CKSUM;
+        }
+    }
+
+    return true;
+}
+
+/* Prepare a batch for HWOL.
+ * Return the number of good packets in the batch. */
+static inline int
+netdev_dpdk_prep_hwol_batch(struct netdev_dpdk_common *common,
+                            struct rte_mbuf **pkts, int pkt_cnt)
+{
+    int i = 0;
+    int cnt = 0;
+    struct rte_mbuf *pkt;
+
+    /* Prepare and filter bad HWOL packets. */
+    for (i = 0; i < pkt_cnt; i++) {
+        pkt = pkts[i];
+        if (!netdev_dpdk_prep_hwol_packet(common, pkt)) {
+            rte_pktmbuf_free(pkt);
+            continue;
+        }
+
+        if (OVS_UNLIKELY(i != cnt)) {
+            pkts[cnt] = pkt;
+        }
+        cnt++;
+    }
+
+    return cnt;
+}
+
+static inline int
+netdev_dpdk_filter_packet_len(struct netdev_dpdk_common *common,
+                              struct rte_mbuf **pkts, int pkt_cnt)
+{
+    int i = 0;
+    int cnt = 0;
+    struct rte_mbuf *pkt;
+
+    /* Filter oversized packets. The TSO packets are filtered out
+     * during the offloading preparation for performance reasons. */
+    for (i = 0; i < pkt_cnt; i++) {
+        pkt = pkts[i];
+        if (OVS_UNLIKELY((pkt->pkt_len > common->max_packet_len)
+            && !pkt->tso_segsz)) {
+            netdev_dpdk_common_vlog_rl(VLL_WARN,
+                                       "%s: Too big size %" PRIu32
+                                       " max_packet_len %d",
+                                       common->up.name, pkt->pkt_len,
+                                       common->max_packet_len);
+            rte_pktmbuf_free(pkt);
+            continue;
+        }
+
+        if (OVS_UNLIKELY(i != cnt)) {
+            pkts[cnt] = pkt;
+        }
+        cnt++;
+    }
+
+    return cnt;
+}
+
+static inline size_t
+netdev_dpdk_common_send(struct netdev_dpdk_common *common,
+                        struct dp_packet_batch *batch,
+                        struct netdev_dpdk_sw_stats *stats)
+{
+    struct rte_mbuf **pkts = (struct rte_mbuf **) batch->packets;
+    size_t cnt, pkt_cnt = dp_packet_batch_size(batch);
+    struct dpdk_qos_conf *qos_conf;
+    struct dp_packet *packet;
+    bool need_copy = false;
+
+    memset(stats, 0, sizeof *stats);
+
+    DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
+        if (packet->source != DPBUF_DPDK) {
+            need_copy = true;
+            break;
+        }
+    }
+
+    /* Copy dp-packets to mbufs. */
+    if (OVS_UNLIKELY(need_copy)) {
+        cnt = dpdk_copy_batch_to_mbuf(common, batch);
+        stats->tx_failure_drops += pkt_cnt - cnt;
+        pkt_cnt = cnt;
+    }
+
+    /* Drop oversized packets. */
+    cnt = netdev_dpdk_filter_packet_len(common, pkts, pkt_cnt);
+    stats->tx_mtu_exceeded_drops += pkt_cnt - cnt;
+    pkt_cnt = cnt;
+
+    if (common->up.ol_flags) {
+        /* Prepare each mbuf for hardware offloading. */
+        cnt = netdev_dpdk_prep_hwol_batch(common, pkts, pkt_cnt);
+        stats->tx_invalid_hwol_drops += pkt_cnt - cnt;
+        pkt_cnt = cnt;
+    }
+
+    /* Apply Quality of Service policy. */
+    qos_conf = ovsrcu_get(struct dpdk_qos_conf *, &common->qos_conf);
+    if (qos_conf) {
+        cnt = dpdk_qos_run(qos_conf, pkts, pkt_cnt, true);
+        stats->tx_qos_drops += pkt_cnt - cnt;
+    }
+
+    return cnt;
+}
 
 #endif /* NETDEV_DPDK_COMMON_H */
