@@ -82,7 +82,7 @@ dpdk_mp_per_port_memory(void)
  * behaviour, which reduces performance. To prevent this, use a buffer size
  * that is closest to 'mtu', but which satisfies the aforementioned criteria.
  */
-static uint32_t
+uint32_t
 dpdk_buf_size(int mtu)
 {
     return ROUND_UP(MTU_TO_MAX_FRAME_LEN(mtu), NETDEV_DPDK_MBUF_ALIGN)

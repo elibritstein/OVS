@@ -25,7 +25,10 @@
 
 #include <rte_ether.h>
 #include <rte_ethdev.h>
+#include <rte_flow.h>
+#include <rte_malloc.h>
 #include <rte_mempool.h>
+#include <rte_spinlock.h>
 
 #include "dp-packet.h"
 #include "netdev-provider.h"
@@ -35,7 +38,18 @@
 #include "packets.h"
 #include "util.h"
 
-struct dpdk_tx_queue;
+struct dpdk_tx_queue {
+    /* Padding to make dpdk_tx_queue exactly one cache line long. */
+    PADDED_MEMBERS(CACHE_LINE_SIZE,
+        /* Protects the members and the NIC queue from concurrent access.
+         * It is used only if the queue is shared among different pmd threads
+         * (see 'concurrent_txq'). */
+        rte_spinlock_t tx_lock;
+        /* Mapping of configured vhost-user queue to enabled by guest. */
+        int map;
+    );
+};
+
 struct dpdk_qos_ingress_policer;
 struct dpdk_qos_conf;
 struct smap;
@@ -202,6 +216,7 @@ bool dpdk_mp_per_port_memory(void);
 struct dpdk_mp * dpdk_mp_get(struct dpdk_mp_config *cfg);
 void dpdk_mp_put(struct dpdk_mp *dmp);
 void dpdk_mp_dump(FILE *stream, struct dpdk_mp *dmp);
+uint32_t dpdk_buf_size(int mtu);
 
 /* Quality of Service */
 
@@ -513,5 +528,163 @@ netdev_dpdk_common_send(struct netdev_dpdk_common *common,
 
     return cnt;
 }
+
+/* Ethernet netdev internals, exposed for reuse by netdev-doca, which builds a
+ * hardware-offload netdev on top of the DPDK ethernet implementation. */
+
+#define SOCKET0                     0
+#define DPDK_PORT_WATCHDOG_INTERVAL 5
+#define DPDK_ETH_PORT_ID_INVALID    RTE_MAX_ETHPORTS
+
+/* DPDK library uses uint16_t for port_id. */
+typedef uint16_t dpdk_port_t;
+#define DPDK_PORT_ID_FMT "%"PRIu16
+
+struct netdev_dpdk_eth {
+    PADDED_MEMBERS(CACHE_LINE_SIZE,
+        dpdk_port_t port_id;
+    );
+
+    struct netdev_dpdk_common common;
+
+    PADDED_MEMBERS(CACHE_LINE_SIZE,
+        struct ovs_mutex mutex OVS_ACQ_AFTER(dpdk_eth_mutex);
+        /* In dpdk_eth_list. */
+        struct ovs_list list_node OVS_GUARDED_BY(dpdk_eth_mutex);
+    );
+
+    /* Device arguments for dpdk ports. */
+    char *devargs;
+
+    struct rte_eth_link link;
+
+    /* Requested rx queue steering flags,
+     * from the enum set 'dpdk_rx_steer_flags'. */
+    uint64_t requested_rx_steer_flags;
+    uint64_t rx_steer_flags;
+    size_t rx_steer_flows_num;
+    struct rte_flow **rx_steer_flows;
+
+    /* Names of all XSTATS counters */
+    struct rte_eth_xstat_name *rte_xstats_names;
+    uint64_t *rte_xstats_ids;
+
+    /* DPDK-ETH Flow control */
+    struct rte_eth_fc_conf fc_conf;
+
+    int link_reset_cnt;
+
+    /* User input for n_rxq (see dpdk_set_rxq_config). */
+    int user_n_rxq;
+
+    int requested_rxq_size;
+    int requested_txq_size;
+
+    /* Number of rx/tx descriptors for physical devices */
+    int rxq_size;
+    int txq_size;
+
+    int rte_xstats_names_size;
+    int rte_xstats_ids_size;
+
+    /* If true, device was attached by rte_eth_dev_attach(). */
+    bool attached;
+    /* If true, rte_eth_dev_start() was successfully called. */
+    bool started;
+    /* If true, this is a port representor. */
+    bool is_representor;
+
+    /* Ensures that Rx metadata delivery is configured only once. */
+    bool rx_metadata_delivery_configured;
+
+    /* Properties for link state change detection mode.
+     * If lsc_interrupt_mode is set to false, poll mode is used,
+     * otherwise interrupt mode is used. */
+    bool requested_lsc_interrupt_mode;
+    bool lsc_interrupt_mode;
+
+    /* VF configuration. */
+    struct eth_addr requested_hwaddr;
+};
+
+static inline struct netdev_dpdk_eth *
+netdev_dpdk_eth_cast(const struct netdev *netdev)
+{
+    return CONTAINER_OF(netdev, struct netdev_dpdk_eth, common.up);
+}
+
+static inline bool
+netdev_dpdk_eth_is_started(const struct netdev_dpdk_eth *dev)
+{
+    return dev->started;
+}
+
+static inline bool
+netdev_dpdk_is_started(const struct netdev_dpdk_common *common)
+{
+    return netdev_dpdk_eth_cast(&common->up)->started;
+}
+
+/* Ethernet netdev operations reused by netdev-doca. */
+struct netdev *netdev_dpdk_eth_alloc(void);
+void netdev_dpdk_eth_dealloc(struct netdev *netdev);
+void netdev_dpdk_eth_destruct(struct netdev *netdev);
+
+struct netdev_rxq *netdev_dpdk_eth_rxq_alloc(void);
+int netdev_dpdk_eth_rxq_construct(struct netdev_rxq *rxq);
+void netdev_dpdk_eth_rxq_dealloc(struct netdev_rxq *rxq);
+void netdev_dpdk_rxq_destruct(struct netdev_rxq *rxq);
+
+int netdev_dpdk_eth_get_config(const struct netdev *netdev, struct smap *args);
+int netdev_dpdk_eth_set_tx_multiq(struct netdev *netdev, unsigned int n_txq);
+int netdev_dpdk_eth_set_etheraddr(struct netdev *netdev,
+                                  const struct eth_addr mac);
+int netdev_dpdk_eth_get_etheraddr(const struct netdev *netdev,
+                                  struct eth_addr *mac);
+int netdev_dpdk_eth_get_mtu(const struct netdev *netdev, int *mtup);
+int netdev_dpdk_eth_get_ifindex(const struct netdev *netdev);
+int netdev_dpdk_eth_get_stats(const struct netdev *netdev,
+                              struct netdev_stats *stats);
+int netdev_dpdk_eth_get_features(const struct netdev *netdev,
+                                 enum netdev_features *current,
+                                 enum netdev_features *advertised,
+                                 enum netdev_features *supported,
+                                 enum netdev_features *peer);
+int netdev_dpdk_eth_get_speed(const struct netdev *netdev, uint32_t *current,
+                              uint32_t *max);
+int netdev_dpdk_eth_get_carrier(const struct netdev *netdev, bool *carrier);
+long long int netdev_dpdk_eth_get_carrier_resets(const struct netdev *netdev);
+int netdev_dpdk_eth_update_flags(struct netdev *netdev,
+                                 enum netdev_flags off, enum netdev_flags on,
+                                 enum netdev_flags *old_flagsp);
+int netdev_dpdk_eth_get_status(const struct netdev *netdev, struct smap *args);
+
+void netdev_dpdk_configure_xstats(struct netdev_dpdk_eth *dev);
+void dpdk_set_rxq_config(struct netdev_dpdk_eth *dev, const struct smap *args);
+void netdev_dpdk_detect_hw_ol_features(struct netdev_dpdk_eth *dev,
+                                       const struct rte_eth_dev_info *info);
+dpdk_port_t netdev_dpdk_get_port_by_devargs(const char *devargs);
+
+int netdev_dpdk_mempool_configure(struct netdev_dpdk_common *common,
+                                  struct dpdk_mp_config *mp_cfg);
+
+int netdev_dpdk_eth_tx_burst(struct netdev_dpdk_eth *dev, dpdk_port_t port_id,
+                             int qid, struct rte_mbuf **pkts, int cnt);
+
+/* Default port configuration used as a base by netdev_dpdk_build_port_conf(). */
+extern const struct rte_eth_conf port_conf;
+
+void netdev_dpdk_build_port_conf(struct netdev_dpdk_eth *dev,
+                                 const struct rte_eth_dev_info *info,
+                                 struct rte_eth_conf *conf);
+
+void netdev_dpdk_common_construct(struct netdev_dpdk_common *common,
+                                  int socket_id);
+void netdev_dpdk_eth_init(struct netdev_dpdk_eth *dev, dpdk_port_t port_id);
+void netdev_dpdk_common_destruct(struct netdev_dpdk_common *common);
+struct dpdk_tx_queue *netdev_dpdk_alloc_txq(unsigned int n_txqs);
+int netdev_dpdk_eth_set_etheraddr__(struct netdev_dpdk_eth *dev,
+                                    const struct eth_addr mac);
+void check_link_status(struct netdev_dpdk_eth *dev);
 
 #endif /* NETDEV_DPDK_COMMON_H */
