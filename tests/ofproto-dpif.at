@@ -5682,8 +5682,9 @@ AT_CHECK([ovs-ofctl -O OpenFlow11 replace-flows br0 flows.txt])
 dnl Send the same fragment twice.  It is a last fragment (MF=0) at offset 400,
 dnl so it bypasses the minimum fragment size check and is admitted, yet it
 dnl cannot complete reassembly on its own (bytes 0..399 are missing).  The
-dnl second copy is a duplicate and must be dropped, rather than marked CT
-dnl invalid and returned to the datapath, so it is never forwarded.
+dnl second copy is an exact duplicate: per RFC 8200 it is dropped on its own
+dnl while the first fragment is kept for later reassembly, rather than being
+dnl marked CT invalid and returned to the datapath, so it is never forwarded.
 dnl
 dnl Last fragment carrying bytes 400..799 (MF clear).
 dnl   Ethernet II, Src: 50:54:00:00:00:09, Dst: 50:54:00:00:00:0a
@@ -5710,9 +5711,10 @@ AT_CHECK([ovs-appctl netdev-dummy/receive p90 "$packet"])
 AT_CHECK([ovs-appctl netdev-dummy/receive p90 "$packet"])
 
 AT_CHECK([ovs-appctl dpctl/ipf-get-status -m \
-| grep -E 'v4 frags accepted:|v4 frags overlapped:'], [], [dnl
+| grep -E 'num frag:|v4 frags accepted:|v4 frags duplicate:'], [], [dnl
+        num frag: 1
         v4 frags accepted: 1
-        v4 frags overlapped: 1
+        v4 frags duplicate: 1
 ])
 
 dnl The duplicate fragment is dropped, not marked invalid and forwarded, so
@@ -5764,6 +5766,81 @@ AT_CHECK([ovs-appctl dpctl/ipf-get-status -m \
         v4 frags accepted: 0
         v4 frags too large: 1
         v6 frags accepted: 0
+])
+
+OVS_VSWITCHD_STOP
+AT_CLEANUP
+
+AT_SETUP([ofproto-dpif - fragment handling - reject overlapped fragment])
+OVS_VSWITCHD_START
+add_of_ports br0 1 90
+
+AT_DATA([flows.txt], [dnl
+table=0 in_port=90,ip actions=ct(commit),output:1
+])
+AT_CHECK([ovs-ofctl -O OpenFlow11 replace-flows br0 flows.txt])
+
+dnl The minimum fragment size is clamped to 400 bytes, so both fragments must
+dnl be at least that large to be admitted for reassembly.
+AT_CHECK([ovs-appctl dpctl/ipf-set-min-frag v4 400], [], [dnl
+setting minimum fragment size successful
+])
+
+dnl First admit a fragment carrying bytes 400..799, then send a new fragment
+dnl covering bytes 0..1199 that fully contains the previously admitted range.
+dnl The overlap causes the entire fragment list to be dropped (RFC 5722 /
+dnl RFC 8200), so no fragments remain tracked afterwards.
+dnl
+dnl Packet 1 (admitted).  Middle fragment carrying bytes 400..799 (MF set).
+dnl   Ethernet II, Src: 50:54:00:00:00:09, Dst: 50:54:00:00:00:0a
+dnl       Type: IPv4 (0x0800)
+dnl   Internet Protocol Version 4, Src: 10.1.1.1, Dst: 10.1.1.2
+dnl       0100 .... = Version: 4
+dnl       .... 0101 = Header Length: 20 bytes (5)
+dnl       Differentiated Services Field: 0x00 (DSCP: CS0, ECN: Not-ECT)
+dnl       Total Length: 420
+dnl       Identification: 0x0020 (32)
+dnl       001. .... = Flags: 0x1 (More fragments)
+dnl       ...0 0000 0011 0010 = Fragment Offset: 400
+dnl       Time to Live: 64
+dnl       Protocol: UDP (17)
+dnl       Header Checksum: 0x42f3
+dnl   Data (400 bytes)
+eth="50 54 00 00 00 0a 50 54 00 00 00 09 08 00"
+ip1="45 00 01 a4 00 20 20 32 40 11 42 f3"
+addrs="0a 01 01 01 0a 01 01 02"
+data1=$(printf '%0*d' 800 0)
+packet1="${eth}${ip1}${addrs}${data1}"
+
+dnl Packet 2 (rejected as overlap).  First fragment carrying bytes 0..1199
+dnl (MF set), fully containing packet 1's byte range.
+dnl   Ethernet II, Src: 50:54:00:00:00:09, Dst: 50:54:00:00:00:0a
+dnl       Type: IPv4 (0x0800)
+dnl   Internet Protocol Version 4, Src: 10.1.1.1, Dst: 10.1.1.2
+dnl       0100 .... = Version: 4
+dnl       .... 0101 = Header Length: 20 bytes (5)
+dnl       Differentiated Services Field: 0x00 (DSCP: CS0, ECN: Not-ECT)
+dnl       Total Length: 1220
+dnl       Identification: 0x0020 (32)
+dnl       001. .... = Flags: 0x1 (More fragments)
+dnl       ...0 0000 0000 0000 = Fragment Offset: 0
+dnl       Time to Live: 64
+dnl       Protocol: UDP (17)
+dnl       Header Checksum: 0x4005
+dnl   Data (1200 bytes)
+ip2="45 00 04 c4 00 20 20 00 40 11 40 05"
+data2=$(printf '%0*d' 2400 0)
+packet2="${eth}${ip2}${addrs}${data2}"
+
+AT_CHECK([ovs-appctl netdev-dummy/receive p90 "$packet1"])
+AT_CHECK([ovs-appctl netdev-dummy/receive p90 "$packet2"])
+
+AT_CHECK([ovs-appctl dpctl/ipf-get-status -m \
+| grep -E 'num frag:|v4 frags accepted:|v4 frags completed:|v4 frags overlapped:'], [], [dnl
+        num frag: 0
+        v4 frags accepted: 1
+        v4 frags completed: 0
+        v4 frags overlapped: 1
 ])
 
 OVS_VSWITCHD_STOP
