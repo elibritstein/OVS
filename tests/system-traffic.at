@@ -5209,6 +5209,56 @@ udp,orig=(src=10.1.1.1,dst=10.1.1.2,sport=<cleared>,dport=<cleared>),reply=(src=
 OVS_TRAFFIC_VSWITCHD_STOP
 AT_CLEANUP
 
+AT_SETUP([conntrack - IPv4 fragmentation exact duplicate])
+CHECK_CONNTRACK()
+OVS_TRAFFIC_VSWITCHD_START()
+
+ADD_NAMESPACES(at_ns0, at_ns1)
+ADD_VETH(p0, at_ns0, br0, "10.1.1.1/24")
+ADD_VETH(p1, at_ns1, br0, "10.1.1.2/24")
+
+dnl Last fragment carrying bytes 400..799 (MF clear).  Reassembly cannot
+dnl complete without bytes 0..399.  The second copy is an exact duplicate
+dnl and must not be forwarded on either datapath.
+NETNS_DAEMONIZE([at_ns1],
+    [tcpdump -n -U -i p1 -w p1.pcap \
+         ip and src host 10.1.1.1 2>tcpdump.err],
+    [tcpdump.pid])
+OVS_WAIT_UNTIL([grep "listening" tcpdump.err])
+
+dnl   Ethernet II, Src: 50:54:00:00:00:09, Dst: 50:54:00:00:00:0a
+dnl       Type: IPv4 (0x0800)
+dnl   Internet Protocol Version 4, Src: 10.1.1.1, Dst: 10.1.1.2
+dnl       0100 .... = Version: 4
+dnl       .... 0101 = Header Length: 20 bytes (5)
+dnl       Differentiated Services Field: 0x00 (DSCP: CS0, ECN: Not-ECT)
+dnl       Total Length: 420
+dnl       Identification: 0x0020 (32)
+dnl       000. .... = Flags: 0x0 (Last fragment)
+dnl       ...0 0000 0011 0010 = Fragment Offset: 400
+dnl       Time to Live: 64
+dnl       Protocol: UDP (17)
+dnl       Header Checksum: 0x62f3
+dnl   Data (400 bytes)
+data=$(printf '%0*d' 800 0)
+frag=50540000000a5054000000090800450001a400200032401162f30a0101010a010102${data}
+AT_CHECK([ovs-ofctl packet-out br0 \
+    "in_port=1 packet=$frag actions=ct(commit),output:2"])
+AT_CHECK([ovs-ofctl packet-out br0 \
+    "in_port=1 packet=$frag actions=ct(commit),output:2"])
+
+dnl Let tcpdump write the capture before it is stopped.
+sleep 1
+AT_CHECK([kill -15 $(cat tcpdump.pid)])
+OVS_WAIT_WHILE([kill -0 $(cat tcpdump.pid)])
+AT_CHECK([ovs-pcap p1.pcap | wc -l], [0], [0
+])
+
+dnl On the kernel datapath the second (exact duplicate) fragment is
+dnl rejected by ip_frag_queue() with -EINVAL, which dpif logs at WARN.
+OVS_TRAFFIC_VSWITCHD_STOP(["/dpif.*execute ct.*failed.*Invalid argument.*nw_frag=later/d"])
+AT_CLEANUP
+
 AT_SETUP([conntrack - IPv4 fragmentation overlapping fragments by 1 octet])
 CHECK_CONNTRACK()
 CHECK_CONNTRACK_FRAG_OVERLAP()

@@ -179,6 +179,7 @@ AT_CHECK([ovs-appctl dpctl/ipf-get-status], [], [dnl
         v4 frags expired: 0
         v4 frags too small: 0
         v4 frags overlapped: 0
+        v4 frags duplicate: 0
         v4 frags purged: 0
         min v6 frag size: 1280
         v6 frags accepted: 0
@@ -186,6 +187,7 @@ AT_CHECK([ovs-appctl dpctl/ipf-get-status], [], [dnl
         v6 frags expired: 0
         v6 frags too small: 0
         v6 frags overlapped: 0
+        v6 frags duplicate: 0
         v6 frags purged: 0
 ])
 ])
@@ -209,6 +211,7 @@ AT_CHECK([ovs-appctl dpctl/ipf-get-status --more], [], [dnl
         v4 frags expired: 0
         v4 frags too small: 0
         v4 frags overlapped: 0
+        v4 frags duplicate: 0
         v4 frags purged: 0
         min v6 frag size: 1280
         v6 frags accepted: 0
@@ -216,6 +219,7 @@ AT_CHECK([ovs-appctl dpctl/ipf-get-status --more], [], [dnl
         v6 frags expired: 0
         v6 frags too small: 0
         v6 frags overlapped: 0
+        v6 frags duplicate: 0
         v6 frags purged: 0
 
         Fragment Lists:
@@ -242,6 +246,7 @@ AT_CHECK([ovs-appctl dpctl/ipf-get-status --more], [], [dnl
         v4 frags expired: 0
         v4 frags too small: 0
         v4 frags overlapped: 0
+        v4 frags duplicate: 0
         v4 frags purged: 0
         min v6 frag size: 1280
         v6 frags accepted: 30
@@ -249,6 +254,7 @@ AT_CHECK([ovs-appctl dpctl/ipf-get-status --more], [], [dnl
         v6 frags expired: 0
         v6 frags too small: 0
         v6 frags overlapped: 0
+        v6 frags duplicate: 0
         v6 frags purged: 0
 
         Fragment Lists:
@@ -282,6 +288,7 @@ AT_CHECK([ovs-appctl dpctl/ipf-get-status -m | FORMAT_FRAG_LIST()], [], [dnl
         v4 frags expired: 0
         v4 frags too small: 0
         v4 frags overlapped: 0
+        v4 frags duplicate: 0
         v4 frags purged: 0
         min v6 frag size: 1280
         v6 frags accepted: 0
@@ -289,6 +296,7 @@ AT_CHECK([ovs-appctl dpctl/ipf-get-status -m | FORMAT_FRAG_LIST()], [], [dnl
         v6 frags expired: 0
         v6 frags too small: 0
         v6 frags overlapped: 0
+        v6 frags duplicate: 0
         v6 frags purged: 0
 
         Fragment Lists:
