@@ -84,6 +84,7 @@ enum ipf_counter_type {
     IPF_NFRAGS_TOO_SMALL,
     IPF_NFRAGS_OVERLAP,
     IPF_NFRAGS_DUPLICATE,
+    IPF_NFRAGS_DISCARDED,
     IPF_NFRAGS_PURGED,
     IPF_NFRAGS_NUM_CNTS,
 };
@@ -845,10 +846,27 @@ ipf_is_frag_overlap(const struct ipf_frag *frag_list, int last_inuse_idx,
     return false;
 }
 
+/* Drops the entire fragment list: deletes every fragment packet held by the
+ * list and removes the list from the tracking datastructures.  Per RFC 5722
+ * and RFC 8200, when an overlapping fragment is detected the whole datagram
+ * and all of its already received fragments must be silently discarded. */
+static void
+ipf_drop_frag_chain(struct ipf *ipf, struct ipf_list *ipf_list, bool v6)
+    OVS_REQUIRES(ipf->ipf_lock)
+{
+    for (int i = 0; i <= ipf_list->last_inuse_idx; i++) {
+        dp_packet_delete(ipf_list->frag_list[i].pkt);
+        atomic_count_dec(&ipf->nfrag);
+        ipf_count(ipf, v6, IPF_NFRAGS_DISCARDED);
+    }
+
+    ipf_list_clean(&ipf->frag_lists, ipf_list);
+}
+
 /* Adds a fragment to a list of fragments.  An exact duplicate fragment is
- * dropped on its own, keeping the rest of the list for later reassembly
- * (RFC 8200).  An overlapping (but not duplicate) fragment is marked CT
- * invalid, to avoid the work conntrack would otherwise do. */
+ * dropped on its own, keeping the rest of the list (RFC 8200).  An
+ * overlapping (but not duplicate) fragment causes the whole fragment list to
+ * be dropped (see ipf_drop_frag_chain(), RFC 5722 / RFC 8200). */
 static bool
 ipf_process_frag(struct ipf *ipf, struct ipf_list *ipf_list,
                  struct dp_packet *pkt, uint16_t start_data_byte,
@@ -882,8 +900,8 @@ ipf_process_frag(struct ipf *ipf, struct ipf_list *ipf_list,
         dp_packet_delete(pkt);
     } else {
         ipf_count(ipf, v6, IPF_NFRAGS_OVERLAP);
-        pkt->md.ct_state = CS_INVALID;
-        return false;
+        dp_packet_delete(pkt);
+        ipf_drop_frag_chain(ipf, ipf_list, v6);
     }
     return true;
 }
@@ -1473,6 +1491,8 @@ ipf_get_status(struct ipf *ipf, struct ipf_status *ipf_status)
                         &ipf_status->v4.nfrag_overlap);
     atomic_read_relaxed(&ipf->n4frag_cnt[IPF_NFRAGS_DUPLICATE],
                         &ipf_status->v4.nfrag_duplicate);
+    atomic_read_relaxed(&ipf->n4frag_cnt[IPF_NFRAGS_DISCARDED],
+                        &ipf_status->v4.nfrag_discarded);
     atomic_read_relaxed(&ipf->n4frag_cnt[IPF_NFRAGS_PURGED],
                         &ipf_status->v4.nfrag_purged);
 
@@ -1491,6 +1511,8 @@ ipf_get_status(struct ipf *ipf, struct ipf_status *ipf_status)
                         &ipf_status->v6.nfrag_overlap);
     atomic_read_relaxed(&ipf->n6frag_cnt[IPF_NFRAGS_DUPLICATE],
                         &ipf_status->v6.nfrag_duplicate);
+    atomic_read_relaxed(&ipf->n6frag_cnt[IPF_NFRAGS_DISCARDED],
+                        &ipf_status->v6.nfrag_discarded);
     atomic_read_relaxed(&ipf->n6frag_cnt[IPF_NFRAGS_PURGED],
                         &ipf_status->v6.nfrag_purged);
     return 0;
