@@ -2275,6 +2275,27 @@ netdev_doca_set_config(struct netdev *netdev, const struct smap *args,
     is_rep = strstr(dev->devargs, "representor=");
     dev->is_representor = is_rep;
 
+    /* A representor is probed only after its ESW manager has created the
+     * shared context.  Until then, leave the port without configuration. */
+    if (is_rep) {
+        struct netdev_doca_esw_key esw_key;
+        struct netdev_doca_esw_ctx *esw;
+
+        if (netdev_doca_esw_key_parse(dev->devargs, &esw_key)) {
+            VLOG_ERR("%s: ESW key parsing failed for %s",
+                     netdev_name, dev->devargs);
+            err = EINVAL;
+            goto out;
+        }
+
+        esw = refmap_try_ref(netdev_doca_esw_rfm, &esw_key);
+        if (!esw) {
+            goto out;
+        }
+
+        refmap_unref(netdev_doca_esw_rfm, esw);
+    }
+
     /* Don't process devargs if port id is already valid and attached. */
     if (!(rte_eth_dev_is_valid_port(dev->port_id) && dev->attached)) {
         dpdk_port_t new_port_id =
