@@ -1835,6 +1835,13 @@ netdev_doca_reconfigure(struct netdev *netdev)
     ovs_mutex_lock(&doca_mutex);
     ovs_mutex_lock(&dev->mutex);
 
+    /* esw_eth is not a datapath port, so dpif-netdev never sets its Tx queue
+     * count.  Every DOCA port transmits on esw_eth using its own queue id. */
+    if (!dev->is_representor) {
+        netdev_set_tx_multiq(&dev->esw_eth->common.up,
+                             common->requested_n_txq);
+    }
+
     if (netdev->n_txq == common->requested_n_txq
         && netdev->n_rxq == common->requested_n_rxq
         && common->mtu == common->requested_mtu
