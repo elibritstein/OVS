@@ -1182,6 +1182,7 @@ static void
 netdev_doca_run(const struct netdev_class *netdev_class OVS_UNUSED)
 {
     struct netdev_doca_esw_close *entry;
+    struct netdev_doca *dev;
 
     LIST_FOR_EACH_POP (entry, list_node, &doca_esw_close_list) {
         if (entry->netdev) {
@@ -1204,6 +1205,22 @@ netdev_doca_run(const struct netdev_class *netdev_class OVS_UNUSED)
 
         free(entry->pci_addr);
         free(entry);
+    }
+
+    /* The dpdk watchdog updates the shadow.  Bump this netdev so the bridge
+     * refreshes link state, speed, and duplex. */
+    LIST_FOR_EACH (dev, list_node, &doca_list) {
+        uint64_t seq;
+
+        if (!dev->eth) {
+            continue;
+        }
+
+        seq = netdev_get_change_seq(&dev->eth->common.up);
+        if (seq != dev->shadow_change_seq) {
+            dev->shadow_change_seq = seq;
+            netdev_change_seq_changed(&dev->common.up);
+        }
     }
 }
 
@@ -1598,16 +1615,24 @@ netdev_doca_get_custom_stats(const struct netdev *netdev,
     return 0;
 }
 
+/* This port's own shadow.  The ESW manager's shadow is also esw_eth.
+ * A representor's shadow is its zero-queue ethdev. */
+static struct netdev *
+netdev_doca_port_shadow(const struct netdev_doca *dev)
+{
+    return dev->eth ? &dev->eth->common.up : NULL;
+}
+
 static int
 netdev_doca_get_status(const struct netdev *netdev, struct smap *args)
 {
-    struct netdev_doca *dev = netdev_doca_cast(netdev);
+    struct netdev *shadow = netdev_doca_port_shadow(netdev_doca_cast(netdev));
 
-    if (!dev->esw_eth) {
+    if (!shadow) {
         return ENODEV;
     }
 
-    return netdev_get_status(&dev->esw_eth->common.up, args);
+    return netdev_get_status(shadow, args);
 }
 
 static int
@@ -2038,6 +2063,7 @@ netdev_doca_construct(struct netdev *netdev)
     dev->peer_name = NULL;
     dev->dev_rep = NULL;
     dev->egress_entry = NULL;
+    dev->shadow_change_seq = 0;
     memset(dev->rss_entries, 0, sizeof dev->rss_entries);
 
     ovs_list_push_back(&doca_list, &dev->list_node);
@@ -2624,36 +2650,23 @@ netdev_doca_get_ifindex(const struct netdev *netdev)
 static int
 netdev_doca_get_carrier(const struct netdev *netdev, bool *carrier)
 {
-    struct netdev_doca *dev = netdev_doca_cast(netdev);
+    struct netdev *shadow = netdev_doca_port_shadow(netdev_doca_cast(netdev));
 
-    if (dev->eth) {
-        *carrier = netdev_get_carrier(&dev->eth->common.up);
-        return 0;
-    }
-
-    if (!dev->esw_eth) {
+    if (!shadow) {
         *carrier = false;
         return 0;
     }
 
-    *carrier = netdev_get_carrier(&dev->esw_eth->common.up);
+    *carrier = netdev_get_carrier(shadow);
     return 0;
 }
 
 static long long int
 netdev_doca_get_carrier_resets(const struct netdev *netdev)
 {
-    struct netdev_doca *dev = netdev_doca_cast(netdev);
+    struct netdev *shadow = netdev_doca_port_shadow(netdev_doca_cast(netdev));
 
-    if (dev->eth) {
-        return netdev_get_carrier_resets(&dev->eth->common.up);
-    }
-
-    if (!dev->esw_eth) {
-        return 0;
-    }
-
-    return netdev_get_carrier_resets(&dev->esw_eth->common.up);
+    return shadow ? netdev_get_carrier_resets(shadow) : 0;
 }
 
 static int
@@ -2714,27 +2727,38 @@ netdev_doca_get_features(const struct netdev *netdev,
                          enum netdev_features *supported,
                          enum netdev_features *peer)
 {
-    struct netdev_doca *dev = netdev_doca_cast(netdev);
+    struct netdev *shadow = netdev_doca_port_shadow(netdev_doca_cast(netdev));
 
-    if (!dev->esw_eth) {
+    if (!shadow) {
         return EOPNOTSUPP;
     }
 
-    return netdev_get_features(&dev->esw_eth->common.up, current, advertised,
-                               supported, peer);
+    return netdev_get_features(shadow, current, advertised, supported, peer);
 }
 
 static int
 netdev_doca_get_speed(const struct netdev *netdev, uint32_t *current,
                       uint32_t *max)
 {
-    struct netdev_doca *dev = netdev_doca_cast(netdev);
+    struct netdev *shadow = netdev_doca_port_shadow(netdev_doca_cast(netdev));
 
-    if (!dev->esw_eth) {
+    if (!shadow) {
         return EOPNOTSUPP;
     }
 
-    return netdev_get_speed(&dev->esw_eth->common.up, current, max);
+    return netdev_get_speed(shadow, current, max);
+}
+
+static int
+netdev_doca_get_duplex(const struct netdev *netdev, bool *full_duplex)
+{
+    struct netdev *shadow = netdev_doca_port_shadow(netdev_doca_cast(netdev));
+
+    if (!shadow) {
+        return EOPNOTSUPP;
+    }
+
+    return netdev_get_duplex(shadow, full_duplex);
 }
 
 static int
@@ -2838,6 +2862,7 @@ static const struct netdev_class netdev_doca_class = {
     .get_custom_stats = netdev_doca_get_custom_stats,
     .get_features = netdev_doca_get_features,
     .get_speed = netdev_doca_get_speed,
+    .get_duplex = netdev_doca_get_duplex,
     .get_status = netdev_doca_get_status,
     .set_miimon_interval = netdev_doca_set_miimon,
     .update_flags = netdev_doca_update_flags,

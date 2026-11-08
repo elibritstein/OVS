@@ -120,6 +120,8 @@ struct netdev_doca {
     struct ovs_mutex mutex;
     /* In doca_list. */
     struct ovs_list list_node;
+    /* Last change_seq observed on this port's shadow dpdk netdev. */
+    uint64_t shadow_change_seq;
 
     struct doca_flow_pipe_entry *rss_entries[NETDEV_DOCA_RSS_NUM_ENTRIES];
     struct doca_flow_pipe_entry *egress_entry;
