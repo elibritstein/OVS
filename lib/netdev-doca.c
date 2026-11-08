@@ -1521,7 +1521,6 @@ netdev_doca_get_custom_stats(const struct netdev *netdev,
     dpdk_port_t port_id = dev->port_id;
     struct doca_flow_resource_query stats;
     struct netdev_custom_counter *counter;
-    uint64_t n_sw_packets, n_sw_bytes;
     uint64_t n_packets, n_bytes;
     int n_txq = netdev->n_txq;
     unsigned int n_rxq;
@@ -1536,16 +1535,11 @@ netdev_doca_get_custom_stats(const struct netdev *netdev,
         return EAGAIN;
     }
 
-    if (!dev->is_representor) {
-        netdev_get_custom_stats(&dev->esw_eth->common.up, custom_stats);
-    }
-
     netdev_doca_get_sw_custom_stats(netdev, custom_stats);
 
     sw_stats_size = custom_stats->size;
     n_rxq = dev->esw_ctx->n_rxq;
-    custom_stats->size += 2 * (NETDEV_DOCA_RSS_NUM_ENTRIES + n_rxq + n_txq +
-                               1);
+    custom_stats->size += 2 * (NETDEV_DOCA_RSS_NUM_ENTRIES + n_rxq + n_txq);
 
     custom_stats->counters = xrealloc(custom_stats->counters,
                                       custom_stats->size *
@@ -1571,17 +1565,11 @@ netdev_doca_get_custom_stats(const struct netdev *netdev,
                  "%s_bytes", stats_name);
     }
 
-    n_sw_packets = 0;
-    n_sw_bytes = 0;
-
     for (int i = 0; i < n_rxq; i++, counter += 2) {
         atomic_read_relaxed(&esw_ctx->port_queues[port_id][i].n_packets,
                             &n_packets);
         atomic_read_relaxed(&esw_ctx->port_queues[port_id][i].n_bytes,
                             &n_bytes);
-
-        n_sw_packets += n_packets;
-        n_sw_bytes += n_bytes;
 
         counter[PACKETS].value = n_packets;
         snprintf(counter[PACKETS].name, NETDEV_CUSTOM_STATS_NAME_SIZE,
@@ -1590,14 +1578,6 @@ netdev_doca_get_custom_stats(const struct netdev *netdev,
         snprintf(counter[BYTES].name, NETDEV_CUSTOM_STATS_NAME_SIZE,
                  "rx_q%d_bytes", i);
     }
-
-    counter[PACKETS].value = n_sw_packets;
-    snprintf(counter[PACKETS].name, NETDEV_CUSTOM_STATS_NAME_SIZE,
-             "sw_rx_packets");
-    counter[BYTES].value = n_sw_bytes;
-    snprintf(counter[BYTES].name, NETDEV_CUSTOM_STATS_NAME_SIZE,
-             "sw_rx_bytes");
-    counter += 2;
 
     for (int i = 0; i < n_txq; i++, counter += 2) {
         atomic_read_relaxed(&dev->sw_tx_stats[i].n_packets, &n_packets);
@@ -1609,6 +1589,46 @@ netdev_doca_get_custom_stats(const struct netdev *netdev,
         counter[BYTES].value = n_bytes;
         snprintf(counter[BYTES].name, NETDEV_CUSTOM_STATS_NAME_SIZE,
                  "tx_q%d_bytes", i);
+    }
+
+    /* The ESW manager Ethernet device carries every DOCA port's traffic.
+     * Expose its hardware extended statistics with a hw_ prefix so the
+     * NIC-level counters are visible without being mistaken for this port's
+     * own traffic. */
+    if (!dev->is_representor) {
+        struct netdev_custom_stats hw_custom;
+        int hw_offset = custom_stats->size;
+        int n_hw = 0;
+
+        memset(&hw_custom, 0, sizeof hw_custom);
+        if (!netdev_get_custom_stats(&dev->esw_eth->common.up, &hw_custom)) {
+            for (uint32_t i = 0; i < hw_custom.size; i++) {
+                if (strncmp(hw_custom.counters[i].name, "ovs_", 4)) {
+                    n_hw++;
+                }
+            }
+
+            custom_stats->size += n_hw;
+            custom_stats->counters = xrealloc(custom_stats->counters,
+                                              custom_stats->size *
+                                              sizeof *custom_stats->counters);
+            n_hw = 0;
+            for (uint32_t i = 0; i < hw_custom.size; i++) {
+                const char *name = hw_custom.counters[i].name;
+
+                if (!strncmp(name, "ovs_", 4)) {
+                    continue;
+                }
+
+                snprintf(custom_stats->counters[hw_offset + n_hw].name,
+                         NETDEV_CUSTOM_STATS_NAME_SIZE, "hw_%.60s", name);
+                custom_stats->counters[hw_offset + n_hw].value =
+                    hw_custom.counters[i].value;
+                n_hw++;
+            }
+        }
+
+        netdev_free_custom_stats_counters(&hw_custom);
     }
 
     return 0;
@@ -2680,19 +2700,17 @@ netdev_doca_get_stats(const struct netdev *netdev, struct netdev_stats *stats)
         return EOPNOTSUPP;
     }
 
-    if (!dev->is_representor) {
-        int err = netdev_get_stats(&dev->esw_eth->common.up, stats);
-
-        if (!err) {
-            rte_spinlock_lock(&common->stats_lock);
-            stats->tx_dropped += common->stats.tx_dropped;
-            stats->rx_dropped += common->stats.rx_dropped;
-            rte_spinlock_unlock(&common->stats_lock);
-        }
-        return err;
-    }
-
-    memset(stats, 0, sizeof *stats);
+    /* Rx and Tx happen on the ESW manager Ethernet device for every DOCA port,
+     * so its hardware counters aggregate all ports' traffic.  Report only this
+     * port's own software counters; the NIC counters are exposed separately
+     * as hw_-prefixed custom stats on the ESW manager.
+     * The caller sets every field to UINT64_MAX, which the bridge omits.
+     * Leave the size, error, and broadcast fields that way: this port does
+     * not count them. */
+    stats->rx_packets = 0;
+    stats->rx_bytes = 0;
+    stats->tx_packets = 0;
+    stats->tx_bytes = 0;
 
     for (unsigned int i = 0; i < esw_ctx->n_rxq; i++) {
         atomic_read_relaxed(&esw_ctx->port_queues[port_id][i].n_packets,
