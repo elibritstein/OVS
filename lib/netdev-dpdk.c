@@ -383,6 +383,44 @@ dpdk_watchdog(void *dummy OVS_UNUSED)
     return NULL;
 }
 
+/* Configure the Ethernet device and set its MTU. */
+static int
+dpdk_eth_dev_configure(struct netdev_dpdk_eth *dev,
+                       const struct rte_eth_conf *conf,
+                       int n_rxq, int n_txq)
+{
+    struct netdev_dpdk_common *common = &dev->common;
+    struct netdev *netdev = &common->up;
+    uint16_t conf_mtu;
+    int diag;
+
+    diag = rte_eth_dev_configure(dev->port_id, n_rxq, n_txq, conf);
+    if (diag) {
+        VLOG_WARN("Interface %s eth_dev setup error %s\n",
+                  netdev->name, rte_strerror(-diag));
+        return diag;
+    }
+
+    diag = rte_eth_dev_set_mtu(dev->port_id, common->mtu);
+    if (diag) {
+        /* A device may not support rte_eth_dev_set_mtu, in this case
+         * flag a warning to the user and include the devices configured
+         * MTU value that will be used instead. */
+        if (-ENOTSUP == diag) {
+            rte_eth_dev_get_mtu(dev->port_id, &conf_mtu);
+            VLOG_WARN("Interface %s does not support MTU configuration, "
+                      "max packet size supported is %"PRIu16".",
+                      netdev->name, conf_mtu);
+        } else {
+            VLOG_ERR("Interface %s MTU (%d) setup error: %s",
+                     netdev->name, common->mtu, rte_strerror(-diag));
+            return diag;
+        }
+    }
+
+    return 0;
+}
+
 static int
 dpdk_eth_dev_port_config(struct netdev_dpdk_eth *dev,
                          const struct rte_eth_dev_info *info,
@@ -391,7 +429,6 @@ dpdk_eth_dev_port_config(struct netdev_dpdk_eth *dev,
     struct netdev_dpdk_common *common = &dev->common;
     struct rte_eth_conf conf = port_conf;
     struct netdev *netdev = &common->up;
-    uint16_t conf_mtu;
     int diag = 0;
     int i;
 
@@ -475,28 +512,9 @@ dpdk_eth_dev_port_config(struct netdev_dpdk_eth *dev,
             VLOG_INFO("Retrying setup with (rxq:%d txq:%d)", n_rxq, n_txq);
         }
 
-        diag = rte_eth_dev_configure(dev->port_id, n_rxq, n_txq, &conf);
+        diag = dpdk_eth_dev_configure(dev, &conf, n_rxq, n_txq);
         if (diag) {
-            VLOG_WARN("Interface %s eth_dev setup error %s\n",
-                      netdev->name, rte_strerror(-diag));
             break;
-        }
-
-        diag = rte_eth_dev_set_mtu(dev->port_id, common->mtu);
-        if (diag) {
-            /* A device may not support rte_eth_dev_set_mtu, in this case
-             * flag a warning to the user and include the devices configured
-             * MTU value that will be used instead. */
-            if (-ENOTSUP == diag) {
-                rte_eth_dev_get_mtu(dev->port_id, &conf_mtu);
-                VLOG_WARN("Interface %s does not support MTU configuration, "
-                          "max packet size supported is %"PRIu16".",
-                          netdev->name, conf_mtu);
-            } else {
-                VLOG_ERR("Interface %s MTU (%d) setup error: %s",
-                         netdev->name, common->mtu, rte_strerror(-diag));
-                break;
-            }
         }
 
         for (i = 0; i < n_txq; i++) {
