@@ -56,8 +56,7 @@ struct smap;
 
 #define SOCKET0 0
 
-extern struct ovs_mutex doca_mutex;
-extern struct ovs_mutex dpdk_eth_mutex OVS_ACQ_AFTER(doca_mutex);
+extern struct ovs_mutex dpdk_eth_mutex;
 extern struct ovs_mutex dpdk_vhost_mutex;
 extern struct ovs_mutex dpdk_mp_mutex
     OVS_ACQ_AFTER(dpdk_eth_mutex, dpdk_vhost_mutex);

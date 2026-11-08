@@ -114,9 +114,9 @@ struct netdev_doca {
 
     /* No datapath fields below for the rest of the structure. */
 
-    struct ovs_mutex mutex OVS_ACQ_AFTER(doca_mutex);
+    struct ovs_mutex mutex;
     /* In doca_list. */
-    struct ovs_list list_node OVS_GUARDED_BY(doca_mutex);
+    struct ovs_list list_node;
 
     struct doca_flow_pipe_entry *rss_entries[NETDEV_DOCA_RSS_NUM_ENTRIES];
     struct doca_flow_pipe_entry *egress_entry;

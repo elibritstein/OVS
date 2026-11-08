@@ -82,18 +82,14 @@ static uint16_t pre_miss_mapping[PRE_MISS_N_TYPES] = {
 static struct refmap *netdev_doca_esw_rfm;
 static struct atomic_count n_doca_ports = ATOMIC_COUNT_INIT(0);
 
-struct ovs_mutex doca_mutex = OVS_MUTEX_INITIALIZER;
-
 /* Contains all 'struct netdev_doca's. */
-static struct ovs_list doca_list OVS_GUARDED_BY(doca_mutex)
-    = OVS_LIST_INITIALIZER(&doca_list);
+static struct ovs_list doca_list = OVS_LIST_INITIALIZER(&doca_list);
 
 static void
 netdev_doca_destruct(struct netdev *netdev);
 
 static int
-netdev_doca_port_stop(struct netdev_doca *)
-    OVS_REQUIRES(doca_mutex);
+netdev_doca_port_stop(struct netdev_doca *);
 
 static bool
 netdev_doca_is_started(const struct netdev_doca *dev)
@@ -1204,7 +1200,6 @@ netdev_doca_parse_dpdk_devargs_pci(const char *devargs,
 static void
 netdev_doca_do_foreach_representor(struct netdev_doca *esw_dev,
                                    bool (*cb)(struct netdev_doca *))
-    OVS_REQUIRES(doca_mutex)
 {
     bool need_reconfigure = false;
     struct rte_pci_addr esw_pci;
@@ -1311,7 +1306,6 @@ netdev_doca_dev_close(struct netdev_doca *dev)
 
 static bool
 netdev_doca_rep_stop(struct netdev_doca *dev)
-    OVS_REQUIRES(doca_mutex)
 {
     if (!netdev_doca_is_started(dev)) {
         return false;
@@ -1327,7 +1321,6 @@ netdev_doca_rep_stop(struct netdev_doca *dev)
 
 static int
 netdev_doca_port_stop(struct netdev_doca *dev)
-    OVS_REQUIRES(doca_mutex)
 {
     struct netdev *netdev = &dev->common.up;
     bool started = netdev_doca_is_started(dev);
@@ -1378,8 +1371,6 @@ netdev_doca_destruct(struct netdev *netdev)
 {
     struct netdev_doca *dev = netdev_doca_cast(netdev);
 
-    ovs_mutex_lock(&doca_mutex);
-
     netdev_doca_port_stop(dev);
 
     if (dev->attached) {
@@ -1390,7 +1381,6 @@ netdev_doca_destruct(struct netdev *netdev)
                   dev->devargs);
     }
     ovs_list_remove(&dev->list_node);
-    ovs_mutex_unlock(&doca_mutex);
 
     if (dev->esw_eth) {
         netdev_close(&dev->esw_eth->common.up);
@@ -1649,7 +1639,6 @@ out:
 
 static int
 netdev_doca_port_start(struct netdev_doca *dev)
-    OVS_REQUIRES(doca_mutex)
 {
     struct netdev *netdev = &dev->common.up;
     const char *devargs = dev->devargs;
@@ -1785,7 +1774,6 @@ netdev_doca_rep_reconfigure(struct netdev_doca *dev OVS_UNUSED)
 
 static int
 doca_eth_dev_init(struct netdev_doca *dev)
-    OVS_REQUIRES(doca_mutex)
     OVS_REQUIRES(dev->mutex)
 {
     struct netdev_dpdk_common *common = &dev->common;
@@ -1832,7 +1820,6 @@ netdev_doca_reconfigure(struct netdev *netdev)
         return EOPNOTSUPP;
     }
 
-    ovs_mutex_lock(&doca_mutex);
     ovs_mutex_lock(&dev->mutex);
 
     /* esw_eth is not a datapath port, so dpif-netdev never sets its Tx queue
@@ -1916,7 +1903,6 @@ netdev_doca_reconfigure(struct netdev *netdev)
 
 out:
     ovs_mutex_unlock(&dev->mutex);
-    ovs_mutex_unlock(&doca_mutex);
     return err;
 }
 
@@ -1940,9 +1926,7 @@ netdev_doca_construct(struct netdev *netdev)
     dev->egress_entry = NULL;
     memset(dev->rss_entries, 0, sizeof dev->rss_entries);
 
-    ovs_mutex_lock(&doca_mutex);
     ovs_list_push_back(&doca_list, &dev->list_node);
-    ovs_mutex_unlock(&doca_mutex);
 
     return 0;
 }
@@ -2078,7 +2062,6 @@ netdev_doca_generate_devargs(const char *name, char *devargs, size_t maxlen,
 
 static dpdk_port_t
 netdev_doca_get_port_by_devargs(const char *devargs)
-    OVS_REQUIRES(doca_mutex)
 {
     dpdk_port_t port_id;
     struct rte_dev_iterator iterator;
@@ -2095,7 +2078,6 @@ netdev_doca_get_port_by_devargs(const char *devargs)
 static dpdk_port_t
 netdev_doca_process_devargs(struct netdev_doca *dev,
                             const char *devargs, char **errp)
-    OVS_REQUIRES(doca_mutex)
 {
     dpdk_port_t new_port_id;
 
@@ -2129,7 +2111,6 @@ netdev_doca_process_devargs(struct netdev_doca *dev,
 
 static struct netdev_doca *
 netdev_doca_lookup_by_port_id(dpdk_port_t port_id)
-    OVS_REQUIRES(doca_mutex)
 {
     struct netdev_doca *dev;
 
@@ -2183,7 +2164,6 @@ netdev_doca_find_esw_mgr_port_id(dpdk_port_t dev_port_id)
 
 static int
 netdev_doca_acquire_esw_eth(struct netdev_doca *dev)
-    OVS_REQUIRES(doca_mutex)
 {
     struct rte_eth_dev_info info;
     char esw_name[128];
@@ -2262,7 +2242,6 @@ netdev_doca_set_config(struct netdev *netdev, const struct smap *args,
     int err = 0;
     bool is_rep;
 
-    ovs_mutex_lock(&doca_mutex);
     ovs_mutex_lock(&dev->mutex);
 
     memset(iface, 0, sizeof iface);
@@ -2376,7 +2355,6 @@ netdev_doca_set_config(struct netdev *netdev, const struct smap *args,
 
 out:
     ovs_mutex_unlock(&dev->mutex);
-    ovs_mutex_unlock(&doca_mutex);
 
     return err;
 }
