@@ -98,6 +98,9 @@ struct netdev_doca {
         dpdk_port_t port_id;
         atomic_bool started;
         struct netdev_dpdk_eth *esw_eth;
+        /* This port's own Ethernet device.  The ESW manager's shadow is
+         * esw_eth.  A representor has its own zero-queue shadow as well. */
+        struct netdev_dpdk_eth *eth;
         struct netdev_doca_tx_stats *sw_tx_stats;
 
         /* No datapath fields below for this block. */

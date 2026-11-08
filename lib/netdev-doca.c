@@ -51,6 +51,7 @@
 #include "userspace-tso.h"
 #include "util.h"
 
+#include "openvswitch/poll-loop.h"
 #include "openvswitch/vlog.h"
 
 VLOG_DEFINE_THIS_MODULE(netdev_doca);
@@ -84,6 +85,33 @@ static struct atomic_count n_doca_ports = ATOMIC_COUNT_INIT(0);
 
 /* Contains all 'struct netdev_doca's. */
 static struct ovs_list doca_list = OVS_LIST_INITIALIZER(&doca_list);
+
+/* Hidden dpdk netdevs whose netdev_close() must run outside netdev_mutex.
+ * destruct() is called with that mutex held, and it is not recursive.
+ * doca_dev is closed after those netdevs: rte_dev_remove() closes cmd_fd. */
+struct netdev_doca_esw_close {
+    struct ovs_list list_node;
+    struct netdev *netdev;
+    struct doca_dev *doca_dev;
+    char *pci_addr;
+    int cmd_fd;
+};
+
+static struct ovs_list doca_esw_close_list
+    = OVS_LIST_INITIALIZER(&doca_esw_close_list);
+
+static void
+netdev_doca_queue_close(struct netdev *netdev, struct doca_dev *doca_dev,
+                        const char *pci_addr, int cmd_fd)
+{
+    struct netdev_doca_esw_close *close = xmalloc(sizeof *close);
+
+    close->netdev = netdev;
+    close->doca_dev = doca_dev;
+    close->pci_addr = pci_addr ? xstrdup(pci_addr) : NULL;
+    close->cmd_fd = cmd_fd;
+    ovs_list_push_back(&doca_esw_close_list, &close->list_node);
+}
 
 static void
 netdev_doca_destruct(struct netdev *netdev);
@@ -1150,6 +1178,43 @@ netdev_doca_esw_ctx_dump(struct ds *s, void *key_, void *ctx OVS_UNUSED)
     return s;
 }
 
+static void
+netdev_doca_run(const struct netdev_class *netdev_class OVS_UNUSED)
+{
+    struct netdev_doca_esw_close *entry;
+
+    LIST_FOR_EACH_POP (entry, list_node, &doca_esw_close_list) {
+        if (entry->netdev) {
+            netdev_close(entry->netdev);
+        }
+
+        if (entry->doca_dev) {
+            int err = doca_dev_close(entry->doca_dev);
+
+            if (err != DOCA_SUCCESS) {
+                VLOG_ERR("Failed to close doca dev %s. Error: %d (%s)",
+                         entry->pci_addr ? entry->pci_addr : "",
+                         err, doca_error_get_descr(err));
+            }
+
+            if (entry->cmd_fd != -1) {
+                close(entry->cmd_fd);
+            }
+        }
+
+        free(entry->pci_addr);
+        free(entry);
+    }
+}
+
+static void
+netdev_doca_wait(const struct netdev_class *netdev_class OVS_UNUSED)
+{
+    if (!ovs_list_is_empty(&doca_esw_close_list)) {
+        poll_immediate_wake();
+    }
+}
+
 static int
 netdev_doca_class_init(void)
 {
@@ -1244,27 +1309,12 @@ static void
 netdev_doca_dev_close(struct netdev_doca *dev)
 {
     struct netdev_doca_esw_ctx *esw = dev->esw_ctx;
-    struct rte_eth_dev_info dev_info;
     char *pci_addr;
     bool last;
     int err;
 
-    memset(&dev_info, 0, sizeof dev_info);
-
-    if (rte_eth_dev_is_valid_port(dev->port_id)) {
-        err = rte_eth_dev_info_get(dev->port_id, &dev_info);
-        if (err) {
-            VLOG_ERR("Failed to get info of port "DPDK_PORT_ID_FMT": %s",
-                     dev->port_id, rte_strerror(-err));
-        }
-
-        err = rte_eth_dev_close(dev->port_id);
-        if (err) {
-            VLOG_ERR("Failed to close port "DPDK_PORT_ID_FMT": %s",
-                     dev->port_id, rte_strerror(-err));
-        }
-    }
-
+    /* The Ethernet device is owned by the shadow dpdk netdev.  It stops,
+     * closes, and detaches that device. */
     if (!esw) {
         return;
     }
@@ -1272,31 +1322,28 @@ netdev_doca_dev_close(struct netdev_doca *dev)
     pci_addr = xstrdup(esw->pci_addr);
 
     last = refmap_unref(netdev_doca_esw_rfm, esw);
-    /* The last is the ESW. */
+    /* The last reference closes the DOCA device after the shadow netdev has
+     * been closed: rte_dev_remove() closes cmd_fd.  With no shadow, nothing
+     * has probed and the device can be closed here. */
     if (last && esw->dev) {
-        if (dev_info.device) {
-            /* The esw->cmd_fd is closed inside. */
-            err = rte_dev_remove(dev_info.device);
-            if (err) {
-                VLOG_ERR("Failed to remove device %s: %s", dev->devargs,
-                         rte_strerror(-err));
+        if (dev->eth || dev->esw_eth) {
+            netdev_doca_queue_close(NULL, esw->dev, pci_addr, -1);
+            esw->dev = NULL;
+            esw->cmd_fd = -1;
+        } else {
+            VLOG_DBG("Closing '%s'", pci_addr);
+            err = doca_dev_close(esw->dev);
+            if (err != DOCA_SUCCESS) {
+                VLOG_ERR("Failed to close doca dev %s. Error: %d (%s)",
+                         pci_addr, err, doca_error_get_descr(err));
             }
 
-            esw->cmd_fd = -1;
-        }
-
-        VLOG_DBG("Closing '%s'", pci_addr);
-        err = doca_dev_close(esw->dev);
-        if (err != DOCA_SUCCESS) {
-            VLOG_ERR("Failed to close doca dev %s. Error: %d (%s)", pci_addr,
-                     err, doca_error_get_descr(err));
-        }
-
-        esw->dev = NULL;
-        if (esw->cmd_fd != -1) {
-            close(esw->cmd_fd);
-        } else {
-            esw->cmd_fd = -1;
+            esw->dev = NULL;
+            if (esw->cmd_fd != -1) {
+                close(esw->cmd_fd);
+            } else {
+                esw->cmd_fd = -1;
+            }
         }
     }
 
@@ -1311,10 +1358,9 @@ netdev_doca_rep_stop(struct netdev_doca *dev)
         return false;
     }
 
+    /* Leave the shadow dpdk port and esw_ctx in place.  They stay until this
+     * representor is destroyed, so the shared device is not removed early. */
     netdev_doca_port_stop(dev);
-    netdev_doca_dev_close(dev);
-    dev->port_id = DPDK_ETH_PORT_ID_INVALID;
-    dev->attached = false;
 
     return true;
 }
@@ -1373,6 +1419,16 @@ netdev_doca_destruct(struct netdev *netdev)
 
     netdev_doca_port_stop(dev);
 
+    /* Shadow closes are queued before dev_close(), which may append the
+     * DOCA device close.  run() then detaches the Ethernet device first. */
+    if (dev->eth && dev->eth != dev->esw_eth) {
+        netdev_doca_queue_close(&dev->eth->common.up, NULL, NULL, -1);
+    }
+
+    if (dev->esw_eth) {
+        netdev_doca_queue_close(&dev->esw_eth->common.up, NULL, NULL, -1);
+    }
+
     if (dev->attached) {
         netdev_doca_dev_close(dev);
         dev->port_id = DPDK_ETH_PORT_ID_INVALID;
@@ -1380,11 +1436,9 @@ netdev_doca_destruct(struct netdev *netdev)
         VLOG_INFO("%s: Device '%s' has been removed", netdev_get_name(netdev),
                   dev->devargs);
     }
+    dev->eth = NULL;
+    dev->esw_eth = NULL;
     ovs_list_remove(&dev->list_node);
-
-    if (dev->esw_eth) {
-        netdev_close(&dev->esw_eth->common.up);
-    }
 
     free(dev->sw_tx_stats);
     free(dev->peer_name);
@@ -1566,11 +1620,13 @@ netdev_doca_esw_key_parse(const char *devargs,
     return netdev_doca_parse_dpdk_devargs_pci(devargs, rte_pci);
 }
 
+/* Open the shared DOCA device and build the device arguments the shadow dpdk
+ * port probes with.  The Ethernet device itself is probed by netdev-dpdk. */
 static int
-netdev_doca_dev_probe(struct netdev_doca *dev, const char *devargs)
+netdev_doca_esw_prepare(struct netdev_doca *dev, const char *devargs,
+                        struct ds *probe_devargs)
 {
     const char *netdev_name = netdev_get_name(&dev->common.up);
-    struct ds rte_devargs = DS_EMPTY_INITIALIZER;
     struct netdev_doca_esw_ctx_arg ctx_arg;
     struct netdev_doca_esw_key esw_key;
     struct ibv_pd *pd;
@@ -1613,21 +1669,10 @@ netdev_doca_dev_probe(struct netdev_doca *dev, const char *devargs)
         }
     }
 
-    ds_put_format(&rte_devargs, "%s,cmd_fd=%d,pd_handle=%u", devargs,
+    ds_put_format(probe_devargs, "%s,cmd_fd=%d,pd_handle=%u", devargs,
                   dev->esw_ctx->cmd_fd, pd->handle);
 
-    VLOG_DBG("Probing '%s'", ds_cstr(&rte_devargs));
-    if (rte_dev_probe(ds_cstr(&rte_devargs))) {
-        VLOG_ERR("%s: DPDK probe failed for %s", netdev_name,
-                 ds_cstr(&rte_devargs));
-        close(dev->esw_ctx->cmd_fd);
-        dev->esw_ctx->cmd_fd = -1;
-        rv = ENODEV;
-        goto out;
-    }
-
 out:
-    ds_destroy(&rte_devargs);
     if (rv) {
         /* In case of an error, rollback the above refmap_ref()
          * which initialized the device. */
@@ -1635,6 +1680,66 @@ out:
     }
 
     return rv;
+}
+
+/* Probe, configure, and start a hidden dpdk netdev for this port's Ethernet
+ * device.  zero_queues is a representor: its Ethernet device carries the link
+ * and has no Rx/Tx queues.  The netdev is marked attached so the last sibling
+ * detaches the device. */
+static int
+netdev_doca_open_shadow(const char *name, const char *probe_devargs,
+                        bool zero_queues, struct netdev_dpdk_eth **ethp)
+{
+    struct netdev_dpdk_eth *eth;
+    struct netdev *netdev;
+    struct smap config;
+    int err;
+
+    err = netdev_open(name, "dpdk", &netdev);
+    if (err) {
+        VLOG_WARN("Failed to open shadow netdev '%s': %s",
+                  name, ovs_strerror(err));
+        return err;
+    }
+
+    smap_init(&config);
+    smap_add(&config, "dpdk-devargs", probe_devargs);
+    err = netdev_set_config(netdev, &config, NULL);
+    smap_destroy(&config);
+    if (err) {
+        VLOG_WARN("Failed to configure shadow netdev '%s': %s",
+                  name, ovs_strerror(err));
+        netdev_close(netdev);
+        return err;
+    }
+
+    eth = netdev_dpdk_eth_cast(netdev);
+    if (zero_queues) {
+        netdev_dpdk_eth_set_no_queues(netdev);
+    }
+
+    /* netdev-dpdk marks attached only when this shadow probes the device.
+     * A sibling port does not.  Mark every shadow so the last one detaches
+     * the device. */
+    eth->attached = true;
+
+    err = netdev_reconfigure(netdev);
+    if (err) {
+        VLOG_WARN("Failed to reconfigure shadow netdev '%s': %s",
+                  name, ovs_strerror(err));
+        netdev_close(netdev);
+        return err;
+    }
+
+    if (!rte_eth_dev_is_valid_port(eth->port_id)) {
+        netdev_close(netdev);
+        return ENODEV;
+    }
+
+    *ethp = eth;
+    VLOG_INFO("Opened shadow '%s' for port "DPDK_PORT_ID_FMT,
+              name, eth->port_id);
+    return 0;
 }
 
 static int
@@ -1855,6 +1960,14 @@ netdev_doca_reconfigure(struct netdev *netdev)
     netdev_dpdk_common_update_ol_flags(common);
     common->socket_id = common->requested_socket_id;
 
+    if (dev->is_representor && dev->eth
+        && dev->eth->common.mtu != common->mtu) {
+        netdev_set_mtu(&dev->eth->common.up, common->mtu);
+        if (netdev_is_reconf_required(&dev->eth->common.up)) {
+            netdev_reconfigure(&dev->eth->common.up);
+        }
+    }
+
     netdev->n_txq = common->requested_n_txq;
     netdev->n_rxq = common->requested_n_rxq;
     if (dev->is_representor) {
@@ -1916,6 +2029,7 @@ netdev_doca_construct(struct netdev *netdev)
     ovs_mutex_init(&dev->mutex);
     dev->port_id = DPDK_ETH_PORT_ID_INVALID;
     dev->esw_eth = NULL;
+    dev->eth = NULL;
     dev->devargs = NULL;
     dev->attached = false;
     dev->sw_tx_stats = NULL;
@@ -2060,55 +2174,6 @@ netdev_doca_generate_devargs(const char *name, char *devargs, size_t maxlen,
     return devargs;
 }
 
-static dpdk_port_t
-netdev_doca_get_port_by_devargs(const char *devargs)
-{
-    dpdk_port_t port_id;
-    struct rte_dev_iterator iterator;
-
-    RTE_ETH_FOREACH_MATCHING_DEV (port_id, devargs, &iterator) {
-        /* If a break is done - must call rte_eth_iterator_cleanup. */
-        rte_eth_iterator_cleanup(&iterator);
-        break;
-    }
-
-    return port_id;
-}
-
-static dpdk_port_t
-netdev_doca_process_devargs(struct netdev_doca *dev,
-                            const char *devargs, char **errp)
-{
-    dpdk_port_t new_port_id;
-
-    new_port_id = netdev_doca_get_port_by_devargs(devargs);
-    if (!rte_eth_dev_is_valid_port(new_port_id)) {
-        int err;
-
-        /* Device not found in DPDK, attempt to attach it. */
-        err = netdev_doca_dev_probe(dev, devargs);
-        if (err) {
-            new_port_id = DPDK_ETH_PORT_ID_INVALID;
-        } else {
-            new_port_id = netdev_doca_get_port_by_devargs(devargs);
-            if (rte_eth_dev_is_valid_port(new_port_id)) {
-                /* Attach successful. */
-                dev->attached = true;
-                VLOG_INFO("Device '%s' attached", devargs);
-            } else {
-                /* Attach unsuccessful. */
-                new_port_id = DPDK_ETH_PORT_ID_INVALID;
-            }
-        }
-    }
-
-    if (new_port_id == DPDK_ETH_PORT_ID_INVALID) {
-        VLOG_WARN_BUF(errp, "Error attaching device '%s' to DPDK", devargs);
-    }
-
-    return new_port_id;
-}
-
 static struct netdev_doca *
 netdev_doca_lookup_by_port_id(dpdk_port_t port_id)
 {
@@ -2123,77 +2188,25 @@ netdev_doca_lookup_by_port_id(dpdk_port_t port_id)
     return NULL;
 }
 
-static dpdk_port_t
-netdev_doca_find_esw_mgr_port_id(dpdk_port_t dev_port_id)
-{
-    struct rte_eth_dev_info info;
-    struct rte_eth_dev_info port_info;
-    dpdk_port_t port_id;
-
-    if (!rte_eth_dev_is_valid_port(dev_port_id)) {
-        return DPDK_ETH_PORT_ID_INVALID;
-    }
-
-    if (rte_eth_dev_info_get(dev_port_id, &info) < 0) {
-        VLOG_DBG_RL(&rl, "Failed to retrieve device info for port "
-                    DPDK_PORT_ID_FMT, dev_port_id);
-        return DPDK_ETH_PORT_ID_INVALID;
-    }
-
-    if (!(*info.dev_flags & RTE_ETH_DEV_REPRESENTOR)) {
-        return dev_port_id;
-    }
-
-    RTE_ETH_FOREACH_DEV (port_id) {
-        if (rte_eth_dev_info_get(port_id, &port_info) < 0) {
-            continue;
-        }
-
-        if (port_info.switch_info.domain_id
-                == info.switch_info.domain_id
-            && !(*port_info.dev_flags & RTE_ETH_DEV_REPRESENTOR)) {
-            VLOG_DBG("Found ESW manager port "DPDK_PORT_ID_FMT" for "
-                     "device "DPDK_PORT_ID_FMT, port_id,
-                     dev_port_id);
-            return port_id;
-        }
-    }
-
-    return DPDK_ETH_PORT_ID_INVALID;
-}
-
 static int
 netdev_doca_acquire_esw_eth(struct netdev_doca *dev)
 {
-    struct rte_eth_dev_info info;
-    char esw_name[128];
+    char esw_name[PCI_PRI_STR_SIZE + sizeof "doca-esw-"];
+    struct netdev_dpdk_eth *esw_eth;
     struct netdev *esw_netdev;
-    dpdk_port_t esw_port_id;
-    struct smap config;
-    const char *bus_info;
     int err;
 
     if (dev->esw_eth) {
         return 0;
     }
 
-    esw_port_id = netdev_doca_find_esw_mgr_port_id(dev->port_id);
-    if (esw_port_id == DPDK_ETH_PORT_ID_INVALID) {
-        VLOG_WARN("Could not find ESW manager for port "DPDK_PORT_ID_FMT,
-                  dev->port_id);
+    if (!dev->esw_ctx || !dev->esw_ctx->pci_addr[0]) {
         return ENODEV;
     }
 
-    if (rte_eth_dev_info_get(esw_port_id, &info) < 0) {
-        return ENODEV;
-    }
-
-    bus_info = rte_dev_bus_info(info.device);
-    if (!bus_info) {
-        return ENODEV;
-    }
-
-    snprintf(esw_name, sizeof esw_name, "doca-esw-%s", bus_info);
+    /* The ESW manager port's shadow probed this device and owns the queues
+     * every DOCA port transmits on. */
+    snprintf(esw_name, sizeof esw_name, "doca-esw-%s", dev->esw_ctx->pci_addr);
 
     err = netdev_open(esw_name, "dpdk", &esw_netdev);
     if (err) {
@@ -2202,28 +2215,16 @@ netdev_doca_acquire_esw_eth(struct netdev_doca *dev)
         return err;
     }
 
-    smap_init(&config);
-    smap_add(&config, "dpdk-devargs", bus_info);
-    err = netdev_set_config(esw_netdev, &config, NULL);
-    smap_destroy(&config);
-    if (err) {
-        VLOG_WARN("Failed to configure ESW manager netdev '%s': %s",
-                  esw_name, ovs_strerror(err));
+    esw_eth = netdev_dpdk_eth_cast(esw_netdev);
+    if (!rte_eth_dev_is_valid_port(esw_eth->port_id)) {
+        VLOG_WARN("ESW manager netdev '%s' is not probed", esw_name);
         netdev_close(esw_netdev);
-        return err;
+        return ENODEV;
     }
 
-    err = netdev_reconfigure(esw_netdev);
-    if (err) {
-        VLOG_WARN("Failed to reconfigure ESW manager netdev '%s': %s",
-                  esw_name, ovs_strerror(err));
-        netdev_close(esw_netdev);
-        return err;
-    }
-
-    dev->esw_eth = netdev_dpdk_eth_cast(esw_netdev);
+    dev->esw_eth = esw_eth;
     VLOG_INFO("Acquired ESW manager '%s' (port "DPDK_PORT_ID_FMT") for "
-              "port "DPDK_PORT_ID_FMT, esw_name, esw_port_id,
+              "port "DPDK_PORT_ID_FMT, esw_name, esw_eth->port_id,
               dev->port_id);
     return 0;
 }
@@ -2282,38 +2283,70 @@ netdev_doca_set_config(struct netdev *netdev, const struct smap *args,
         refmap_unref(netdev_doca_esw_rfm, esw);
     }
 
-    /* Don't process devargs if port id is already valid and attached. */
-    if (!(rte_eth_dev_is_valid_port(dev->port_id) && dev->attached)) {
-        dpdk_port_t new_port_id =
-            netdev_doca_process_devargs(dev, dev->devargs, errp);
+    /* Don't probe again once this port's shadow dpdk netdev is up. */
+    if (!dev->eth) {
+        struct ds probe_devargs = DS_EMPTY_INITIALIZER;
+        char shadow_name[128];
 
-        if (!rte_eth_dev_is_valid_port(new_port_id)) {
-            err = EINVAL;
-        } else if (new_port_id == dev->port_id) {
-            /* Already configured, do not reconfigure again. */
-            err = 0;
-        } else {
-            struct netdev_doca *dup_dev;
+        err = netdev_doca_esw_prepare(dev, dev->devargs, &probe_devargs);
+        if (!err) {
+            struct netdev_dpdk_eth *eth = NULL;
 
-            dup_dev = netdev_doca_lookup_by_port_id(new_port_id);
-            if (dup_dev) {
-                VLOG_WARN_BUF(errp, "'%s' is trying to use device '%s' "
-                              "which is already in use by '%s'",
-                              netdev_get_name(netdev), dev->devargs,
-                              netdev_get_name(&dup_dev->common.up));
-                err = EADDRINUSE;
+            if (is_rep) {
+                snprintf(shadow_name, sizeof shadow_name, "doca-eth-%s",
+                         netdev_name);
             } else {
-                int sid = rte_eth_dev_socket_id(new_port_id);
+                snprintf(shadow_name, sizeof shadow_name, "doca-esw-%s",
+                         dev->esw_ctx->pci_addr);
+            }
 
-                common->requested_socket_id = sid < 0 ? SOCKET0 : sid;
-                dev->port_id = new_port_id;
+            err = netdev_doca_open_shadow(shadow_name,
+                                          ds_cstr(&probe_devargs),
+                                          is_rep, &eth);
+            if (!err) {
+                struct netdev_doca *dup_dev;
+                struct rte_eth_dev_info info;
+                int sid;
 
-                err = netdev_doca_acquire_esw_eth(dev);
-                if (!err) {
+                dup_dev = netdev_doca_lookup_by_port_id(eth->port_id);
+                if (dup_dev) {
+                    VLOG_WARN_BUF(errp, "'%s' is trying to use device '%s' "
+                                  "which is already in use by '%s'",
+                                  netdev_name, dev->devargs,
+                                  netdev_get_name(&dup_dev->common.up));
+                    netdev_close(&eth->common.up);
+                    err = EADDRINUSE;
+                } else if (!is_rep
+                           && !rte_eth_dev_info_get(eth->port_id, &info)
+                           && (*info.dev_flags & RTE_ETH_DEV_REPRESENTOR)) {
+                    VLOG_WARN_BUF(errp, "'%s' shadow matched representor "
+                                  "port "DPDK_PORT_ID_FMT,
+                                  netdev_name, eth->port_id);
+                    netdev_close(&eth->common.up);
+                    err = ENODEV;
+                } else {
+                    dev->eth = eth;
+                    dev->port_id = eth->port_id;
+                    dev->attached = true;
+                    sid = rte_eth_dev_socket_id(dev->port_id);
+                    common->requested_socket_id = sid < 0 ? SOCKET0 : sid;
+                    if (!is_rep) {
+                        dev->esw_eth = eth;
+                    }
+
                     netdev_request_reconfigure(netdev);
                 }
             }
         }
+        if (err && dev->esw_ctx && !dev->eth) {
+            netdev_doca_dev_close(dev);
+        }
+
+        ds_destroy(&probe_devargs);
+    }
+
+    if (!err && is_rep && !dev->esw_eth) {
+        err = netdev_doca_acquire_esw_eth(dev);
     }
 
     if (err) {
@@ -2593,6 +2626,11 @@ netdev_doca_get_carrier(const struct netdev *netdev, bool *carrier)
 {
     struct netdev_doca *dev = netdev_doca_cast(netdev);
 
+    if (dev->eth) {
+        *carrier = netdev_get_carrier(&dev->eth->common.up);
+        return 0;
+    }
+
     if (!dev->esw_eth) {
         *carrier = false;
         return 0;
@@ -2606,6 +2644,10 @@ static long long int
 netdev_doca_get_carrier_resets(const struct netdev *netdev)
 {
     struct netdev_doca *dev = netdev_doca_cast(netdev);
+
+    if (dev->eth) {
+        return netdev_get_carrier_resets(&dev->eth->common.up);
+    }
 
     if (!dev->esw_eth) {
         return 0;
@@ -2773,6 +2815,8 @@ netdev_doca_get_config(const struct netdev *netdev, struct smap *args)
 static const struct netdev_class netdev_doca_class = {
     .type = "doca",
     .is_pmd = true,
+    .run = netdev_doca_run,
+    .wait = netdev_doca_wait,
     .init = netdev_doca_class_init,
     .alloc = netdev_doca_alloc,
     .construct = netdev_doca_construct,
