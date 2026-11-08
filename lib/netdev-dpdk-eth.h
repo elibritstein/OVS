@@ -54,6 +54,10 @@ struct netdev_dpdk_eth {
         bool started;
         /* If true, this is a port representor. */
         bool is_representor;
+        /* If true, the port is configured with no Rx or Tx queues.  Set only
+         * by netdev_dpdk_eth_set_no_queues(), for DOCA representor Ethernet
+         * devices. */
+        bool no_queues;
         /* Ensures that Rx metadata delivery is configured only once. */
         bool rx_metadata_delivery_configured;
         /* Properties for link state change detection mode.
@@ -98,6 +102,8 @@ netdev_dpdk_eth_cast(const struct netdev *netdev)
 {
     return CONTAINER_OF(netdev, struct netdev_dpdk_eth, common.up);
 }
+
+void netdev_dpdk_eth_set_no_queues(struct netdev *);
 
 /* Receives a batch of packets from rxq 'queue_id' of device 'dev'.
  * Applies ingress QoS policing and initializes packet fields.

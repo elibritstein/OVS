@@ -502,6 +502,23 @@ dpdk_eth_dev_port_config(struct netdev_dpdk_eth *dev,
         conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS;
     }
 
+    /* No queues: configure and set the MTU, then let the caller start the
+     * port.  A representor Ethernet device is used for its link, not for
+     * Rx/Tx. */
+    if (!n_rxq && !n_txq) {
+        conf.rxmode.mq_mode = RTE_ETH_MQ_RX_NONE;
+        conf.txmode.mq_mode = RTE_ETH_MQ_TX_NONE;
+        conf.rx_adv_conf.rss_conf.rss_hf = 0;
+
+        diag = dpdk_eth_dev_configure(dev, &conf, 0, 0);
+        if (!diag) {
+            netdev->n_rxq = 0;
+            netdev->n_txq = 0;
+        }
+
+        return diag;
+    }
+
     /* A device may report more queues than it makes available (this has
      * been observed for Intel xl710, which reserves some of them for
      * SRIOV):  rte_eth_*_queue_setup will fail if a queue is not
@@ -1820,6 +1837,22 @@ netdev_dpdk_eth_set_tx_multiq(struct netdev *netdev, unsigned int n_txq)
 out:
     ovs_mutex_unlock(&dev->mutex);
     return 0;
+}
+
+/* Internal to DOCA: a port with no queues. */
+void
+netdev_dpdk_eth_set_no_queues(struct netdev *netdev)
+{
+    struct netdev_dpdk_eth *dev = netdev_dpdk_eth_cast(netdev);
+
+    ovs_mutex_lock(&dev->mutex);
+
+    if (!dev->no_queues) {
+        dev->no_queues = true;
+        netdev_request_reconfigure(netdev);
+    }
+
+    ovs_mutex_unlock(&dev->mutex);
 }
 
 static struct netdev_rxq *
@@ -4525,6 +4558,12 @@ netdev_dpdk_eth_reconfigure(struct netdev *netdev)
         common->requested_n_rxq += 1;
     }
 
+    if (dev->no_queues) {
+        try_rx_steer = false;
+        common->requested_n_rxq = 0;
+        common->requested_n_txq = 0;
+    }
+
     atomic_read_relaxed(&netdev_dpdk_pending_reset[dev->port_id],
                         &pending_reset);
 
@@ -4627,9 +4666,11 @@ retry:
     }
     dev->rx_steer_flags = dev->requested_rx_steer_flags;
 
-    common->tx_q = netdev_dpdk_alloc_txq(netdev->n_txq);
-    if (!common->tx_q) {
-        err = ENOMEM;
+    if (netdev->n_txq) {
+        common->tx_q = netdev_dpdk_alloc_txq(netdev->n_txq);
+        if (!common->tx_q) {
+            err = ENOMEM;
+        }
     }
 
     netdev_change_seq_changed(netdev);
