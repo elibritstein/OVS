@@ -1458,7 +1458,6 @@ netdev_doca_destruct(struct netdev *netdev)
     ovs_list_remove(&dev->list_node);
 
     free(dev->sw_tx_stats);
-    free(dev->peer_name);
     free(dev->devargs);
     netdev_dpdk_common_destruct(&dev->common);
     ovs_mutex_destroy(&dev->mutex);
@@ -2060,7 +2059,6 @@ netdev_doca_construct(struct netdev *netdev)
     dev->sw_tx_stats = NULL;
     dev->esw_ctx = NULL;
     dev->port = NULL;
-    dev->peer_name = NULL;
     dev->dev_rep = NULL;
     dev->egress_entry = NULL;
     dev->shadow_change_seq = 0;

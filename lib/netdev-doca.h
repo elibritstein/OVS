@@ -125,7 +125,6 @@ struct netdev_doca {
 
     struct doca_flow_pipe_entry *rss_entries[NETDEV_DOCA_RSS_NUM_ENTRIES];
     struct doca_flow_pipe_entry *egress_entry;
-    char *peer_name;
     struct doca_dev_rep *dev_rep;
 };
 
